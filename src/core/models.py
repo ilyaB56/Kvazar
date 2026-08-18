@@ -1,0 +1,119 @@
+"""Модели ядра — схема erp_core. Общие сущности, доступные всем модулям."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from src.db import Base
+
+CORE_SCHEMA = "erp_core"
+
+
+def _core(tablename: str) -> dict:
+    return {"schema": CORE_SCHEMA, "tablename": tablename}
+
+
+class User(Base):
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    full_name: Mapped[str] = mapped_column(String(255), default="")
+    role: Mapped[str] = mapped_column(String(50), default="user")  # admin | user | readonly
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Company(Base):
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "companies"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255))
+    inn: Mapped[str] = mapped_column(String(12), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Contact(Base):
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "contacts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey(f"{CORE_SCHEMA}.companies.id"))
+    full_name: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str] = mapped_column(String(255), default="", index=True)
+    phone: Mapped[str] = mapped_column(String(50), default="")
+    extra: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Attachment(Base):
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    entity_type: Mapped[str] = mapped_column(String(100), index=True)
+    entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    file_name: Mapped[str] = mapped_column(String(255))
+    storage_path: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditEvent(Base):
+    """events_log — журнал действий (аудит-трейл)."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "events_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    action: Mapped[str] = mapped_column(String(100), index=True)
+    entity_type: Mapped[str] = mapped_column(String(100), default="")
+    entity_id: Mapped[str] = mapped_column(String(64), default="")
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Setting(Base):
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    value: Mapped[dict | str | int | bool | None] = mapped_column(JSONB)
+    value_type: Mapped[str] = mapped_column(String(20), default="string")  # string|int|bool|json
+
+
+class ModuleRegistry(Base):
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "module_registry"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    version: Mapped[str] = mapped_column(String(20))
+    db_schema: Mapped[str] = mapped_column(String(63))
+    depends_on: Mapped[list] = mapped_column(JSONB, default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EventOutbox(Base):
+    """Надёжная доставка событий: пишем в outbox в той же транзакции, что и бизнес-данные,
+    затем диспетчер рассылает подписчикам (Redis pub/sub + локальные обработчики)."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "event_outbox"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_name: Mapped[str] = mapped_column(String(100), index=True)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    processed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

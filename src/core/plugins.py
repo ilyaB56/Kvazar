@@ -1,0 +1,58 @@
+"""Загрузчик модулей-плагинов.
+
+Ядро не импортирует модули напрямую: список модулей задаётся здесь в MANIFESTS,
+роутеры и обработчики событий подключаются к приложению на старте.
+Новый модуль добавляется одной строкой + его миграцией в Alembic.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import FastAPI
+
+from src.core import events
+from src.core.contracts import Manifest
+
+logger = logging.getLogger(__name__)
+
+
+def _core_manifest() -> Manifest:
+    from src.core import router as core_router
+
+    return Manifest(
+        name="core",
+        version="0.1.0",
+        db_schema="erp_core",
+        routers=(core_router.router,),
+    )
+
+
+def _integrations_manifest() -> Manifest:
+    from src.modules.integrations.manifest import manifest
+
+    return manifest
+
+
+# Порядок = порядок зависимостей. Ядро всегда первым.
+MANIFESTS: list[Manifest] = [
+    _core_manifest(),
+    _integrations_manifest(),
+]
+
+
+def install_modules(app: FastAPI) -> list[Manifest]:
+    """Подключить роутеры и подписки всех активных модулей к приложению."""
+    seen: set[str] = set()
+    for m in MANIFESTS:
+        for dep in m.depends_on:
+            if dep not in seen:
+                msg = f"module {m.name}: dependency {dep} not loaded before it"
+                raise RuntimeError(msg)
+        for router in m.routers:
+            app.include_router(router, prefix=f"/api/v1/{m.name}" if m.name != "core" else "/api/v1")
+        for event_name, handler in m.event_handlers.items():
+            events.subscribe(event_name, handler)
+        seen.add(m.name)
+        logger.info("module installed: %s %s", m.name, m.version)
+    return MANIFESTS
