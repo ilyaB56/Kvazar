@@ -117,3 +117,19 @@ class EventOutbox(Base):
     processed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RecordVersion(Base):
+    """record_versions — журнал версий записей. Generic-таблица: пишется сервисными
+    слоями модулей через общий хелпер core.versioning (переиспользуется в CRM и др.)."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "record_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_type: Mapped[str] = mapped_column(String(100), index=True)
+    entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    changed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    diff: Mapped[dict] = mapped_column(JSONB, default=dict)  # {поле: {old, new}}
+    reason: Mapped[str | None] = mapped_column(Text)

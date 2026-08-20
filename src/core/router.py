@@ -19,7 +19,7 @@ from src.core.auth import (
     require_role,
     verify_password,
 )
-from src.core.models import AuditEvent, Company, Contact, Setting, User
+from src.core.models import AuditEvent, Company, Contact, EventOutbox, Setting, User
 from src.db import get_db
 
 router = APIRouter(tags=["core"])
@@ -192,3 +192,23 @@ def upsert_setting(body: SettingIn, db: Session = Depends(get_db)):
         db.add(Setting(key=body.key, value=body.value, value_type=body.value_type))
     db.commit()
     return {"ok": True}
+
+
+# ---------- Outbox (админ) ----------
+
+@router.get("/events/outbox", dependencies=[Depends(require_role("admin"))])
+def list_outbox(event_name: str = "", limit: int = 50, db: Session = Depends(get_db)):
+    """Последние события шины из outbox (для отладки и smoke-проверок)."""
+    query = select(EventOutbox).order_by(EventOutbox.id.desc()).limit(min(max(limit, 1), 500))
+    if event_name:
+        query = query.where(EventOutbox.event_name == event_name)
+    return [
+        {
+            "id": row.id,
+            "event_name": row.event_name,
+            "payload": row.payload,
+            "processed": row.processed,
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in db.scalars(query).all()
+    ]

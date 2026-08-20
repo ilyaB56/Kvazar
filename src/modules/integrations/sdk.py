@@ -64,6 +64,7 @@ class ConnectorRegistry:
 
     def __init__(self) -> None:
         self._types: dict[str, type[BaseConnector]] = {}
+        self._protos: dict[str, BaseConnector] = {}
 
     def register(self, connector_cls: type[BaseConnector]) -> None:
         # Читаем code/display_name из инстанса-прототипа без state
@@ -72,6 +73,7 @@ class ConnectorRegistry:
             display_name=connector_cls.display_name,  # type: ignore[call-arg]
         )
         self._types[proto.code] = connector_cls
+        self._protos[proto.code] = proto
 
     def build(self, code: str, config: dict, credentials: dict) -> BaseConnector:
         cls = self._types.get(code)
@@ -81,14 +83,16 @@ class ConnectorRegistry:
         return cls(code=code, display_name=cls.display_name, config=config, credentials=credentials)  # type: ignore[call-arg]
 
     def available(self) -> list[dict[str, Any]]:
+        # Значения берём из прототипов: поля с default_factory (config_schema,
+        # capabilities) не существуют как атрибуты класса, пока не инстанцированы.
         return [
             {
-                "code": cls.code,
-                "display_name": cls.display_name,
-                "capabilities": cls.capabilities.__dict__,  # type: ignore[attr-defined]
-                "config_schema": cls.config_schema,  # type: ignore[attr-defined]
+                "code": proto.code,
+                "display_name": proto.display_name,
+                "capabilities": proto.capabilities.__dict__,
+                "config_schema": proto.config_schema,
             }
-            for cls in self._types.values()
+            for proto in self._protos.values()
         ]
 
 

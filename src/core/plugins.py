@@ -34,10 +34,17 @@ def _integrations_manifest() -> Manifest:
     return manifest
 
 
+def _mgmt_accounting_manifest() -> Manifest:
+    from src.modules.mgmt_accounting.manifest import manifest
+
+    return manifest
+
+
 # Порядок = порядок зависимостей. Ядро всегда первым.
 MANIFESTS: list[Manifest] = [
     _core_manifest(),
     _integrations_manifest(),
+    _mgmt_accounting_manifest(),
 ]
 
 
@@ -50,7 +57,8 @@ def install_modules(app: FastAPI) -> list[Manifest]:
                 msg = f"module {m.name}: dependency {dep} not loaded before it"
                 raise RuntimeError(msg)
         for router in m.routers:
-            app.include_router(router, prefix=f"/api/v1/{m.name}" if m.name != "core" else "/api/v1")
+            prefix = f"/api/v1/{m.url_prefix or m.name}" if m.name != "core" else "/api/v1"
+            app.include_router(router, prefix=prefix)
         for event_name, handler in m.event_handlers.items():
             events.subscribe(event_name, handler)
         seen.add(m.name)

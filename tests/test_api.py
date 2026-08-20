@@ -18,18 +18,20 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture(scope="module")
 def client():
+    client = httpx.Client(base_url=BASE_URL, timeout=10)
     try:
-        with httpx.Client(base_url=BASE_URL, timeout=10) as c:
-            c.get("/health").raise_for_status()
+        client.get("/health").raise_for_status()
     except httpx.HTTPError:
+        client.close()
         pytest.skip("API not running (docker compose up)")
-    return c
+    yield client
+    client.close()
 
 
 @pytest.fixture(scope="module")
 def admin_token(client):
     response = client.post("/api/v1/auth/login", json={
-        "email": "admin@local", "password": "admin12345",
+        "email": "admin@example.com", "password": "admin12345",
     })
     response.raise_for_status()
     return response.json()["access_token"]

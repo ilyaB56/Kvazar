@@ -24,6 +24,9 @@ class Manifest:
     routers: tuple["APIRouter", ...] = ()
     event_handlers: dict[str, Callable[..., Any]] = field(default_factory=dict)
     connector_types: tuple[type, ...] = ()  # классы BaseConnector модуля
+    # URL-префикс модуля (/api/v1/<url_prefix>); пусто — использовать name.
+    # Например, mgmt_accounting живёт под /api/v1/accounting.
+    url_prefix: str = ""
 
 
 # Контекст, который ядро передаёт модулю при инициализации.
