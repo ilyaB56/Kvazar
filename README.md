@@ -40,6 +40,12 @@ admin@example.com / admin12345   (смените пароль!)
   циклом черновик → проведение → сторно, нумерация `ПК/СК/ПР/СТ-ГГГГ-NNNNN`,
   периоды (закрытие/переоткрытие), мультивалютность с заморозкой курса на дату
   операции (ADR-003), отчёт «движение денег», журнал версий (`erp_core.record_versions`).
+- **Фронтенд** (`frontend/`): Vue 3 + Vite + TS + Pinia + Element Plus + vue-i18n (ru).
+  fetch-обёртка с Bearer и авто-refresh (401 → refresh → повтор → logout), типы DTO
+  в `frontend/src/api/types.ts`, все строки через i18n-ключи, деньги строками (ADR-003).
+  Экраны: логин с guard'ами, «Подключения» (диалог по config_schema, проверка связи,
+  webhooks), «Синхронизации» (jobs + журнал runs). Внешних CDN нет — все ассеты
+  из бандла (ADR-001).
 
 ## Как подключить внешний сервис (пример)
 
@@ -68,6 +74,24 @@ admin@example.com / admin12345   (смените пароль!)
 docker compose exec api pytest tests/test_unit.py      # без БД
 docker compose up -d && pytest tests/                   # integration-тесты против API
 ```
+
+## Фронтенд: dev и prod
+
+Node.js на хосте не нужен — весь npm-цикл в Docker.
+
+```bash
+# dev-сервер (http://localhost:5173, прокси /api → api:8000)
+docker run -d --name erp-frontend-dev --network erp_default -p 5173:5173 \
+  -e API_TARGET=http://api:8000 -v "%cd%/frontend:/app" \
+  -v erp_frontend_node_modules:/app/node_modules -w /app node:20-alpine \
+  sh -c "npm install && npm run dev -- --host 0.0.0.0"
+
+# prod: nginx отдаёт бандл и проксирует /api (http://localhost:8080)
+docker compose up -d --build web
+```
+
+Внимание (Docker Desktop + bind mount): изменения файлов фронтенда могут не
+подхватываться vite по HMR — при странном поведении перезапустите dev-контейнер.
 
 ## Правила кода
 
@@ -100,4 +124,5 @@ ADR-003 «Денежные величины и мультивалютность�
    сторно, периоды, курсы, cashflow)
 3. `ai_agent` — Ollama + RAG (pgvector), tool-use поверх коннекторов SDK
 4. `mini_crm` — CRM
-5. Фронтенд Vue 3: магазин интеграций, no-code конструктор, дашборды
+5. ~~Фронтенд Vue 3~~ (каркас v1: логин, подключения, синхронизации; экраны
+   учёта и конструктор рецептов — следующие)

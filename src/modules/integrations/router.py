@@ -194,6 +194,11 @@ def create_mapping(body: MappingIn, user: CurrentUser, db: Session = Depends(get
 
 # ---------- Sync jobs ----------
 
+@router.get("/sync-jobs")
+def list_sync_jobs(user: CurrentUser, db: Session = Depends(get_db)):
+    return db.scalars(select(m.SyncJob).order_by(m.SyncJob.created_at)).all()
+
+
 @router.post("/sync-jobs", status_code=201)
 def create_sync_job(body: SyncJobIn, user: CurrentUser, db: Session = Depends(get_db)):
     if db.get(m.Connection, body.connection_id) is None:

@@ -83,17 +83,21 @@ class ConnectorRegistry:
         return cls(code=code, display_name=cls.display_name, config=config, credentials=credentials)  # type: ignore[call-arg]
 
     def available(self) -> list[dict[str, Any]]:
-        # Значения берём из прототипов: поля с default_factory (config_schema,
-        # capabilities) не существуют как атрибуты класса, пока не инстанцированы.
-        return [
-            {
-                "code": proto.code,
-                "display_name": proto.display_name,
-                "capabilities": proto.capabilities.__dict__,
-                "config_schema": proto.config_schema,
-            }
-            for proto in self._protos.values()
-        ]
+        # Поля с default_factory (capabilities, config_schema) не существуют как
+        # атрибуты класса, пока коннектор не задал их явно в теле класса.
+        # Берём значение класса, если задано, иначе — дефолт из прототипа.
+        result: list[dict[str, Any]] = []
+        for cls in self._types.values():
+            proto = self._protos[cls.code]
+            capabilities = getattr(cls, "capabilities", None) or proto.capabilities
+            config_schema = getattr(cls, "config_schema", None) or proto.config_schema
+            result.append({
+                "code": cls.code,
+                "display_name": cls.display_name,
+                "capabilities": capabilities.__dict__,
+                "config_schema": config_schema,
+            })
+        return result
 
 
 registry = ConnectorRegistry()

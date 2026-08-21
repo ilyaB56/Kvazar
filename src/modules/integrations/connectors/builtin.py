@@ -29,18 +29,21 @@ class HttpRestConnector(BaseConnector):
         "auth_style": {"type": "enum", "values": ["bearer", "header", "basic", "none"], "default": "bearer"},
         "auth_header_name": {"type": "string", "default": "Authorization"},
         "timeout_seconds": {"type": "int", "default": 30},
+        "health_path": {"type": "string", "default": ""},
     }
 
     def _client(self) -> httpx.Client:
-        headers = {"Authorization": f"Bearer {self.credentials.get('api_key', '')}"}
+        # Без заданного секрета auth-заголовок не ставится вовсе:
+        # «Bearer » с пустым токеном невалиден и ломает даже публичный /health.
         style = self.config.get("auth_style", "bearer")
         name = self.config.get("auth_header_name", "Authorization")
-        if style == "header":
-            headers = {name: self.credentials.get("api_key", "")}
-        elif style == "basic":
-            headers = {name: f"Basic {self.credentials.get('basic_token', '')}"}
-        elif style == "none":
-            headers = {}
+        api_key = self.credentials.get("api_key", "")
+        headers: dict[str, str] = {}
+        if style == "basic":
+            if self.credentials.get("basic_token"):
+                headers = {name: f"Basic {self.credentials['basic_token']}"}
+        elif style not in ("none",) and api_key:
+            headers = {name: api_key} if style == "header" else {name: f"Bearer {api_key}"}
         return httpx.Client(
             base_url=self.config.get("base_url", ""),
             headers=headers,
