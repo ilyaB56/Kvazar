@@ -34,6 +34,8 @@ services:
       JWT_SECRET: change-me-in-production
       SECRETS_KEY: change-me-fernet-key
       CORS_ORIGINS: '["http://localhost:5173"]'
+      # прод обязан задать собственный пароль сид-админа (security-plan P0-5)
+      # SEED_ADMIN_PASSWORD: change-me-in-production
     ports:
       - "8000:8000"
     depends_on:

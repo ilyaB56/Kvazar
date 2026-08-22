@@ -12,7 +12,7 @@ const auth = useAuthStore()
 
 const formRef = ref<FormInstance>()
 const loading = ref(false)
-const form = reactive({ email: 'admin@example.com', password: '' })
+const form = reactive({ email: '', password: '' })
 
 const rules: FormRules = {
   email: [{ required: true, message: () => t('connections.fieldRequired'), trigger: 'blur' }],

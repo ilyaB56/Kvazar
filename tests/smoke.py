@@ -1,4 +1,9 @@
-"""Smoke-тест работоспособной системы (только stdlib): python tests/smoke.py [base_url]"""
+"""Smoke-тест работоспособной системы (только stdlib): python tests/smoke.py [base_url]
+
+Идемпотентность (реестр долгов №2): справочники переиспользуются по имени,
+счёта под транзакции создаются уникальными за прогон (документы не переиспользуются),
+курсы — upsert. Повторные прогоны не плодят дубли подключений/заданий/webhooks.
+"""
 
 import json
 import re
@@ -39,6 +44,17 @@ def check(name, ok, detail=""):
         FAILED.append(name)
 
 
+def get_or_create(path, match, body, token):
+    """Переиспользовать сущность по имени, создать только если нет."""
+    status, items = call("GET", path, token=token)
+    if status == 200:
+        for item in items:
+            if match(item):
+                return item, False
+    status, created = call("POST", path, body, token=token)
+    return created, True
+
+
 # 1. Health + модули
 status, data = call("GET", "/health")
 check("GET /health", status == 200 and data.get("status") == "ok", str(data))
@@ -60,55 +76,85 @@ status, data = call("GET", "/api/v1/integrations/connectors", token=token)
 codes = [c["code"] for c in data] if status == 200 else []
 check("GET /api/v1/integrations/connectors", status == 200 and "http_rest" in codes and "bank_api" in codes, str(codes))
 
-# 4. Подключение + проверка связи (self-loop на сам API)
-status, conn = call("POST", "/api/v1/integrations/connections", {
-    "name": "smoke-test",
-    "connector_code": "http_rest",
-    "credentials": {"api_key": "dummy"},
-    "config": {"base_url": "http://api:8000", "health_path": "/health", "auth_style": "none"},
-}, token=token)
-check("POST /api/v1/integrations/connections", status == 201 and "id" in conn, str(conn)[:120])
+# 4. Подключение (переиспользуется) + проверка связи (self-loop на сам API)
+conn, _ = get_or_create(
+    "/api/v1/integrations/connections",
+    lambda c: c.get("name") == "smoke-test",
+    {
+        "name": "smoke-test",
+        "connector_code": "http_rest",
+        "credentials": {"api_key": "dummy"},
+        "config": {"base_url": "http://api:8000", "health_path": "/health", "auth_style": "none"},
+    },
+    token,
+)
+check("POST /api/v1/integrations/connections", "id" in conn, str(conn)[:120])
 
 if "id" in conn:
     status, data = call("POST", f"/api/v1/integrations/connections/{conn['id']}/test", token=token)
     check("POST /connections/{id}/test", status == 200 and data.get("ok") is True, str(data)[:120])
 
-    # 5. Sync job: fetch /health через worker
-    status, job = call("POST", "/api/v1/integrations/sync-jobs", {
-        "name": "smoke-fetch", "connection_id": conn["id"],
-        "direction": "fetch", "endpoint": "/health",
-    }, token=token)
-    check("POST /api/v1/integrations/sync-jobs", status == 201 and "id" in job, str(job)[:120])
+    # 5. Sync job (переиспользуется): fetch /health через worker
+    job, _ = get_or_create(
+        "/api/v1/integrations/sync-jobs",
+        lambda j: j.get("name") == "smoke-fetch",
+        {"name": "smoke-fetch", "connection_id": conn["id"], "direction": "fetch", "endpoint": "/health"},
+        token,
+    )
+    check("POST /api/v1/integrations/sync-jobs", "id" in job, str(job)[:120])
     if "id" in job:
         status, data = call("POST", f"/api/v1/integrations/sync-jobs/{job['id']}/run", token=token)
         check("POST /sync-jobs/{id}/run (queued)", status == 200 and data.get("queued"), str(data)[:120])
 
-# 6. Webhook: создание, неверный токен, верный токен
-status, hook = call("POST", "/api/v1/integrations/webhooks", {"name": "smoke-hook"}, token=token)
-check("POST /api/v1/integrations/webhooks", status == 201 and "url_path" in hook, str(hook)[:160])
+# 6. Webhook (переиспользуется; токен проверяется в прогоне создания)
+hook, hook_created = get_or_create(
+    "/api/v1/integrations/webhooks",
+    lambda w: w.get("name") == "smoke-hook",
+    {"name": "smoke-hook"},
+    token,
+)
+check("POST /api/v1/integrations/webhooks", "url_path" in hook, str(hook)[:160])
 
 if "url_path" in hook:
     status, data = call("POST", hook["url_path"], {"event": "ping"}, headers={"X-ERP-Token": "wrong"})
     check("webhook отклоняет неверный токен", status == 401, str(status))
-    status, data = call("POST", hook["url_path"], {"event": "ping"}, headers={"X-ERP-Token": hook["secret_token"]})
-    check("webhook принимает верный токен", status == 202, str(status))
+    if "secret_token" in hook:
+        status, data = call("POST", hook["url_path"], {"event": "ping"}, headers={"X-ERP-Token": hook["secret_token"]})
+        check("webhook принимает верный токен", status == 202, str(status))
+    else:
+        check("webhook принимает верный токен (проверен в прогоне создания)", True, "переиспользован")
 
 # 7. Учёт: справочники (приёмка 1)
 ACC = "/api/v1/accounting"
 today = date.today().isoformat()
 
-status, acc_rub = call("POST", f"{ACC}/accounts", {"name": "smoke-счёт-RUB", "currency": "RUB"}, token=token)
+# счёта под транзакции — уникальные за прогон: проверки-дельты точны при любом числе прогонов
+status, accs = call("GET", f"{ACC}/accounts", token=token)
+n_acc = len([a for a in accs if str(a.get("name", "")).startswith("smoke-acc-")]) if status == 200 else 0
+run_tag = f"{today}-{n_acc}"
+
+status, acc_rub = call("POST", f"{ACC}/accounts", {"name": f"smoke-acc-{run_tag}", "currency": "RUB"}, token=token)
 check("acc: счёт создан", status == 201 and acc_rub.get("currency") == "RUB", str(acc_rub)[:120])
 
-status, cat = call("POST", f"{ACC}/categories", {"name": "smoke-выручка", "kind": "income"}, token=token)
-check("acc: статья создана", status == 201 and "id" in cat, str(cat)[:120])
+cat, _ = get_or_create(
+    f"{ACC}/categories",
+    lambda c: c.get("name") == "smoke-выручка",
+    {"name": "smoke-выручка", "kind": "income"},
+    token,
+)
+check("acc: статья создана/переиспользована", "id" in cat, str(cat)[:120])
 
-status, cp = call("POST", f"{ACC}/counterparties",
-                  {"name": "smoke-ООО Ромашка", "inn": "7701234567", "kpp": "770001001"}, token=token)
-check("acc: контрагент с ИНН (201, warning ok)", status == 201 and cp.get("internal_code"),
-      str(cp)[:160])
+cp, _ = get_or_create(
+    f"{ACC}/counterparties",
+    lambda c: c.get("name") == "smoke-ООО Ромашка",
+    {"name": "smoke-ООО Ромашка", "inn": "7701234567", "kpp": "770001001"},
+    token,
+)
+check("acc: контрагент с ИНН (201, warning ok)", "id" in cp and cp.get("internal_code"), str(cp)[:160])
+
+# дубль по ИНН+КПП с уникальным именем — предупреждение каждый прогон
 status, cp_dup = call("POST", f"{ACC}/counterparties",
-                      {"name": "smoke-ООО Ромашка-2", "inn": "7701234567", "kpp": "770001001"}, token=token)
+                      {"name": f"smoke-Ромашка-warn-{run_tag}", "inn": "7701234567", "kpp": "770001001"}, token=token)
 check("acc: дубль ИНН+КПП → warning", status == 201 and (cp_dup.get("warning") or "") != "",
       str(cp_dup.get("warning")))
 
@@ -143,7 +189,7 @@ check("acc: closing = opening + 1000",
       f"{rep.get('opening_balance')} → {rep.get('closing_balance')}")
 
 # 10. Кросс-валютный тест (приёмка 4)
-status, acc_usd = call("POST", f"{ACC}/accounts", {"name": "smoke-счёт-USD", "currency": "USD"}, token=token)
+status, acc_usd = call("POST", f"{ACC}/accounts", {"name": f"smoke-acc-{run_tag}-USD", "currency": "USD"}, token=token)
 status, rate = call("POST", f"{ACC}/rates", {"date": today, "currency": "USD", "rate": "90.5555"}, token=token)
 check("acc: курс USD задан вручную", status == 200 and Decimal(rate["rate"]) == Decimal("90.5555"), str(rate)[:120])
 

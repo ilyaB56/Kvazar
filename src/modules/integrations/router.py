@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.core import events
-from src.core.auth import CurrentUser, require_role
+from src.core.auth import AdminUser, CurrentUser, WriteUser
 from src.db import get_db
 from src.modules.integrations import models as m
 from src.modules.integrations.connectors.builtin import registry as connector_registry
@@ -90,9 +90,8 @@ def list_connections(user: CurrentUser, db: Session = Depends(get_db)):
     return db.scalars(select(m.Connection)).all()
 
 
-@router.post("/connections", response_model=ConnectionOut, status_code=201,
-             dependencies=[Depends(require_role("admin"))])
-def create_connection(body: ConnectionIn, db: Session = Depends(get_db)):
+@router.post("/connections", response_model=ConnectionOut, status_code=201)
+def create_connection(body: ConnectionIn, admin: AdminUser, db: Session = Depends(get_db)):
     if not any(c["code"] == body.connector_code for c in connector_registry.available()):
         raise HTTPException(400, f"Unknown connector: {body.connector_code}")
     connection = m.Connection(
@@ -108,7 +107,7 @@ def create_connection(body: ConnectionIn, db: Session = Depends(get_db)):
 
 
 @router.post("/connections/{connection_id}/test")
-def test_connection(connection_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+def test_connection(connection_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
     connection = db.get(m.Connection, connection_id)
     if connection is None:
         raise HTTPException(404, "Connection not found")
@@ -139,7 +138,7 @@ def list_webhooks(user: CurrentUser, db: Session = Depends(get_db)):
 
 
 @router.post("/webhooks", status_code=201)
-def create_webhook(body: WebhookIn, user: CurrentUser, db: Session = Depends(get_db)):
+def create_webhook(body: WebhookIn, user: WriteUser, db: Session = Depends(get_db)):
     endpoint = m.WebhookEndpoint(
         name=body.name,
         secret_token=secrets.token_urlsafe(32),
@@ -184,7 +183,7 @@ async def receive_hook(
 # ---------- Mappings ----------
 
 @router.post("/mappings", status_code=201)
-def create_mapping(body: MappingIn, user: CurrentUser, db: Session = Depends(get_db)):
+def create_mapping(body: MappingIn, user: WriteUser, db: Session = Depends(get_db)):
     mapping = m.FieldMapping(**body.model_dump())
     db.add(mapping)
     db.commit()
@@ -200,7 +199,7 @@ def list_sync_jobs(user: CurrentUser, db: Session = Depends(get_db)):
 
 
 @router.post("/sync-jobs", status_code=201)
-def create_sync_job(body: SyncJobIn, user: CurrentUser, db: Session = Depends(get_db)):
+def create_sync_job(body: SyncJobIn, user: WriteUser, db: Session = Depends(get_db)):
     if db.get(m.Connection, body.connection_id) is None:
         raise HTTPException(400, "Unknown connection")
     job = m.SyncJob(**body.model_dump())
@@ -211,7 +210,7 @@ def create_sync_job(body: SyncJobIn, user: CurrentUser, db: Session = Depends(ge
 
 
 @router.post("/sync-jobs/{job_id}/run")
-def run_sync_job(job_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+def run_sync_job(job_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
     from src.modules.integrations.tasks import run_job
 
     run_job.delay(str(job_id))
@@ -232,7 +231,7 @@ def list_runs(sync_job_id: uuid.UUID, user: CurrentUser, db: Session = Depends(g
 # ---------- Recipes (no-code конструктор) ----------
 
 @router.post("/recipes", status_code=201)
-def create_recipe(body: RecipeIn, user: CurrentUser, db: Session = Depends(get_db)):
+def create_recipe(body: RecipeIn, user: WriteUser, db: Session = Depends(get_db)):
     recipe = m.Recipe(**body.model_dump())
     db.add(recipe)
     db.commit()

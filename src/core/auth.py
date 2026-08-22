@@ -87,3 +87,8 @@ def require_role(*roles: str):
         return user
 
     return checker
+
+
+# Mutating-эндпоинты: минимум user (readonly — только чтение, security-plan P0-1)
+WriteUser = Annotated[User, Depends(require_role("admin", "user"))]
+AdminUser = Annotated[User, Depends(require_role("admin"))]

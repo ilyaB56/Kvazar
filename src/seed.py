@@ -2,6 +2,7 @@
 
 from sqlalchemy import select
 
+from src.config import get_settings
 from src.core.auth import hash_password
 from src.core.models import ModuleRegistry, User
 from src.core.plugins import MANIFESTS
@@ -14,7 +15,7 @@ def run() -> None:
         if db.scalar(select(User).where(User.email == "admin@example.com")) is None:
             db.add(User(
                 email="admin@example.com",
-                password_hash=hash_password("admin12345"),
+                password_hash=hash_password(get_settings().seed_admin_password),
                 full_name="Administrator",
                 role="admin",
             ))
@@ -28,7 +29,8 @@ def run() -> None:
             else:
                 row.version = m.version
         db.commit()
-        print("seed ok: admin@example.com / admin12345 (смените пароль!)")
+        print("seed ok: admin@example.com "
+              "(пароль: SEED_ADMIN_PASSWORD, дев-дефолт admin12345 — смените!)")
     finally:
         db.close()
 

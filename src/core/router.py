@@ -11,12 +11,13 @@ from sqlalchemy.orm import Session
 
 from src.core import events
 from src.core.auth import (
+    AdminUser,
     CurrentUser,
+    WriteUser,
     create_access_token,
     create_refresh_token,
     decode_token,
     hash_password,
-    require_role,
     verify_password,
 )
 from src.core.models import AuditEvent, Company, Contact, EventOutbox, Setting, User
@@ -120,14 +121,13 @@ def me(user: CurrentUser):
 
 # ---------- Users (admin) ----------
 
-@router.get("/users", response_model=list[UserOut], dependencies=[Depends(require_role("admin"))])
-def list_users(db: Session = Depends(get_db)):
+@router.get("/users", response_model=list[UserOut])
+def list_users(admin: AdminUser, db: Session = Depends(get_db)):
     return db.scalars(select(User)).all()
 
 
-@router.post("/users", response_model=UserOut, status_code=201,
-             dependencies=[Depends(require_role("admin"))])
-def create_user(body: UserCreate, db: Session = Depends(get_db)):
+@router.post("/users", response_model=UserOut, status_code=201)
+def create_user(body: UserCreate, admin: AdminUser, db: Session = Depends(get_db)):
     if db.scalar(select(User).where(User.email == body.email)):
         raise HTTPException(409, "Email already exists")
     user = User(
@@ -151,7 +151,7 @@ def list_companies(user: CurrentUser, db: Session = Depends(get_db)):
 
 
 @router.post("/companies", status_code=201)
-def create_company(body: CompanyIn, user: CurrentUser, db: Session = Depends(get_db)):
+def create_company(body: CompanyIn, user: WriteUser, db: Session = Depends(get_db)):
     company = Company(name=body.name, inn=body.inn)
     db.add(company)
     events.publish(db, "company.created", {"name": body.name, "inn": body.inn})
@@ -166,7 +166,7 @@ def list_contacts(user: CurrentUser, db: Session = Depends(get_db)):
 
 
 @router.post("/contacts", status_code=201)
-def create_contact(body: ContactIn, user: CurrentUser, db: Session = Depends(get_db)):
+def create_contact(body: ContactIn, user: WriteUser, db: Session = Depends(get_db)):
     contact = Contact(**body.model_dump())
     db.add(contact)
     events.publish(db, "contact.created", body.model_dump(mode="json"))
@@ -182,8 +182,8 @@ def list_settings(user: CurrentUser, db: Session = Depends(get_db)):
     return db.scalars(select(Setting)).all()
 
 
-@router.put("/settings", dependencies=[Depends(require_role("admin"))])
-def upsert_setting(body: SettingIn, db: Session = Depends(get_db)):
+@router.put("/settings")
+def upsert_setting(body: SettingIn, admin: AdminUser, db: Session = Depends(get_db)):
     setting = db.scalar(select(Setting).where(Setting.key == body.key))
     if setting:
         setting.value = body.value
@@ -196,8 +196,9 @@ def upsert_setting(body: SettingIn, db: Session = Depends(get_db)):
 
 # ---------- Outbox (админ) ----------
 
-@router.get("/events/outbox", dependencies=[Depends(require_role("admin"))])
-def list_outbox(event_name: str = "", limit: int = 50, db: Session = Depends(get_db)):
+@router.get("/events/outbox")
+def list_outbox(admin: AdminUser, event_name: str = "", limit: int = 50,
+                db: Session = Depends(get_db)):
     """Последние события шины из outbox (для отладки и smoke-проверок)."""
     query = select(EventOutbox).order_by(EventOutbox.id.desc()).limit(min(max(limit, 1), 500))
     if event_name:

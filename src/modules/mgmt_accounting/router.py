@@ -13,7 +13,7 @@ from pydantic import BaseModel, BeforeValidator, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from src.core.auth import CurrentUser, require_role
+from src.core.auth import AdminUser, CurrentUser, WriteUser
 from src.core.models import RecordVersion
 from src.db import get_db
 from src.modules.mgmt_accounting import models as m
@@ -206,7 +206,7 @@ def list_accounts(user: CurrentUser, db: Session = Depends(get_db)):
 
 
 @router.post("/accounts", response_model=AccountOut, status_code=201)
-def create_account(body: AccountIn, user: CurrentUser, db: Session = Depends(get_db)):
+def create_account(body: AccountIn, user: WriteUser, db: Session = Depends(get_db)):
     account = m.Account(name=body.name, currency=body.currency, company_id=body.company_id)
     db.add(account)
     db.commit()
@@ -216,7 +216,7 @@ def create_account(body: AccountIn, user: CurrentUser, db: Session = Depends(get
 
 @router.patch("/accounts/{account_id}", response_model=AccountOut)
 def patch_account(
-    account_id: uuid.UUID, body: AccountPatch, user: CurrentUser, db: Session = Depends(get_db)
+    account_id: uuid.UUID, body: AccountPatch, user: WriteUser, db: Session = Depends(get_db)
 ):
     account = db.get(m.Account, account_id)
     if account is None:
@@ -234,7 +234,7 @@ def list_categories(user: CurrentUser, db: Session = Depends(get_db)):
 
 
 @router.post("/categories", response_model=CategoryOut, status_code=201)
-def create_category(body: CategoryIn, user: CurrentUser, db: Session = Depends(get_db)):
+def create_category(body: CategoryIn, user: WriteUser, db: Session = Depends(get_db)):
     if body.parent_id is not None and db.get(m.Category, body.parent_id) is None:
         raise HTTPException(422, f"Unknown parent category: {body.parent_id}")
     category = m.Category(**body.model_dump())
@@ -250,7 +250,7 @@ def list_counterparties(user: CurrentUser, db: Session = Depends(get_db)):
 
 
 @router.post("/counterparties", response_model=CounterpartyOut, status_code=201)
-def create_counterparty(body: CounterpartyIn, user: CurrentUser, db: Session = Depends(get_db)):
+def create_counterparty(body: CounterpartyIn, user: WriteUser, db: Session = Depends(get_db)):
     with svc():
         counterparty, warning = service.create_counterparty(db, body.model_dump())
     db.commit()
@@ -298,7 +298,7 @@ def _get_transaction(db: Session, txn_id: uuid.UUID) -> m.Transaction:
 
 
 @router.post("/transactions", response_model=TransactionOut, status_code=201)
-def create_transaction(body: TransactionIn, user: CurrentUser, db: Session = Depends(get_db)):
+def create_transaction(body: TransactionIn, user: WriteUser, db: Session = Depends(get_db)):
     with svc():
         txn = service.create_transaction(
             db, user_id=user.id, data=body.model_dump(exclude={"post_immediately"})
@@ -312,7 +312,7 @@ def create_transaction(body: TransactionIn, user: CurrentUser, db: Session = Dep
 
 @router.patch("/transactions/{txn_id}", response_model=TransactionOut)
 def patch_transaction(
-    txn_id: uuid.UUID, body: TransactionPatch, user: CurrentUser, db: Session = Depends(get_db)
+    txn_id: uuid.UUID, body: TransactionPatch, user: WriteUser, db: Session = Depends(get_db)
 ):
     txn = _get_transaction(db, txn_id)
     with svc():
@@ -325,7 +325,7 @@ def patch_transaction(
 
 
 @router.delete("/transactions/{txn_id}")
-def delete_draft(txn_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+def delete_draft(txn_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
     """Физическое удаление — единственное, и только для черновиков."""
     txn = _get_transaction(db, txn_id)
     if txn.status != "draft":
@@ -336,7 +336,7 @@ def delete_draft(txn_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get
 
 
 @router.post("/transactions/{txn_id}/post", response_model=TransactionOut)
-def post_transaction(txn_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+def post_transaction(txn_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
     txn = _get_transaction(db, txn_id)
     with svc():
         service.post_transaction(db, txn)
@@ -347,7 +347,7 @@ def post_transaction(txn_id: uuid.UUID, user: CurrentUser, db: Session = Depends
 
 @router.post("/transactions/{txn_id}/storno", response_model=TransactionOut)
 def storno_transaction(
-    txn_id: uuid.UUID, body: ReasonIn, user: CurrentUser, db: Session = Depends(get_db)
+    txn_id: uuid.UUID, body: ReasonIn, user: WriteUser, db: Session = Depends(get_db)
 ):
     txn = _get_transaction(db, txn_id)
     with svc():
@@ -357,31 +357,23 @@ def storno_transaction(
     return storno
 
 
-@router.post(
-    "/transactions/{txn_id}/delete-mark",
-    response_model=TransactionOut,
-    dependencies=[Depends(require_role("admin"))],
-)
-def delete_mark(txn_id: uuid.UUID, body: ReasonIn, user: CurrentUser, db: Session = Depends(get_db)):
+@router.post("/transactions/{txn_id}/delete-mark", response_model=TransactionOut)
+def delete_mark(txn_id: uuid.UUID, body: ReasonIn, admin: AdminUser, db: Session = Depends(get_db)):
     txn = _get_transaction(db, txn_id)
     with svc():
-        service.mark_deleted(db, txn, user_id=user.id, reason=body.reason)
+        service.mark_deleted(db, txn, user_id=admin.id, reason=body.reason)
     db.commit()
     db.refresh(txn)
     return txn
 
 
-@router.post(
-    "/transactions/{txn_id}/delete-unmark",
-    response_model=TransactionOut,
-    dependencies=[Depends(require_role("admin"))],
-)
+@router.post("/transactions/{txn_id}/delete-unmark", response_model=TransactionOut)
 def delete_unmark(
-    txn_id: uuid.UUID, body: OptionalReasonIn, user: CurrentUser, db: Session = Depends(get_db)
+    txn_id: uuid.UUID, body: OptionalReasonIn, admin: AdminUser, db: Session = Depends(get_db)
 ):
     txn = _get_transaction(db, txn_id)
     with svc():
-        service.unmark_deleted(db, txn, user_id=user.id, reason=body.reason)
+        service.unmark_deleted(db, txn, user_id=admin.id, reason=body.reason)
     db.commit()
     db.refresh(txn)
     return txn
@@ -422,8 +414,8 @@ def list_rates(
     return db.scalars(query).all()
 
 
-@router.post("/rates", response_model=RateOut, dependencies=[Depends(require_role("admin"))])
-def upsert_rate(body: RateIn, user: CurrentUser, db: Session = Depends(get_db)):
+@router.post("/rates", response_model=RateOut)
+def upsert_rate(body: RateIn, admin: AdminUser, db: Session = Depends(get_db)):
     rate = service.upsert_rate(db, body.date, body.currency, body.rate)
     db.commit()
     db.refresh(rate)
@@ -442,43 +434,35 @@ def _check_month(year: int, month: int) -> None:
         raise HTTPException(422, "month must be between 1 and 12")
 
 
-@router.post(
-    "/periods/{year}/{month}/close",
-    response_model=PeriodOut,
-    dependencies=[Depends(require_role("admin"))],
-)
+@router.post("/periods/{year}/{month}/close", response_model=PeriodOut)
 def close_period(
     year: int,
     month: int,
-    user: CurrentUser,
+    admin: AdminUser,
     body: OptionalReasonIn | None = None,
     db: Session = Depends(get_db),
 ):
     _check_month(year, month)
     reason = body.reason if body is not None else None
     with svc():
-        period = service.close_period(db, year, month, user_id=user.id, reason=reason)
+        period = service.close_period(db, year, month, user_id=admin.id, reason=reason)
     db.commit()
     db.refresh(period)
     return period
 
 
-@router.post(
-    "/periods/{year}/{month}/reopen",
-    response_model=PeriodOut,
-    dependencies=[Depends(require_role("admin"))],
-)
+@router.post("/periods/{year}/{month}/reopen", response_model=PeriodOut)
 def reopen_period(
     year: int,
     month: int,
-    user: CurrentUser,
+    admin: AdminUser,
     body: OptionalReasonIn | None = None,
     db: Session = Depends(get_db),
 ):
     _check_month(year, month)
     reason = body.reason if body is not None else None
     with svc():
-        period = service.reopen_period(db, year, month, user_id=user.id, reason=reason)
+        period = service.reopen_period(db, year, month, user_id=admin.id, reason=reason)
     db.commit()
     db.refresh(period)
     return period

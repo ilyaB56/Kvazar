@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60
     refresh_expire_days: int = 14
 
+    # Пароль сид-админа. Дев-контур — дефолт; прод обязан задать SEED_ADMIN_PASSWORD
+    # (security-plan P0-5 / реестр долгов №3).
+    seed_admin_password: str = "admin12345"
+
     # Ключ для шифрования секретов подключений (Fernet). В проде — из секрет-хранилища.
     secrets_key: str = "change-me-fernet-key"
 
