@@ -9,3 +9,6 @@ __pycache__/
 
 frontend/node_modules/
 frontend/dist/
+
+deploy/certs/*
+!deploy/certs/.gitkeep

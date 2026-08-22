@@ -37,7 +37,8 @@ services:
       # прод обязан задать собственный пароль сид-админа (security-plan P0-5)
       # SEED_ADMIN_PASSWORD: change-me-in-production
     ports:
-      - "8000:8000"
+      # наружу API не публикуем — только с localhost и через web-прокси (security-p0 п.5)
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -66,6 +67,12 @@ services:
     build: ./frontend
     ports:
       - "8080:80"
+      - "443:443"
+    environment:
+      # WEB_TLS=1 + сертификаты в ./deploy/certs (tls.crt/tls.key) — HTTPS-режим
+      WEB_TLS: ${WEB_TLS:-0}
+    volumes:
+      - ./deploy/certs:/etc/nginx/certs:ro
     depends_on:
       - api
 

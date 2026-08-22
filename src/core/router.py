@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -20,7 +21,9 @@ from src.core.auth import (
     hash_password,
     verify_password,
 )
-from src.core.models import AuditEvent, Company, Contact, EventOutbox, Setting, User
+from src.core.models import AuditEvent, Company, Contact, EventOutbox, RevokedToken, Setting, User
+from src.core.passwords import validate_password
+from src.core.rate_limit import check_login_rate_limit, reset_login_rate_limit
 from src.db import get_db
 
 router = APIRouter(tags=["core"])
@@ -43,6 +46,11 @@ class RefreshIn(BaseModel):
     refresh_token: str
 
 
+class ChangePasswordIn(BaseModel):
+    old_password: str
+    new_password: str
+
+
 class UserOut(BaseModel):
     id: uuid.UUID
     email: str
@@ -58,6 +66,14 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=8)
     full_name: str = ""
     role: str = "user"
+
+    @field_validator("password")
+    @classmethod
+    def check_password_policy(cls, value: str) -> str:
+        violations = validate_password(value)
+        if violations:
+            raise ValueError("; ".join(violations))
+        return value
 
 
 class CompanyIn(BaseModel):
@@ -81,17 +97,19 @@ class SettingIn(BaseModel):
 # ---------- Auth ----------
 
 @router.post("/auth/login", response_model=TokenOut)
-def login(body: LoginIn, db: Session = Depends(get_db)):
+def login(request: Request, body: LoginIn, db: Session = Depends(get_db)):
+    check_login_rate_limit(request)
     user = db.scalar(select(User).where(User.email == body.email))
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "Bad credentials")
+    reset_login_rate_limit(request)
     db.add(
         AuditEvent(user_id=user.id, action="login", entity_type="user", entity_id=str(user.id))
     )
     db.commit()
     return TokenOut(
-        access_token=create_access_token(user.id, user.role),
-        refresh_token=create_refresh_token(user.id),
+        access_token=create_access_token(user.id, user.role, ver=user.token_version),
+        refresh_token=create_refresh_token(user.id, ver=user.token_version),
     )
 
 
@@ -105,13 +123,62 @@ def refresh(body: RefreshIn, db: Session = Depends(get_db)):
         raise HTTPException(401, "Invalid refresh token") from exc
     if payload.get("type") != "refresh":
         raise HTTPException(401, "Wrong token type")
+    if payload.get("jti") and db.get(RevokedToken, uuid.UUID(payload["jti"])) is not None:
+        raise HTTPException(401, "Token revoked")
     user = db.get(User, payload["sub"])
     if user is None or not user.is_active:
         raise HTTPException(401, "User not found")
+    if payload.get("ver", 0) != user.token_version:
+        raise HTTPException(401, "Token revoked")
     return TokenOut(
-        access_token=create_access_token(user.id, user.role),
-        refresh_token=create_refresh_token(user.id),
+        access_token=create_access_token(user.id, user.role, ver=user.token_version),
+        refresh_token=create_refresh_token(user.id, ver=user.token_version),
     )
+
+
+@router.post("/auth/logout")
+def logout(body: RefreshIn, db: Session = Depends(get_db)):
+    """Отзыв refresh-токена (jti → blacklist до его exp). Access-токен живёт
+    свои минуты и умирает сам — задокументировано в README."""
+    from jwt import PyJWTError
+
+    try:
+        payload = decode_token(body.refresh_token)
+    except PyJWTError as exc:
+        raise HTTPException(401, "Invalid refresh token") from exc
+    if payload.get("type") != "refresh":
+        raise HTTPException(401, "Wrong token type")
+    user = db.get(User, payload["sub"])
+    if user is None or payload.get("ver", 0) != user.token_version:
+        raise HTTPException(401, "Token revoked")
+    jti = payload.get("jti")
+    if jti:
+        expires_at = datetime.fromtimestamp(payload["exp"], tz=UTC)
+        if db.get(RevokedToken, uuid.UUID(jti)) is None:
+            db.add(RevokedToken(
+                jti=uuid.UUID(jti), user_id=user.id, expires_at=expires_at
+            ))
+    db.add(AuditEvent(user_id=user.id, action="logout", entity_type="user", entity_id=str(user.id)))
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/auth/change-password")
+def change_password(body: ChangePasswordIn, user: CurrentUser, db: Session = Depends(get_db)):
+    """Смена своего пароля: token_version += 1 — все сессии пользователя умирают,
+    требуется повторный вход. Аудит password.changed."""
+    if not verify_password(body.old_password, user.password_hash):
+        raise HTTPException(403, "Wrong old password")
+    violations = validate_password(body.new_password)
+    if violations:
+        raise HTTPException(422, "; ".join(violations))
+    user.password_hash = hash_password(body.new_password)
+    user.token_version += 1
+    db.add(AuditEvent(
+        user_id=user.id, action="password.changed", entity_type="user", entity_id=str(user.id)
+    ))
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/auth/me", response_model=UserOut)
@@ -209,6 +276,27 @@ def list_outbox(admin: AdminUser, event_name: str = "", limit: int = 50,
             "event_name": row.event_name,
             "payload": row.payload,
             "processed": row.processed,
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in db.scalars(query).all()
+    ]
+
+
+@router.get("/events/log")
+def events_log(admin: AdminUser, action: str = "", limit: int = 50,
+               db: Session = Depends(get_db)):
+    """Журнал аудита events_log: кто, что, когда (первый шаг к экрану «Журналы»)."""
+    query = select(AuditEvent).order_by(AuditEvent.id.desc()).limit(min(max(limit, 1), 500))
+    if action:
+        query = query.where(AuditEvent.action == action)
+    return [
+        {
+            "id": row.id,
+            "user_id": str(row.user_id) if row.user_id else None,
+            "action": row.action,
+            "entity_type": row.entity_type,
+            "entity_id": row.entity_id,
+            "payload": row.payload,
             "created_at": row.created_at.isoformat(),
         }
         for row in db.scalars(query).all()

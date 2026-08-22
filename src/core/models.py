@@ -28,6 +28,8 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(255), default="")
     role: Mapped[str] = mapped_column(String(50), default="user")  # admin | user | readonly
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Версия токенов: += 1 при смене пароля — все ранее выданные токены умирают
+    token_version: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -133,3 +135,16 @@ class RecordVersion(Base):
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     diff: Mapped[dict] = mapped_column(JSONB, default=dict)  # {поле: {old, new}}
     reason: Mapped[str | None] = mapped_column(Text)
+
+
+class RevokedToken(Base):
+    """revoked_tokens — blacklist отозванных refresh-токенов (по jti) до их exp."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "revoked_tokens"
+
+    jti: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.users.id"), index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

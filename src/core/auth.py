@@ -30,23 +30,27 @@ def verify_password(password: str, password_hash: str) -> bool:
     return pwd_context.verify(password, password_hash)
 
 
-def create_access_token(user_id: uuid.UUID, role: str) -> str:
+def create_access_token(user_id: uuid.UUID, role: str, ver: int = 0) -> str:
     now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
         "role": role,
         "type": "access",
+        "jti": str(uuid.uuid4()),
+        "ver": ver,
         "exp": now + timedelta(minutes=_settings.jwt_expire_minutes),
         "iat": now,
     }
     return jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
 
 
-def create_refresh_token(user_id: uuid.UUID) -> str:
+def create_refresh_token(user_id: uuid.UUID, ver: int = 0) -> str:
     now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
         "type": "refresh",
+        "jti": str(uuid.uuid4()),
+        "ver": ver,
         "exp": now + timedelta(days=_settings.refresh_expire_days),
         "iat": now,
     }
@@ -72,6 +76,10 @@ def get_current_user(
     user = db.get(User, payload["sub"])
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found or disabled")
+    # security-p0 п.3: ver в токене должен совпадать с users.token_version
+    # (смена пароля инвалидирует все ранее выданные токены)
+    if payload.get("ver", 0) != user.token_version:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token revoked")
     return user
 
 
@@ -89,6 +97,10 @@ def require_role(*roles: str):
     return checker
 
 
-# Mutating-эндпоинты: минимум user (readonly — только чтение, security-plan P0-1)
-WriteUser = Annotated[User, Depends(require_role("admin", "user"))]
-AdminUser = Annotated[User, Depends(require_role("admin"))]
+# Спека security-p0, п.1: mutating-эндпоинты — минимум user (readonly только GET);
+# конфигурация интеграций — admin. Аннотации ниже — сахар над этими зависимостями.
+require_write = require_role("admin", "user")
+require_admin = require_role("admin")
+
+WriteUser = Annotated[User, Depends(require_write)]
+AdminUser = Annotated[User, Depends(require_admin)]

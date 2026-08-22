@@ -8,6 +8,7 @@
 import json
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import date
@@ -263,6 +264,109 @@ status, hist = call("GET", f"{ACC}/history/acc.transaction/{usd_txn['id']}", tok
 check("acc: версия в /history",
       status == 200 and len(hist) >= 1 and hist[0]["diff"].get("description", {}).get("new") == "smoke: правка проведённого",
       str(hist)[:200])
+
+# 15. Роли (security-p0 п.1): readonly — только чтение, user — запись
+def ensure_user(email, password, role):
+    call("POST", "/api/v1/users", {"email": email, "password": password, "role": role}, token=token)
+    status, data = call("POST", "/api/v1/auth/login", {"email": email, "password": password})
+    return data.get("access_token", "")
+
+ro_token = ensure_user("smoke-readonly@erp.local", "Readonly1Pass", "readonly")
+u_token = ensure_user("smoke-user@erp.local", "SmokeUser1Pass", "user")
+
+status, data = call("GET", f"{ACC}/accounts", token=ro_token)
+check("sec: readonly читает", status == 200, str(status))
+status, data = call("POST", f"{ACC}/transactions", {
+    "kind": "income", "operated_at": today, "amount": "1", "currency": "RUB",
+    "account_id": acc_rub["id"],
+}, token=ro_token)
+check("sec: readonly не пишет (403)", status == 403, str(status))
+
+status, u_draft = call("POST", f"{ACC}/transactions", {
+    "kind": "income", "operated_at": today, "amount": "1", "currency": "RUB",
+    "account_id": acc_rub["id"],
+}, token=u_token)
+check("sec: user пишет (201)", status == 201, str(status))
+if "id" in u_draft:
+    call("DELETE", f"{ACC}/transactions/{u_draft['id']}", token=u_token)  # черновик убираем
+
+status, data = call("POST", "/api/v1/integrations/webhooks", {"name": "x"}, token=u_token)
+check("sec: integrations-мутации только admin (403 для user)", status == 403, str(status))
+
+# 16. Парольная политика (security-p0 п.4)
+status, data = call("POST", "/api/v1/users", {"email": "weak1@erp.local", "password": "12345678"}, token=token)
+check("sec: слабый пароль 12345678 → 422", status == 422 and "password" in json.dumps(data), str(data)[:160])
+status, data = call("POST", "/api/v1/users", {"email": "weak2@erp.local", "password": "password1"}, token=token)
+check("sec: частый пароль password1 → 422", status == 422 and "password" in json.dumps(data), str(data)[:160])
+
+# 17. Logout отзывает refresh (security-p0 п.3)
+status, sess = call("POST", "/api/v1/auth/login", {"email": "smoke-user@erp.local", "password": "SmokeUser1Pass"})
+status, out = call("POST", "/api/v1/auth/logout", {"refresh_token": sess.get("refresh_token", "")})
+check("sec: logout ok", status == 200 and out.get("ok") is True, str(out)[:120])
+status, data = call("POST", "/api/v1/auth/refresh", {"refresh_token": sess.get("refresh_token", "")})
+check("sec: refresh после logout → 401", status == 401, str(status))
+
+# 18. Смена пароля убивает сессии (security-p0 п.3); аудит password.changed
+PWD_EMAIL, PWD_A, PWD_B = "smoke-pwd@erp.local", "PwdOld123", "PwdNew123"
+current = None
+for candidate in (PWD_A, PWD_B):
+    status, data = call("POST", "/api/v1/auth/login", {"email": PWD_EMAIL, "password": candidate})
+    if status == 200:
+        current = candidate
+        break
+if current is None:
+    call("POST", "/api/v1/users", {"email": PWD_EMAIL, "password": PWD_A}, token=token)
+    current = PWD_A
+new = PWD_B if current == PWD_A else PWD_A
+
+status, sess = call("POST", "/api/v1/auth/login", {"email": PWD_EMAIL, "password": current})
+old_headers = {"Authorization": "Bearer " + sess.get("access_token", "")}
+status, data = call("POST", "/api/v1/auth/change-password",
+                    {"old_password": "WrongOld1", "new_password": new}, headers=old_headers)
+check("sec: неверный старый пароль → 403", status == 403, str(status))
+status, data = call("POST", "/api/v1/auth/change-password",
+                    {"old_password": current, "new_password": "12345678"}, headers=old_headers)
+check("sec: слабый новый → 422", status == 422, str(status))
+status, data = call("POST", "/api/v1/auth/change-password",
+                    {"old_password": current, "new_password": new}, headers=old_headers)
+check("sec: смена пароля ok", status == 200 and data.get("ok") is True, str(data)[:120])
+
+status, data = call("GET", "/api/v1/auth/me", headers=old_headers)
+check("sec: старый access мёртв (401)", status == 401, str(status))
+status, data = call("POST", "/api/v1/auth/refresh", {"refresh_token": sess.get("refresh_token", "")})
+check("sec: старый refresh мёртв (401)", status == 401, str(status))
+status, data = call("POST", "/api/v1/auth/login", {"email": PWD_EMAIL, "password": new})
+check("sec: новый логин ok", status == 200 and "access_token" in data, str(status)[:120])
+
+status, log = call("GET", "/api/v1/events/log?action=password.changed&limit=10", token=token)
+check("sec: аудит password.changed в events_log",
+      status == 200 and any(row.get("action") == "password.changed" for row in log),
+      str(log)[:160])
+
+# 19. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
+codes = []
+for _ in range(6):
+    status, data = call("POST", "/api/v1/auth/login",
+                        {"email": "nobody@erp.local", "password": "whatever1"})
+    codes.append(status)
+retry_after = None
+try:
+    with_last = urllib.request.Request(
+        BASE + "/api/v1/auth/login",
+        data=json.dumps({"email": "nobody@erp.local", "password": "whatever1"}).encode(),
+        method="POST", headers={"Content-Type": "application/json"})
+    urllib.request.urlopen(with_last)
+except urllib.error.HTTPError as e:
+    retry_after = e.headers.get("Retry-After")
+    codes.append(e.code)
+check("sec: 6 неудачных логинов → 429", codes[:5] == [401] * 5 and 429 in codes[5:], str(codes))
+check("sec: 429 содержит Retry-After", retry_after is not None and int(retry_after) > 0, str(retry_after))
+
+print("  … ждём окончания окна 60 с …")
+time.sleep(61)
+status, data = call("POST", "/api/v1/auth/login",
+                    {"email": "nobody@erp.local", "password": "whatever1"})
+check("sec: после окна снова 401 (не 429)", status == 401, str(status))
 
 print()
 print("ИТОГ:", "ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ" if not FAILED else f"ПРОВАЛЕНО: {FAILED}")

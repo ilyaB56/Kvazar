@@ -62,6 +62,20 @@ export const useAuthStore = defineStore('auth', {
         return false
       }
     },
+    async apiLogout(): Promise<void> {
+      // Отзыв refresh-токена на сервере (security-p0). Best-effort: сырой fetch
+      // без Bearer — ошибки сети/протухший токен не блокируют локальный выход.
+      if (!this.refreshToken) return
+      try {
+        await fetch('/api/v1/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: this.refreshToken }),
+        })
+      } catch {
+        // офлайн/сеть недоступна — выходим локально в любом случае
+      }
+    },
     logout() {
       this.accessToken = ''
       this.refreshToken = ''
