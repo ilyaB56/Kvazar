@@ -53,8 +53,9 @@ def image_digest(reference: str) -> str:
 
 def build_manifest(args: argparse.Namespace) -> dict:
     changelog = args.changelog
-    if args.changelog_file:
-        changelog = Path(args.changelog_file).read_text(encoding="utf-8")
+    changelog_file = getattr(args, "changelog_file", None)
+    if changelog_file:
+        changelog = Path(changelog_file).read_text(encoding="utf-8")
     images = {}
     for service in SERVICES:
         tag = f"erp-{service}{args.tag_suffix}"
@@ -69,16 +70,16 @@ def build_manifest(args: argparse.Namespace) -> dict:
     }
 
 
-def write_release(manifest: dict, out_dir: Path, private_key: str) -> None:
+def write_release(manifest: dict, out_dir: Path, private_key: str, name: str = "manifest") -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = out_dir / "manifest.json"
+    manifest_path = out_dir / f"{name}.json"
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     signature = sign_manifest(manifest, private_key)
-    (out_dir / "manifest.sig").write_text(signature, encoding="utf-8")
+    (out_dir / f"{name}.json.sig").write_text(signature, encoding="utf-8")
     print(f"manifest: {manifest_path}")
-    print(f"signature: {out_dir / 'manifest.sig'}")
+    print(f"signature: {out_dir / f'{name}.json.sig'}")
 
 
 def main() -> int:
@@ -140,10 +141,10 @@ def main() -> int:
 
     if args.command == "build":
         manifest = build_manifest(args)
+        write_release(manifest, Path(args.out), private_key, name="manifest")
     else:  # gen-test-manifest
         manifest = build_manifest(args)
-
-    write_release(manifest, Path(args.out), private_key)
+        write_release(manifest, Path(args.out), private_key, name="test-manifest")
     return 0
 
 

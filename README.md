@@ -119,6 +119,59 @@ docker compose up -d --build web
   Без `WEB_TLS` сервис web работает как раньше (8080, HTTP). Порт API
   опубликован только на `127.0.0.1:8000` — наружу только через web-прокси.
 
+## Обновление и бэкапы (фаза 1, ADR-004)
+
+Уточнение к ADR-004: в фазе 1 **применение обновления — командой на хосте**
+(`python deploy/update.py`); кнопка в UI показывает версию/changelog и
+запускает *проверку*. Полный one-click — фаза 2 (нужен агент с docker-socket).
+
+### Бэкапы
+
+- Ежедневно в `BACKUP_SCHEDULE` (beat) + вручную из UI (админ) +
+  автоматически перед каждым обновлением (`pre_update`).
+- Шифрование Fernet по `BACKUP_KEY` (отдельный от `SECRETS_KEY`!);
+  retention `BACKUP_RETENTION` последних; проверка целостности
+  (расшифровка + sha256 + test-restore + sanity) — кнопкой и ежемесячно.
+- Восстановление вручную (прод):
+
+  ```bash
+  docker compose stop api worker beat web
+  docker compose run --rm api python -m src.backup restore \
+    --backup-id <id из GET /api/v1/system/backups> --target erp --drop
+  docker compose up -d
+  ```
+
+  Откат данными через `alembic downgrade` на живой БД запрещён (ADR-004) —
+  только восстановление бэкапа.
+
+### Релизы (наша сторона)
+
+  ```bash
+  py tools/release.py keygen --private <путь вне репо> --public deploy/keys/update-public.pem
+  py tools/release.py build --version 0.1.1 --changelog-file CHANGES.md
+  ```
+
+  Манифест (версия, канал, changelog, min_supported, дайджесты образов) +
+  подпись Ed25519. Приватный ключ — офлайн, `RELEASE_KEY_PATH`.
+
+### Обновление на хосте клиента
+
+  ```bash
+  UPDATE_MANIFEST_URL=https://…/manifest.json python deploy/update.py
+  ```
+
+  Порядок: подпись и min_supported проверяются ДО любых действий →
+  pre-flight (место ≥2×БД, стек зелёный) → обязательный pre_update-бэкап →
+  образы по дайджестам (несовпадение — стоп) → `up -d` (миграции применяет
+  api транзакционно) → health-check до 120 с. Провал — авто-откат:
+  восстановление бэкапа + прежние образы + повторный health-check; журнал —
+  `deploy/update.log`, события `system.updated`/`system.rollback` в аудите.
+
+  Проверка наличия обновлений: beat раз в 24 ч + кнопка «Проверить сейчас»
+  (раздел «Обновления и бэкапы», админ); дев-режим — манифест-файл
+  `deploy/test-manifest.json` (gen-test-manifest), file:// URL.
+
+
 ## С чего начать новую сессию разработки
 
 Репозиторий — единственный источник правды; вся история решений в `docs/`.
@@ -155,7 +208,9 @@ docker compose up -d --build web
 Принятые решения фиксируются в журнале [docs/adr/](docs/adr/README.md):
 ADR-001 «Доступ к сети — только через интеграционный модуль»,
 ADR-002 «Версионирование API (`/api/v1`)»,
-ADR-003 «Денежные величины и мультивалютность».
+ADR-003 «Денежные величины и мультивалютность»,
+ADR-004 «Обновления коробочной версии»,
+ADR-005 «Внутренняя структура модулей».
 
 ## Дорожная карта
 

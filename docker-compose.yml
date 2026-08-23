@@ -47,6 +47,8 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - erp_backups:/backups
+      # дев-режим file:// для UPDATE_MANIFEST_URL (прод использует http-URL)
+      - ./deploy:/app/deploy:ro
     depends_on:
       db:
         condition: service_healthy
