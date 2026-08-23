@@ -12,3 +12,9 @@ frontend/dist/
 
 deploy/certs/*
 !deploy/certs/.gitkeep
+
+deploy/release/
+deploy/test-manifest.json*
+deploy/.update-manifest.json*
+deploy/.erp-state.json
+deploy/update.log
