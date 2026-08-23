@@ -7,6 +7,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src import __version__
 from src.config import get_settings
 from src.core.plugins import install_modules
 
@@ -16,7 +17,7 @@ settings = get_settings()
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.0",
+    version=__version__,
     description="Модульная ERP с интеграционной платформой",
 )
 

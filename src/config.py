@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     # (security-plan P0-5 / реестр долгов №3).
     seed_admin_password: str = "admin12345"
 
+    # Бэкапы и обновления (updates-and-backups-spec)
+    backup_key: str = "KbPbCqtmutVQDaMHVvNSte7n0_F8VkalqpAkmWed5js="  # дев-ключ, ротация в проде
+    backup_dir: str = "/backups"
+    backup_retention: int = 3
+    backup_schedule: str = "03:00"  # HH:MM, читается при старте beat
+    update_manifest_url: str = "file:///app/deploy/test-manifest.json"
+    update_channel: str = "stable"
+
     # Ключ для шифрования секретов подключений (Fernet). В проде — из секрет-хранилища.
     secrets_key: str = "change-me-fernet-key"
 

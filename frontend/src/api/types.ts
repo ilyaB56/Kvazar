@@ -83,6 +83,31 @@ export interface SyncRun {
   started_at: string
 }
 
+// ----- Система: бэкапы и версия (updates-and-backups-spec) -----
+
+export interface Backup {
+  id: string
+  file_name: string
+  size: number
+  sha256: string
+  kind: 'manual' | 'scheduled' | 'pre_update'
+  status: 'created' | 'verified' | 'failed'
+  created_at: string
+}
+
+export interface UpdateInfo {
+  version: string
+  changelog?: string
+  channel?: string
+  checked_at?: string
+}
+
+export interface SystemVersion {
+  version: string
+  channel: string
+  latest: UpdateInfo | null
+}
+
 // ----- Управленческий учёт (экраны v2, контракт уже зафиксирован) -----
 
 export interface Transaction {

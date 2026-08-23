@@ -148,3 +148,18 @@ class RevokedToken(Base):
         ForeignKey(f"{CORE_SCHEMA}.users.id"), index=True
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class Backup(Base):
+    """backups — реестр резервных копий БД (шифруются Fernet по BACKUP_KEY)."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "backups"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_name: Mapped[str] = mapped_column(String(255))
+    size: Mapped[int] = mapped_column(Integer)  # размер зашифрованного файла, байт
+    sha256: Mapped[str] = mapped_column(String(64))  # дайджест открытого дампа
+    kind: Mapped[str] = mapped_column(String(20))  # manual | scheduled | pre_update
+    status: Mapped[str] = mapped_column(String(20), default="created")  # created|verified|failed
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

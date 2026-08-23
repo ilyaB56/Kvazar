@@ -36,9 +36,17 @@ services:
       CORS_ORIGINS: '["http://localhost:5173"]'
       # прод обязан задать собственный пароль сид-админа (security-plan P0-5)
       # SEED_ADMIN_PASSWORD: change-me-in-production
+      # бэкапы/обновления (updates-and-backups-spec); BACKUP_KEY ротируется в проде
+      BACKUP_KEY: KbPbCqtmutVQDaMHVvNSte7n0_F8VkalqpAkmWed5js=
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION: "3"
+      BACKUP_SCHEDULE: "03:00"
+      UPDATE_MANIFEST_URL: file:///app/deploy/test-manifest.json
     ports:
       # наружу API не публикуем — только с localhost и через web-прокси (security-p0 п.5)
       - "127.0.0.1:8000:8000"
+    volumes:
+      - erp_backups:/backups
     depends_on:
       db:
         condition: service_healthy
@@ -49,6 +57,8 @@ services:
     build: .
     command: celery -A src.worker.celery_app worker --loglevel=info -Q integrations,default
     environment: *app_env
+    volumes:
+      - erp_backups:/backups
     depends_on:
       db:
         condition: service_healthy
@@ -59,6 +69,8 @@ services:
     build: .
     command: celery -A src.worker.celery_app beat --loglevel=info
     environment: *app_env
+    volumes:
+      - erp_backups:/backups
     depends_on:
       redis:
         condition: service_healthy
@@ -78,3 +90,4 @@ services:
 
 volumes:
   pgdata:
+  erp_backups:

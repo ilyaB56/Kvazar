@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from src.config import get_settings
 from src.core import events
 from src.core.auth import (
     AdminUser,
@@ -21,10 +22,10 @@ from src.core.auth import (
     hash_password,
     verify_password,
 )
-from src.core.models import AuditEvent, Company, Contact, EventOutbox, RevokedToken, Setting, User
+from src.core.models import AuditEvent, Backup, Company, Contact, EventOutbox, RevokedToken, Setting, User
 from src.core.passwords import validate_password
 from src.core.rate_limit import check_login_rate_limit, reset_login_rate_limit
-from src.db import get_db
+from src.db import SessionLocal, get_db
 
 router = APIRouter(tags=["core"])
 
@@ -301,3 +302,81 @@ def events_log(admin: AdminUser, action: str = "", limit: int = 50,
         }
         for row in db.scalars(query).all()
     ]
+
+
+# ---------- Система: бэкапы и версия (updates-and-backups-spec) ----------
+
+class BackupOut(BaseModel):
+    id: uuid.UUID
+    file_name: str
+    size: int
+    sha256: str
+    kind: str
+    status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/system/backups", response_model=list[BackupOut])
+def list_backups(admin: AdminUser, db: Session = Depends(get_db)):
+    return db.scalars(select(Backup).order_by(Backup.created_at.desc())).all()
+
+
+@router.post("/system/backups", status_code=202)
+def start_backup(admin: AdminUser, db: Session = Depends(get_db)):
+    """Ручной запуск бэкапа в фоне (Celery); статус — поллингом списка."""
+    from src.core.tasks import backup_task
+
+    backup_task.delay("manual")
+    return {"ok": True, "queued": True}
+
+
+@router.post("/system/backups/{backup_id}/verify", status_code=202)
+def start_backup_verify(backup_id: uuid.UUID, admin: AdminUser,
+                        db: Session = Depends(get_db)):
+    from src.core.tasks import verify_backup_task
+
+    if db.get(Backup, backup_id) is None:
+        raise HTTPException(404, "Backup not found")
+    verify_backup_task.delay(str(backup_id))
+    return {"ok": True}
+
+
+@router.get("/system/version")
+def system_version(user: CurrentUser):
+    """Текущая версия (src/__init__.__version__), канал и доступное обновление."""
+    from src import __version__
+
+    latest = db_latest_update_info()
+    return {
+        "version": __version__,
+        "channel": get_settings().update_channel,
+        "latest": latest,
+    }
+
+
+@router.post("/system/update/check")
+def run_update_check(admin: AdminUser):
+    """«Проверить сейчас» (admin): манифест по URL, подпись, сравнение версий."""
+    from src.core.update.check import UpdateCheckError, check_update
+
+    try:
+        return check_update()
+    except UpdateCheckError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+def db_latest_update_info() -> dict | None:
+    """Информация о последней найденной проверке обновлений (этап C пишет в settings)."""
+    from src.core.models import Setting
+
+    db = SessionLocal()
+    try:
+        row = db.scalar(select(Setting).where(Setting.key == "update.available"))
+        if row is None:
+            return None
+        value = row.value
+        return value if isinstance(value, dict) else None
+    finally:
+        db.close()
