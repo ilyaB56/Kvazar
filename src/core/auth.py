@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.config import get_settings
-from src.core.models import User
+from src.core.models import ApiToken, User
 from src.db import get_db
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -61,10 +63,36 @@ def decode_token(token: str) -> dict:
     return jwt.decode(token, _settings.jwt_secret, algorithms=["HS256"])
 
 
+class ApiPrincipal:
+    """Прокси API-токена вместо User: ролевые проверки и аудит работают так же.
+
+    Действия записываются от имени владельца токена (owner), поэтому created_by
+    и аудит ссылаются на живого пользователя (FK users). Пользовательские
+    auth-эндпоинты (/auth/me, смена пароля) токену запрещены.
+    """
+
+    def __init__(self, token: ApiToken):
+        self.id = token.owner_user_id or token.id
+        self.token_id = token.id
+        self.role = token.role
+        self.is_active = token.is_active
+        self.name = token.name
+
+
 def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
-    db: Annotated[Session, Depends(get_db)],
-) -> User:
+    x_api_token: Annotated[str | None, Header(alias="X-API-Token")] = None,
+    db: Annotated[Session, Depends(get_db)] = None,
+):
+    if x_api_token:
+        # служебный токен: sha256 сравнивается с token_hash (showcase-chain, этап A)
+        token_hash = sha256(x_api_token.encode()).hexdigest()
+        row = db.scalar(select(ApiToken).where(ApiToken.token_hash == token_hash))
+        if row is None or not row.is_active:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API token")
+        row.last_used_at = datetime.now(UTC)
+        db.commit()
+        return ApiPrincipal(row)
     if credentials is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
     try:
@@ -83,7 +111,17 @@ def get_current_user(
     return user
 
 
-CurrentUser = Annotated[User, Depends(get_current_user)]
+CurrentUser = Annotated[User | ApiPrincipal, Depends(get_current_user)]
+
+
+def get_current_human(user: CurrentUser) -> User:
+    """Только живой пользователь (JWT): профиль, смена пароля — не для токенов."""
+    if not isinstance(user, User):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not available for API tokens")
+    return user
+
+
+HumanUser = Annotated[User, Depends(get_current_human)]
 
 
 def require_role(*roles: str):

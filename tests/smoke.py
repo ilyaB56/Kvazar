@@ -354,7 +354,30 @@ check("sec: аудит password.changed в events_log",
       status == 200 and any(row.get("action") == "password.changed" for row in log),
       str(log)[:160])
 
-# 19. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
+# 19. API-токены (showcase-chain, этап A): машинные вызовы без JWT
+status, created_token = call("POST", "/api/v1/admin/api-tokens",
+                             {"name": f"smoke-token-{today}", "role": "user"}, token=token)
+api_token = created_token.get("token", "")
+check("chain A: токен создан и показан один раз",
+      status == 201 and api_token, str(created_token)[:120])
+
+if api_token:
+    api_headers = {"X-API-Token": api_token}
+    status, draft_api = call("POST", f"{ACC}/transactions", {
+        "kind": "income", "operated_at": today, "amount": "1", "currency": "RUB",
+        "account_id": acc_rub["id"],
+    }, headers=api_headers)
+    check("chain A: транзакция по X-API-Token (201)", status == 201, str(status))
+    if "id" in draft_api:
+        call("DELETE", f"{ACC}/transactions/{draft_api['id']}", headers=api_headers)
+    status, data = call("GET", "/api/v1/auth/me", headers=api_headers)
+    check("chain A: /auth/me токену запрещён (403)", status == 403, str(status))
+    status, data = call("DELETE", f"/api/v1/admin/api-tokens/{created_token['id']}", token=token)
+    check("chain A: отзыв токена (200)", status == 200, str(status))
+    status, data = call("GET", f"{ACC}/accounts", headers=api_headers)
+    check("chain A: после отзыва 401", status == 401, str(status))
+
+# 20. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []
 for _ in range(6):
     status, data = call("POST", "/api/v1/auth/login",

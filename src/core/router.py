@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime
 
@@ -15,6 +16,7 @@ from src.core import events
 from src.core.auth import (
     AdminUser,
     CurrentUser,
+    HumanUser,
     WriteUser,
     create_access_token,
     create_refresh_token,
@@ -22,7 +24,17 @@ from src.core.auth import (
     hash_password,
     verify_password,
 )
-from src.core.models import AuditEvent, Backup, Company, Contact, EventOutbox, RevokedToken, Setting, User
+from src.core.models import (
+    ApiToken,
+    AuditEvent,
+    Backup,
+    Company,
+    Contact,
+    EventOutbox,
+    RevokedToken,
+    Setting,
+    User,
+)
 from src.core.passwords import validate_password
 from src.core.rate_limit import check_login_rate_limit, reset_login_rate_limit
 from src.db import SessionLocal, get_db
@@ -165,7 +177,7 @@ def logout(body: RefreshIn, db: Session = Depends(get_db)):
 
 
 @router.post("/auth/change-password")
-def change_password(body: ChangePasswordIn, user: CurrentUser, db: Session = Depends(get_db)):
+def change_password(body: ChangePasswordIn, user: HumanUser, db: Session = Depends(get_db)):
     """Смена своего пароля: token_version += 1 — все сессии пользователя умирают,
     требуется повторный вход. Аудит password.changed."""
     if not verify_password(body.old_password, user.password_hash):
@@ -183,7 +195,7 @@ def change_password(body: ChangePasswordIn, user: CurrentUser, db: Session = Dep
 
 
 @router.get("/auth/me", response_model=UserOut)
-def me(user: CurrentUser):
+def me(user: HumanUser):
     return user
 
 
@@ -365,6 +377,67 @@ def run_update_check(admin: AdminUser):
         return check_update()
     except UpdateCheckError as exc:
         raise HTTPException(502, str(exc)) from exc
+
+
+# ---------- Служебные API-токены (showcase-chain, этап A) ----------
+
+class ApiTokenIn(BaseModel):
+    name: str
+    role: str = "user"
+
+
+class ApiTokenOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    last_used_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/admin/api-tokens", response_model=list[ApiTokenOut])
+def list_api_tokens(admin: AdminUser, db: Session = Depends(get_db)):
+    return db.scalars(select(ApiToken).order_by(ApiToken.created_at.desc())).all()
+
+
+@router.post("/admin/api-tokens", status_code=201)
+def create_api_token(body: ApiTokenIn, admin: AdminUser, db: Session = Depends(get_db)):
+    """Токен показывается ровно один раз (как secret_token у webhook)."""
+    import secrets
+
+    token = secrets.token_urlsafe(32)
+    row = ApiToken(
+        name=body.name,
+        token_hash=hashlib.sha256(token.encode()).hexdigest(),
+        role=body.role,
+        owner_user_id=admin.id,
+    )
+    db.add(row)
+    db.add(AuditEvent(action="api_token.created", entity_type="api_token",
+                      payload={"name": body.name, "role": body.role}))
+    db.commit()
+    db.refresh(row)
+    return {
+        "id": row.id, "name": row.name, "role": row.role,
+        "is_active": row.is_active, "created_at": row.created_at,
+        "last_used_at": None, "token": token,
+    }
+
+
+@router.delete("/admin/api-tokens/{token_id}", response_model=ApiTokenOut)
+def revoke_api_token(token_id: uuid.UUID, admin: AdminUser, db: Session = Depends(get_db)):
+    """Удаление = отзыв: is_active=false + аудит api_token.revoked."""
+    row = db.get(ApiToken, token_id)
+    if row is None:
+        raise HTTPException(404, "API token not found")
+    row.is_active = False
+    db.add(AuditEvent(action="api_token.revoked", entity_type="api_token",
+                      entity_id=str(row.id), payload={"name": row.name}))
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def db_latest_update_info() -> dict | None:
