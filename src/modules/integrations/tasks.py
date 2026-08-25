@@ -1,17 +1,76 @@
-"""Фоновые задачи синхронизации (Celery)."""
+"""Фоновые задачи синхронизации (Celery) + cron-планировщик заданий."""
 
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import or_, select, update
 
 from src.core.events import dispatch_outbox, publish
 from src.db import SessionLocal
 from src.modules.integrations import models as m
+from src.modules.integrations import scheduler
 from src.modules.integrations.connectors.builtin import registry as connector_registry
 from src.modules.integrations.crypto import decrypt_dict
 from src.worker import celery_app
 
 logger = logging.getLogger(__name__)
+
+_redis_client = None
+# пока задание выполняется, повторная постановка в очередь не допускается (этап B)
+LOCK_TTL_SECONDS = 1800
+
+
+def _redis():
+    global _redis_client
+    if _redis_client is None:
+        import redis
+
+        from src.config import get_settings
+
+        _redis_client = redis.Redis.from_url(get_settings().redis_url)
+    return _redis_client
+
+
+@celery_app.task
+def run_due_sync_jobs_task() -> dict:
+    """Раз в минуту (beat): поставить в очередь задания, чей cron наступил.
+
+    Анти-дубли: условный UPDATE last_run_at (гонки двух тиков/воркеров
+    исключены — rowcount=0 у проигравшего) + Redis-флаг in_progress в run_job.
+    """
+    db = SessionLocal()
+    try:
+        now = datetime.now(UTC)
+        jobs = db.scalars(select(m.SyncJob).where(
+            m.SyncJob.is_active.is_(True),
+            m.SyncJob.cron != "",
+        )).all()
+        fired: list[str] = []
+        for job in jobs:
+            if not scheduler.is_due(job.cron, job.last_run_at, job.created_at, now):
+                continue
+            claimed = db.execute(
+                update(m.SyncJob)
+                .where(
+                    m.SyncJob.id == job.id,
+                    or_(
+                        m.SyncJob.last_run_at.is_(None),
+                        m.SyncJob.last_run_at < now - timedelta(seconds=scheduler.ANTI_DUPLICATE_SECONDS),
+                    ),
+                )
+                .values(last_run_at=now)
+            )
+            db.commit()
+            if claimed.rowcount:
+                run_job.delay(str(job.id))
+                fired.append(job.name)
+        if fired:
+            logger.info("scheduler fired: %s", fired)
+        return {"fired": fired}
+    finally:
+        db.close()
 
 
 def apply_mapping(data, mapping: m.FieldMapping | None):
@@ -46,6 +105,10 @@ def dispatch_outbox_task() -> int:
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
 def run_job(self, job_id: str) -> dict:
+    lock_key = f"sync_job_in_progress:{job_id}"
+    if not _redis().set(lock_key, "1", nx=True, ex=LOCK_TTL_SECONDS):
+        logger.info("job %s already running, skip duplicate", job_id)
+        return {"skipped": True, "reason": "already running"}
     db = SessionLocal()
     try:
         job = db.get(m.SyncJob, job_id)
@@ -62,8 +125,8 @@ def run_job(self, job_id: str) -> dict:
             items = result.data if isinstance(result.data, list) else [result.data]
             transformed = [apply_mapping(item, mapping) for item in items if item is not None]
             if transformed:
-                publish(db, "integration.data.fetched",
-                        {"job": job.name, "items": transformed[:100]})
+                # спец-событие задания вместо дефолтного (этап C; ADR-002)
+                publish(db, job.emit_event, {"job": job.name, "items": transformed[:100]})
         else:
             # push: полезная нагрузка пока задаётся вручную через API/mapping
             result = connector.push(job.endpoint, {})
@@ -91,3 +154,4 @@ def run_job(self, job_id: str) -> dict:
         raise
     finally:
         db.close()
+        _redis().delete(lock_key)

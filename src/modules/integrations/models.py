@@ -65,6 +65,10 @@ class SyncJob(Base):
     endpoint: Mapped[str] = mapped_column(String(500), default="")
     mapping_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey(f"{S}.field_mappings.id"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # планировщик (showcase-chain, этап B): последний момент постановки в очередь
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # спец-событие задания вместо дефолтного (этап C; ADR-002: имена событий — контракт)
+    emit_event: Mapped[str] = mapped_column(String(100), default="integration.data.fetched")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

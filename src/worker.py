@@ -32,6 +32,11 @@ celery_app.conf.update(
             "task": "src.modules.integrations.tasks.dispatch_outbox_task",
             "schedule": 30.0,
         },
+        # Cron-планировщик sync jobs (showcase-chain, этап B)
+        "run-due-sync-jobs": {
+            "task": "src.modules.integrations.tasks.run_due_sync_jobs_task",
+            "schedule": crontab(minute="*"),
+        },
         # Ежедневный бэкап в BACKUP_SCHEDULE (перезапуск beat подхватит новое значение)
         "daily-backup": {
             "task": "src.core.tasks.backup_task",

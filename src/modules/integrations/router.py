@@ -70,6 +70,12 @@ class SyncJobIn(BaseModel):
     mapping_id: uuid.UUID | None = None
 
 
+class SyncJobPatch(BaseModel):
+    is_active: bool | None = None
+    cron: str | None = None
+    endpoint: str | None = None
+
+
 class RecipeIn(BaseModel):
     name: str
     definition: dict = {}
@@ -215,6 +221,20 @@ def run_sync_job(job_id: uuid.UUID, admin: AdminUser, db: Session = Depends(get_
 
     run_job.delay(str(job_id))
     return {"queued": True}
+
+
+@router.patch("/sync-jobs/{job_id}")
+def patch_sync_job(job_id: uuid.UUID, body: SyncJobPatch, admin: AdminUser,
+                   db: Session = Depends(get_db)):
+    """Правка задания (вкл/выкл, cron, endpoint) — планировщик подхватит сам."""
+    job = db.get(m.SyncJob, job_id)
+    if job is None:
+        raise HTTPException(404, "Sync job not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(job, field, value)
+    db.commit()
+    db.refresh(job)
+    return job
 
 
 @router.get("/sync-runs")
