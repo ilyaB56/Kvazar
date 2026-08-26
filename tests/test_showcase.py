@@ -102,3 +102,16 @@ def test_anti_duplicate_threshold():
     # окно анти-дубля: повтор в пределах 55 с от last_run не считается due
     # (проверяем сам порог, использованный в SQL-условии планировщика)
     assert scheduler.ANTI_DUPLICATE_SECONDS == 55
+
+
+# ---------- Рендер шаблонов уведомлений (этап D) ----------
+
+def test_notification_template_render():
+    from src.modules.integrations.notify import render_template
+
+    payload = {"doc_number": "ПК-2026-00001", "amount": "1000", "currency": "RUB",
+               "dimensions": {"скрытый": "dict"}}
+    rendered = render_template("Документ {doc_number}: {amount} {currency}", payload)
+    assert rendered == "Документ ПК-2026-00001: 1000 RUB"
+    # неизвестный ключ остаётся как есть; вложенные структуры не подставляются
+    assert render_template("{unknown} и {dimensions}", payload) == "{unknown} и {dimensions}"

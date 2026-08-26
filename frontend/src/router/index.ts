@@ -25,6 +25,12 @@ const router = createRouter({
           component: () => import('../views/SystemView.vue'),
           meta: { requiresAuth: true, requiresAdmin: true },
         },
+        {
+          path: 'notifications',
+          name: 'notifications',
+          component: () => import('../views/NotificationsView.vue'),
+          meta: { requiresAuth: true, requiresAdmin: true },
+        },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },

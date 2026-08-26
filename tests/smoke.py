@@ -404,7 +404,68 @@ check("chain C: USD-транзакция без ручного курса",
       status == 201 and usd_auto.get("status") == "posted" and usd_auto.get("rate"),
       str(usd_auto.get("rate")))
 
-# 21. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
+# 21. Telegram-уведомления на мок-сервере (showcase-chain, этап D)
+def _start_mock_telegram(port):
+    """Мок Telegram Bot API в потоке: тела POST в _mock_log[0]."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    log = [""]
+    captured = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            captured.append(self.rfile.read(length).decode("utf-8", errors="replace"))
+            log[0] = "\n".join(captured)
+            payload = json.dumps({"ok": True}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    # 0.0.0.0: контейнер worker достукивается через host.docker.internal
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    import threading
+
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, log
+
+
+_mock_server, mock_log = _start_mock_telegram(9998)
+tg_conn, _ = get_or_create(
+    "/api/v1/integrations/connections",
+    lambda c: c.get("name") == "Telegram-mock",
+    {"name": "Telegram-mock", "connector_code": "telegram_bot",
+     "credentials": {"bot_token": "000:MOCK"},
+     "config": {"api_base": "http://host.docker.internal:9998"}},
+    token,
+)
+tg_rule, _ = get_or_create(
+    "/api/v1/integrations/notification-rules",
+    lambda r: r.get("name") == "smoke-notify-posted",
+    {"name": "smoke-notify-posted", "event_name": "acc.transaction.posted",
+     "chat_id": "111222333", "template": "Doc {doc_number}: {amount} {currency}"},
+    token,
+)
+status, tg_txn = call("POST", f"{ACC}/transactions", {
+    "kind": "income", "operated_at": today, "amount": "7", "currency": "RUB",
+    "account_id": acc_rub["id"], "post_immediately": True,
+}, token=token)
+delivered = False
+for _ in range(13):  # ждём outbox-диспетчер до ~39 с
+    time.sleep(3)
+    if tg_txn.get("doc_number") and tg_txn["doc_number"] in mock_log[0]:
+        delivered = True
+        break
+check("chain D: уведомление доставлено в мок Telegram с подставленными полями",
+      delivered and status == 201, mock_log[0][:120])
+_mock_server.shutdown()
+
+# 22. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []
 for _ in range(6):
     status, data = call("POST", "/api/v1/auth/login",

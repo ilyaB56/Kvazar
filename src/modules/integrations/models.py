@@ -97,3 +97,22 @@ class Recipe(Base):
     definition: Mapped[dict] = mapped_column(JSONB, default=dict)
     is_published: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NotificationRule(Base):
+    """notification_rules: событие → Telegram-сообщение (showcase-chain, этап D).
+
+    template рендерится подстановкой {ключ} из payload (простые ключи
+    верхнего уровня).
+    """
+
+    __table_args__ = ({"schema": S},)
+    __tablename__ = "notification_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255))
+    event_name: Mapped[str] = mapped_column(String(100), index=True)
+    chat_id: Mapped[str] = mapped_column(String(64))
+    template: Mapped[str] = mapped_column(Text, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

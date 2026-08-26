@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { FormInstance } from 'element-plus'
-import { ArrowDown, Connection, Cpu, Histogram, Key, Monitor, Refresh, User as UserIcon } from '@element-plus/icons-vue'
+import { ArrowDown, Bell, Connection, Cpu, Histogram, Key, Monitor, Refresh, User as UserIcon } from '@element-plus/icons-vue'
 import { post } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
@@ -72,6 +72,10 @@ async function submitChangePassword() {
         <el-menu-item v-if="auth.user?.role === 'admin'" index="/system">
           <el-icon><Monitor /></el-icon>
           <span>{{ t('nav.system') }}</span>
+        </el-menu-item>
+        <el-menu-item v-if="auth.user?.role === 'admin'" index="/notifications">
+          <el-icon><Bell /></el-icon>
+          <span>{{ t('nav.notifications') }}</span>
         </el-menu-item>
         <el-menu-item disabled>
           <el-icon><Histogram /></el-icon>

@@ -260,6 +260,72 @@ def create_recipe(body: RecipeIn, admin: AdminUser, db: Session = Depends(get_db
     return recipe
 
 
+# ---------- Правила уведомлений (showcase-chain, этап D) ----------
+
+class NotificationRuleIn(BaseModel):
+    name: str
+    event_name: str
+    chat_id: str
+    template: str = ""
+    is_active: bool = True
+
+
+class NotificationRuleOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    event_name: str
+    chat_id: str
+    template: str
+    is_active: bool
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/notification-rules", response_model=list[NotificationRuleOut])
+def list_notification_rules(admin: AdminUser, db: Session = Depends(get_db)):
+    return db.scalars(select(m.NotificationRule).order_by(m.NotificationRule.created_at)).all()
+
+
+@router.post("/notification-rules", response_model=NotificationRuleOut, status_code=201)
+def create_notification_rule(body: NotificationRuleIn, admin: AdminUser,
+                             db: Session = Depends(get_db)):
+    from src.modules.integrations.notify import NOTIFY_EVENTS
+
+    if body.event_name not in NOTIFY_EVENTS:
+        raise HTTPException(422, f"event must be one of {list(NOTIFY_EVENTS)}")
+    rule = m.NotificationRule(**body.model_dump())
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@router.delete("/notification-rules/{rule_id}", response_model=NotificationRuleOut)
+def delete_notification_rule(rule_id: uuid.UUID, admin: AdminUser,
+                             db: Session = Depends(get_db)):
+    rule = db.get(m.NotificationRule, rule_id)
+    if rule is None:
+        raise HTTPException(404, "Notification rule not found")
+    db.delete(rule)
+    db.commit()
+    return rule
+
+
+@router.post("/notification-rules/{rule_id}/test")
+def test_notification_rule(rule_id: uuid.UUID, admin: AdminUser,
+                           db: Session = Depends(get_db)):
+    """«Тест»: отправить Hello по правилу (рендер шаблона на дефолт-полях)."""
+    from src.modules.integrations.notify import send_notification
+
+    rule = db.get(m.NotificationRule, rule_id)
+    if rule is None:
+        raise HTTPException(404, "Notification rule not found")
+    payload = {"event": rule.event_name, "doc_number": "TEST-1", "amount": "0",
+               "job": "test", "error": "тестовая отправка", "version": "0.1.0"}
+    ok = send_notification(rule, payload)
+    return {"ok": ok}
+
+
 @router.get("/recipes")
 def list_recipes(user: CurrentUser, db: Session = Depends(get_db), published_only: bool = False):
     query = select(m.Recipe)

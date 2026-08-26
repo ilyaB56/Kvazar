@@ -58,6 +58,10 @@ def register_event_handlers() -> list[Manifest]:
     for m in MANIFESTS:
         for event_name, handler in m.event_handlers.items():
             events.subscribe(event_name, handler)
+    # Telegram-уведомления по белому списку событий (showcase-chain, этап D)
+    from src.modules.integrations.notify import register_notification_handlers
+
+    register_notification_handlers()
     return MANIFESTS
 
 

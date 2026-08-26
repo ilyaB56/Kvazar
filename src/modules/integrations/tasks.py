@@ -155,6 +155,10 @@ def run_job(self, job_id: str) -> dict:
         if self.request.retries >= self.max_retries:
             db.rollback()
             db.add(m.SyncRun(sync_job_id=job_id, status="error", error=str(exc)))
+            # финальный провал: событие для уведомлений (showcase-chain, этап D)
+            job = db.get(m.SyncJob, job_id)
+            publish(db, "integration.sync.failed",
+                    {"job": job.name if job else job_id, "error": str(exc)[:500]})
             db.commit()
             return {"ok": False, "error": str(exc)}
         raise
