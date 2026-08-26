@@ -115,3 +115,61 @@ def test_notification_template_render():
     assert rendered == "Документ ПК-2026-00001: 1000 RUB"
     # неизвестный ключ остаётся как есть; вложенные структуры не подставляются
     assert render_template("{unknown} и {dimensions}", payload) == "{unknown} и {dimensions}"
+
+
+# ---------- 1CClientBankExchange: генерация и кодировка (этап E) ----------
+
+def test_1c_export_file_and_cp1251(monkeypatch):
+    from decimal import Decimal
+
+    import src.modules.mgmt_accounting.service as svc
+
+    class FakeTxn:
+        doc_number = "ПК-2026-00042"
+        operated_at = datetime(2026, 8, 26).date()
+        amount = Decimal("1500.50")
+        kind = "income"
+        counterparty_id = None
+        description = "Оплата счёта"
+
+    class FakeAccount:
+        id = "acc-1"
+        currency = "RUB"
+        account_number = "40702810123456789012"
+
+    class FakeDB:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, model, pk):
+            return FakeAccount()
+
+        def scalars(self, query):
+            self.calls += 1
+            # 1-й вызов — транзакции, 2-й — контрагенты
+            result = [FakeTxn()] if self.calls == 1 else []
+            class Scalars:
+                def all(self_inner):
+                    return result
+            return Scalars()
+
+    class FakeQuery:
+        def where(self, *a, **k):
+            return self
+
+        def order_by(self, *a, **k):
+            return self
+
+    monkeypatch.setattr(svc, "select", lambda *a, **k: FakeQuery())
+    text = svc.export_client_bank(FakeDB(), datetime(2026, 8, 1).date(),
+                                  datetime(2026, 8, 31).date(), "acc-1")
+    assert text.startswith("1CClientBankExchange\r\nВерсияФормата=1.02")
+    assert "РасчСчет=40702810123456789012" in text
+    assert "Номер=ПК-2026-00042" in text
+    assert "Дата=26.08.2026" in text
+    assert "Сумма=1500.50" in text
+    assert "НазначениеПлатежа=Оплата счёта" in text
+    assert text.endswith("КонецФайла")
+    # cp1251-кодирование проходит (кириллица секций не выпадает)
+    encoded = text.encode("windows-1251")
+    assert "СекцияДокумент".encode("windows-1251") in encoded

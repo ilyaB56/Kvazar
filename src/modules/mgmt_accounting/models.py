@@ -34,6 +34,8 @@ class Account(Base):
     )
     name: Mapped[str] = mapped_column(String(255))
     currency: Mapped[str] = mapped_column(String(3))  # ISO 4217
+    # «РасчСчет» выгрузки клиент-банк 1С (showcase-chain, этап E)
+    account_number: Mapped[str | None] = mapped_column(String(20))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

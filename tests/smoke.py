@@ -465,7 +465,37 @@ check("chain D: уведомление доставлено в мок Telegram �
       delivered and status == 201, mock_log[0][:120])
 _mock_server.shutdown()
 
-# 22. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
+# 22. Экспорт 1CClientBankExchange (showcase-chain, этап E)
+status, plain_acc = call("POST", f"{ACC}/accounts",
+                         {"name": f"smoke-plain-{run_tag}", "currency": "RUB"}, token=token)
+status, no_number = call("GET",
+                         f"{ACC}/export/client-bank?date_from={today}&date_to={today}&account_id={plain_acc['id']}",
+                         token=token)
+check("chain E: без account_number → 422", status == 422, str(status)[:120])
+
+status, bank_acc = call("POST", f"{ACC}/accounts",
+                        {"name": f"smoke-bank-{run_tag}", "currency": "RUB",
+                         "account_number": "40702810900000009999"}, token=token)
+status, e_txn = call("POST", f"{ACC}/transactions", {
+    "kind": "income", "operated_at": today, "amount": "99.99", "currency": "RUB",
+    "account_id": bank_acc["id"], "description": "export test", "post_immediately": True,
+}, token=token)
+try:
+    with urllib.request.urlopen(urllib.request.Request(
+        BASE + f"{ACC}/export/client-bank?date_from={today}&date_to={today}&account_id={bank_acc['id']}",
+        headers={"Authorization": "Bearer " + token}), timeout=10) as resp:
+        export_text = resp.read().decode("cp1251")
+        export_ok = (resp.status == 200
+                     and "1CClientBankExchange" in export_text
+                     and "РасчСчет=40702810900000009999" in export_text
+                     and (e_txn.get("doc_number") or "") in export_text)
+except Exception as exc:  # noqa: BLE001
+    export_ok, export_text = False, str(exc)
+check("chain E: выгрузка cp1251 с нужной транзакцией", export_ok, export_text[:120])
+check("chain E: сторно-парака не попадает (нет СТ- и дублей)",
+      export_text.count("СекцияДокумент") == 1, str(export_text.count("СекцияДокумент")))
+
+# 23. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []
 for _ in range(6):
     status, data = call("POST", "/api/v1/auth/login",

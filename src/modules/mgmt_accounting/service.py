@@ -457,6 +457,70 @@ def upsert_rates_from_event(payload: dict) -> None:
         db.close()
 
 
+# ---------- Экспорт 1CClientBankExchange (этап E) ----------
+
+def export_client_bank(
+    db: Session, date_from: date, date_to: date, account_id: uuid.UUID
+) -> str:
+    """Выгрузка «клиент-банк» 1С (cp1251 отдаёт роутер, тут — текст).
+
+    Только действующие рублёвые документы: posted, не is_deleted, не сторно
+    и не is_stornoed (обе стороны пары исключаются), kind != transfer.
+    Оговорка спеки: соответствие полей добить загрузкой в реальной 1С.
+    """
+    account = db.get(m.Account, account_id)
+    if account is None:
+        raise AccountingError(404, "Account not found")
+    if account.currency != "RUB":
+        raise AccountingError(422, f"1C export supports RUB accounts only (got {account.currency})")
+    if not account.account_number:
+        raise AccountingError(422, "Account has no account_number (set it via PATCH /accounts)")
+
+    txns = db.scalars(
+        select(m.Transaction).where(
+            m.Transaction.status == "posted",
+            m.Transaction.is_deleted.is_(False),
+            m.Transaction.is_stornoed.is_(False),
+            m.Transaction.storno_of_id.is_(None),
+            m.Transaction.kind != "transfer",
+            m.Transaction.account_id == account_id,
+            m.Transaction.operated_at >= date_from,
+            m.Transaction.operated_at <= date_to,
+        ).order_by(m.Transaction.operated_at, m.Transaction.created_at)
+    ).all()
+
+    lines = [
+        "1CClientBankExchange",
+        "ВерсияФормата=1.02",
+        f"ДатаНачала={date_from.strftime('%d.%m.%Y')}",
+        f"ДатаКонца={date_to.strftime('%d.%m.%Y')}",
+        f"РасчСчет={account.account_number}",
+        "",
+    ]
+    counterparties = {
+        c.id: c.name for c in db.scalars(select(m.Counterparty)).all()
+    }
+    for txn in txns:
+        amount = f"{txn.amount:.2f}"
+        if txn.kind == "income":
+            payer, receiver = "", counterparties.get(txn.counterparty_id, "")
+        else:
+            payer, receiver = counterparties.get(txn.counterparty_id, ""), ""
+        lines += [
+            "СекцияДокумент=Платежное поручение",
+            f"Номер={txn.doc_number}",
+            f"Дата={txn.operated_at.strftime('%d.%m.%Y')}",
+            f"Сумма={amount}",
+            f"Плательщик1={payer}",
+            f"Получатель1={receiver}",
+            f"НазначениеПлатежа={txn.description or ''}",
+            "КонецДокумента",
+            "",
+        ]
+    lines.append("КонецФайла")
+    return "\r\n".join(lines)
+
+
 # ---------- Отчёты ----------
 
 def _txn_flows(txn: m.Transaction) -> list[tuple[uuid.UUID, Decimal]]:

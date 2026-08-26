@@ -40,11 +40,13 @@ class AccountIn(BaseModel):
     name: str
     currency: str = Field(default=service.BASE_CURRENCY, pattern=r"^[A-Z]{3}$")
     company_id: uuid.UUID | None = None
+    account_number: str | None = None
 
 
 class AccountPatch(BaseModel):
     name: str | None = None
     is_active: bool | None = None
+    account_number: str | None = None
 
 
 class AccountOut(BaseModel):
@@ -52,6 +54,7 @@ class AccountOut(BaseModel):
     company_id: uuid.UUID | None
     name: str
     currency: str
+    account_number: str | None
     is_active: bool
 
     model_config = {"from_attributes": True}
@@ -207,7 +210,8 @@ def list_accounts(user: CurrentUser, db: Session = Depends(get_db)):
 
 @router.post("/accounts", response_model=AccountOut, status_code=201)
 def create_account(body: AccountIn, user: WriteUser, db: Session = Depends(get_db)):
-    account = m.Account(name=body.name, currency=body.currency, company_id=body.company_id)
+    account = m.Account(name=body.name, currency=body.currency, company_id=body.company_id,
+                        account_number=body.account_number)
     db.add(account)
     db.commit()
     db.refresh(account)
@@ -392,6 +396,28 @@ def cashflow_report(
     if date_to < date_from:
         raise HTTPException(422, "date_to must be greater than or equal to date_from")
     return service.cashflow(db, date_from, date_to, account_id)
+
+
+@router.get("/export/client-bank")
+def export_client_bank(
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    account_id: uuid.UUID = Query(...),
+):
+    """Выгрузка 1CClientBankExchange (cp1251), 1С:Бухгалтерия грузит как выписку."""
+    from fastapi import Response
+
+    with svc():
+        text = service.export_client_bank(db, date_from, date_to, account_id)
+    stamp = date_from.strftime("%Y%m%d")
+    return Response(
+        content=text.encode("windows-1251", errors="replace"),
+        media_type="text/plain; charset=windows-1251",
+        headers={"Content-Disposition":
+                 f'attachment; filename="1c-exchange-{stamp}.txt"'},
+    )
 
 
 # ---------- Курсы ----------
