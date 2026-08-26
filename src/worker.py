@@ -14,6 +14,11 @@ celery_app = Celery(
     include=["src.modules.integrations.tasks", "src.core.tasks"],
 )
 
+# подписчики событий должны жить и в воркере: здесь крутится диспетчер outbox
+from src.core.plugins import register_event_handlers  # noqa: E402
+
+register_event_handlers()
+
 
 def _parse_schedule(hhmm: str) -> crontab:
     """BACKUP_SCHEDULE='HH:MM' → crontab; читается при старте beat."""

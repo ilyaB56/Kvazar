@@ -377,7 +377,34 @@ if api_token:
     status, data = call("GET", f"{ACC}/accounts", headers=api_headers)
     check("chain A: после отзыва 401", status == 401, str(status))
 
-# 20. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
+# 20. Курсы ЦБ РФ → rates (showcase-chain, этап C)
+cbr_job, _ = get_or_create(
+    "/api/v1/integrations/sync-jobs",
+    lambda j: j.get("name") == "Курсы ЦБ",
+    {"name": "Курсы ЦБ", "connection_id": conn.get("id", ""), "direction": "fetch",
+     "cron": "30 0 * * *", "emit_event": "integration.rates.fetched"},
+    token,
+)
+cbr_ok = False
+if "id" in cbr_job:
+    call("POST", f"/api/v1/integrations/sync-jobs/{cbr_job['id']}/run", token=token)
+    for _ in range(7):  # ждём выполнения и диспетчер up to ~21 c
+        time.sleep(3)
+        status, rows = call("GET", f"{ACC}/rates?currency=USD&date_from={today}&date_to={today}", token=token)
+        if status == 200 and any(r.get("source") == "connector" for r in rows):
+            cbr_ok = True
+            break
+check("chain C: курсы ЦБ дошли до rates (source=connector)", cbr_ok)
+
+status, usd_auto = call("POST", f"{ACC}/transactions", {
+    "kind": "income", "operated_at": today, "amount": "1", "currency": "USD",
+    "account_id": acc_usd["id"], "post_immediately": True,
+}, token=token)
+check("chain C: USD-транзакция без ручного курса",
+      status == 201 and usd_auto.get("status") == "posted" and usd_auto.get("rate"),
+      str(usd_auto.get("rate")))
+
+# 21. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []
 for _ in range(6):
     status, data = call("POST", "/api/v1/auth/login",

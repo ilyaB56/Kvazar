@@ -68,6 +68,7 @@ class SyncJobIn(BaseModel):
     cron: str = ""
     endpoint: str = ""
     mapping_id: uuid.UUID | None = None
+    emit_event: str = "integration.data.fetched"
 
 
 class SyncJobPatch(BaseModel):

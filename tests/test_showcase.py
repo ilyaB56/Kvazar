@@ -5,6 +5,61 @@ from __future__ import annotations
 from datetime import datetime
 
 from src.modules.integrations import scheduler
+from src.modules.integrations.connectors.cbr import parse_cbr_xml
+
+CBR_FIXTURE = """<?xml version="1.0" encoding="windows-1251"?>
+<ValCurs Date="25.08.2026" name="Foreign Currency Exchange">
+  <Valute ID="R01235">
+    <NumCode>840</NumCode>
+    <CharCode>USD</CharCode>
+    <Nominal>1</Nominal>
+    <Name>Доллар США</Name>
+    <Value>89,1234</Value>
+  </Valute>
+  <Valute ID="R01335">
+    <NumCode>978</NumCode>
+    <CharCode>EUR</CharCode>
+    <Nominal>1</Nominal>
+    <Name>Евро</Name>
+    <Value>97,5000</Value>
+  </Valute>
+  <Valute ID="R01375">
+    <NumCode>156</NumCode>
+    <CharCode>CNY</CharCode>
+    <Nominal>1</Nominal>
+    <Name>Юань</Name>
+    <Value>12,3456</Value>
+  </Valute>
+  <Valute ID="R01700">
+    <NumCode>398</NumCode>
+    <CharCode>KZT</CharCode>
+    <Nominal>100</Nominal>
+    <Name>Тенге</Name>
+    <Value>19,5023</Value>
+  </Valute>
+  <Valute ID="R01090">
+    <NumCode>826</NumCode>
+    <CharCode>GBP</CharCode>
+    <Nominal>10</Nominal>
+    <Name>Фунт</Name>
+    <Value>1137,8500</Value>
+  </Valute>
+</ValCurs>
+"""
+
+
+def test_cbr_parser_divides_by_nominal():
+    """Курс = Value / Nominal — обязательно (₸ за 100, £ за 10 в fixture)."""
+    parsed = parse_cbr_xml(CBR_FIXTURE)
+    assert parsed["date"] == "2026-08-25"
+    rates = {row["currency"]: row["rate"] for row in parsed["rates"]}
+    assert rates["USD"] == "89.1234"      # Nominal=1
+    assert rates["EUR"] == "97.5"
+    assert rates["CNY"] == "12.3456"
+    assert rates["KZT"] == "0.195023"     # 19.5023 / 100 — деление работает
+    assert rates["GBP"] == "113.785"      # 1137.85 / 10
+    # деньги — строками (ADR-003)
+    assert all(isinstance(row["rate"], str) for row in parsed["rates"])
 
 
 def test_every_minute_job_due():

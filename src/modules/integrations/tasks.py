@@ -124,8 +124,14 @@ def run_job(self, job_id: str) -> dict:
             result = connector.fetch(job.endpoint)
             items = result.data if isinstance(result.data, list) else [result.data]
             transformed = [apply_mapping(item, mapping) for item in items if item is not None]
-            if transformed:
-                # спец-событие задания вместо дефолтного (этап C; ADR-002)
+            if transformed and job.emit_event != "integration.data.fetched":
+                # спец-событие задания: payload = сам результат + source/job
+                # (контракт события главнее generic-формата, ADR-002)
+                for item in transformed:
+                    if isinstance(item, dict):
+                        publish(db, job.emit_event,
+                                {**item, "source": connection.connector_code, "job": job.name})
+            elif transformed:
                 publish(db, job.emit_event, {"job": job.name, "items": transformed[:100]})
         else:
             # push: полезная нагрузка пока задаётся вручную через API/mapping

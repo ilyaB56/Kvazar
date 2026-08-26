@@ -48,6 +48,19 @@ MANIFESTS: list[Manifest] = [
 ]
 
 
+def register_event_handlers() -> list[Manifest]:
+    """Подписать обработчики событий всех модулей к шине.
+
+    Вызывается и приложением (main), и Celery-воркером: диспетчер outbox
+    живёт в воркере, подписчики должны быть зарегистрированы в обоих
+    процессах — иначе события помечаются processed без доставки.
+    """
+    for m in MANIFESTS:
+        for event_name, handler in m.event_handlers.items():
+            events.subscribe(event_name, handler)
+    return MANIFESTS
+
+
 def install_modules(app: FastAPI) -> list[Manifest]:
     """Подключить роутеры и подписки всех активных модулей к приложению."""
     seen: set[str] = set()
@@ -59,8 +72,7 @@ def install_modules(app: FastAPI) -> list[Manifest]:
         for router in m.routers:
             prefix = f"/api/v1/{m.url_prefix or m.name}" if m.name != "core" else "/api/v1"
             app.include_router(router, prefix=prefix)
-        for event_name, handler in m.event_handlers.items():
-            events.subscribe(event_name, handler)
+        register_event_handlers()
         seen.add(m.name)
         logger.info("module installed: %s %s", m.name, m.version)
     return MANIFESTS

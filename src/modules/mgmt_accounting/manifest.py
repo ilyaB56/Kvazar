@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from src.core.contracts import Manifest
 from src.modules.mgmt_accounting.router import router
+from src.modules.mgmt_accounting.service import upsert_rates_from_event
 
 manifest = Manifest(
     name="mgmt_accounting",
@@ -15,4 +16,8 @@ manifest = Manifest(
     depends_on=("core",),
     routers=(router,),
     url_prefix="accounting",
+    event_handlers={
+        # курсы от коннекторов (showcase-chain, этап C) → upsert в rates
+        "integration.rates.fetched": upsert_rates_from_event,
+    },
 )

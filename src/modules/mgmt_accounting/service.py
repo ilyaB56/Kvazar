@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from src.core import events
 from src.core.versioning import record_version
+from src.db import SessionLocal
 from src.modules.mgmt_accounting import models as m
 
 # Базовая (отчётная) валюта. Поле «валюта компании» появится позже; курс базовой
@@ -428,6 +429,32 @@ def patch_account(
     if diff:
         record_version(db, "acc.account", str(account.id), user_id, diff)
     return account
+
+
+# ---------- Курсы (подписчик integration.rates.fetched, этап C) ----------
+
+def upsert_rates_from_event(payload: dict) -> None:
+    """Контракт integration.rates.fetched: {date, source, rates: [{currency, rate}]}.
+
+    Деньги строками (ADR-003) → Decimal; upsert по (date, currency),
+    внеурочные/дубли идемпотентно перезаписываются; своя сессия.
+    """
+    day = date.fromisoformat(str(payload["date"]))
+    db = SessionLocal()
+    try:
+        for item in payload.get("rates", []):
+            row = db.scalar(select(m.Rate).where(
+                m.Rate.date == day, m.Rate.currency == item["currency"]
+            ))
+            if row is None:
+                db.add(m.Rate(date=day, currency=item["currency"],
+                              rate=Decimal(str(item["rate"])), source="connector"))
+            else:
+                row.rate = Decimal(str(item["rate"]))
+                row.source = "connector"
+        db.commit()
+    finally:
+        db.close()
 
 
 # ---------- Отчёты ----------
