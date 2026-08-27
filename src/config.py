@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     update_manifest_url: str = "file:///app/deploy/test-manifest.json"
     update_channel: str = "stable"
 
+    # ИИ-агент (ADR-006: v1 — только локальный Ollama; мок для тестов)
+    ai_provider: str = "llm_mock"  # ollama | llm_mock
+    ai_chat_model: str = "qwen2.5:7b-instruct"
+    ai_embed_model: str = "bge-m3"
+    ai_max_tool_steps: int = 5
+    enable_external_llm: bool = False  # ADR-006: включение — отдельным решением
+
     # Ключ для шифрования секретов подключений (Fernet). В проде — из секрет-хранилища.
     secrets_key: str = "change-me-fernet-key"
 

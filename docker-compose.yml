@@ -42,6 +42,11 @@ services:
       BACKUP_RETENTION: "3"
       BACKUP_SCHEDULE: "03:00"
       UPDATE_MANIFEST_URL: file:///app/deploy/test-manifest.json
+      # ИИ-агент (ADR-006): прод — ollama; дев/тесты — llm_mock
+      AI_PROVIDER: llm_mock
+      AI_CHAT_MODEL: qwen2.5:7b-instruct
+      AI_EMBED_MODEL: bge-m3
+      AI_MAX_TOOL_STEPS: "5"
     ports:
       # наружу API не публикуем — только с localhost и через web-прокси (security-p0 п.5)
       - "127.0.0.1:8000:8000"
@@ -90,6 +95,17 @@ services:
     depends_on:
       - api
 
+  # Локальный LLM (ADR-006): поднимается профилем ai —
+  # docker compose --profile ai up -d; прогрев моделей: README ai-agent
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ai"]
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "11434:11434"
+
 volumes:
   pgdata:
   erp_backups:
+  ollama_models:

@@ -40,11 +40,18 @@ def _mgmt_accounting_manifest() -> Manifest:
     return manifest
 
 
+def _ai_agent_manifest() -> Manifest:
+    from src.modules.ai_agent.manifest import manifest
+
+    return manifest
+
+
 # Порядок = порядок зависимостей. Ядро всегда первым.
 MANIFESTS: list[Manifest] = [
     _core_manifest(),
     _integrations_manifest(),
     _mgmt_accounting_manifest(),
+    _ai_agent_manifest(),
 ]
 
 
