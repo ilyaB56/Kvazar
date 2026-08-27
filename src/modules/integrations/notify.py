@@ -68,6 +68,10 @@ def send_notification(rule: m.NotificationRule, payload: dict) -> bool:
 
 def make_notification_handler(event_name: str):
     def handler(payload: dict) -> None:
+        # отправка уходит в воркер: блокирующий httpx в api-процессе вешал
+        # event loop (dispatch_outbox вызывается и из вебхуков)
+        from src.modules.integrations.tasks import notify_task
+
         db = SessionLocal()
         try:
             rules = db.scalars(select(m.NotificationRule).where(
@@ -77,11 +81,11 @@ def make_notification_handler(event_name: str):
         finally:
             db.close()
         for rule in rules:
-            # ошибка одного правила не валит остальные
             try:
-                send_notification(rule, payload)
-            except Exception:  # noqa: BLE001 — уведомления не должны ломать диспетчер
-                logger.exception("notify: rule %s crashed", rule.name)
+                notify_task.delay(str(rule.id), dict(payload))
+            except Exception:  # noqa: BLE001 — уведомления не ломают диспетчер
+                logger.exception("notify: queueing rule %s failed", rule.name)
+
     return handler
 
 

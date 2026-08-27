@@ -94,6 +94,37 @@ def apply_mapping(data, mapping: m.FieldMapping | None):
 
 
 @celery_app.task
+def notify_task(rule_id: str, payload: dict) -> bool:
+    """Отправка одного уведомления — в воркере: блокирующий httpx не должен
+    останавливать event loop API (dispatch_outbox вызывается и в api)."""
+    from src.modules.integrations.notify import send_notification
+
+    db = SessionLocal()
+    try:
+        rule = db.get(m.NotificationRule, rule_id)
+        if rule is None or not rule.is_active:
+            return False
+        return send_notification(rule, payload)
+    finally:
+        db.close()
+
+
+@celery_app.task
+def recipe_task(recipe_id: str, payload: dict) -> bool:
+    """Исполнение действия рецепта — в воркере (блокирующий api_call)."""
+    db = SessionLocal()
+    try:
+        recipe = db.get(m.Recipe, recipe_id)
+        if recipe is None or not recipe.is_published:
+            return False
+        from src.modules.integrations.recipes_executor import execute_recipe_action
+
+        return execute_recipe_action(recipe, payload)
+    finally:
+        db.close()
+
+
+@celery_app.task
 def dispatch_outbox_task() -> int:
     """Плановая рассылка накопившихся событий из outbox (вызывается beat'ом)."""
     db = SessionLocal()

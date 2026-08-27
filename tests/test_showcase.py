@@ -173,3 +173,17 @@ def test_1c_export_file_and_cp1251(monkeypatch):
     # cp1251-кодирование проходит (кириллица секций не выпадает)
     encoded = text.encode("windows-1251")
     assert "СекцияДокумент".encode("windows-1251") in encoded
+
+
+# ---------- Мини-исполнитель рецептов (этап F) ----------
+
+def test_recipe_body_template_render():
+    from src.modules.integrations.recipes_executor import render_body
+
+    payload = {"doc_number": "ПК-1", "amount": "100"}
+    # JSON-шаблон подставляется и парсится в dict
+    assert render_body('{"ref": "auto-{doc_number}", "sum": "{amount}"}', payload) == {
+        "ref": "auto-ПК-1", "sum": "100",
+    }
+    # не-JSON результат оборачивается
+    assert render_body("plain {doc_number}", payload) == {"text": "plain ПК-1"}
