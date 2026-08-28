@@ -11,7 +11,7 @@ celery_app = Celery(
     "erp",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["src.modules.integrations.tasks", "src.core.tasks"],
+    include=["src.modules.integrations.tasks", "src.core.tasks", "src.modules.ai_agent.tasks"],
 )
 
 # подписчики событий должны жить и в воркере: здесь крутится диспетчер outbox

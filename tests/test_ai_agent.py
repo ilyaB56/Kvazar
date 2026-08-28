@@ -100,3 +100,33 @@ def test_tools_whitelist_rejects_unknown():
 
     result = run_tool("delete_everything", {})
     assert "unknown tool" in result["error"]
+
+
+# ---------- Классификация выписок (этап F) ----------
+
+def test_parse_amount_and_date():
+    from src.modules.ai_agent.classify import parse_amount, parse_date
+
+    assert parse_amount("Оплата счёта 12 345,67 руб") == "12345.67"
+    assert parse_amount("перевод 100 руб") == "100.00"
+    assert parse_amount("нет суммы") is None
+    assert parse_date("15.08.2026") == "2026-08-15"
+    assert parse_date(None, "2026-08-15") == "2026-08-15"
+    # без дат — сегодня (формат ISO)
+    assert len(parse_date(None)) == 10
+
+
+def test_guess_kind():
+    from src.modules.ai_agent.classify import guess_kind
+
+    assert guess_kind("Зачисление от клиента") == "income"
+    assert guess_kind("Списано за услуги") == "expense"
+
+
+def test_idempotency_key_stable():
+    from src.modules.ai_agent.classify import item_idempotency_key
+
+    a = item_idempotency_key("bank", {"amount": "100", "date": "2026-08-01"})
+    b = item_idempotency_key("bank", {"date": "2026-08-01", "amount": "100"})
+    c = item_idempotency_key("other", {"amount": "100", "date": "2026-08-01"})
+    assert a == b and a != c and len(a) == 64

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from src.core.contracts import Manifest
+from src.modules.ai_agent.classify import on_integration_data_fetched as _on_data_fetched
 from src.modules.ai_agent.router import router
 
 manifest = Manifest(
@@ -12,4 +13,8 @@ manifest = Manifest(
     depends_on=("core", "integrations", "mgmt_accounting"),
     routers=(router,),
     url_prefix="ai",
+    event_handlers={
+        # входящие данные выписок -> предложения (классификация в фоне, этап F)
+        "integration.data.fetched": _on_data_fetched,
+    },
 )
