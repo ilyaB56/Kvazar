@@ -148,3 +148,69 @@ def delete_session(session_id: uuid.UUID, user: WriteUser,
     db.delete(session)
     db.commit()
     return {"ok": True}
+
+
+# ---------- Предложения и настройки (этап E) ----------
+
+class ProposalOut(BaseModel):
+    id: uuid.UUID
+    action_type: str
+    payload: dict
+    reason: str
+    status: str
+    result: dict
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SettingsOut(BaseModel):
+    autopapply: bool
+
+
+@router.get("/proposals", response_model=list[ProposalOut])
+def list_proposals(status: str | None = None, user: WriteUser = None,
+                   db: Session = Depends(get_db)):
+    query = select(m.Proposal).order_by(m.Proposal.created_at.desc()).limit(100)
+    if status:
+        query = query.where(m.Proposal.status == status)
+    return db.scalars(query).all()
+
+
+@router.post("/proposals/{proposal_id}/approve", response_model=ProposalOut)
+def approve_proposal(proposal_id: uuid.UUID, user: WriteUser):
+    from src.modules.ai_agent.proposals import apply_proposal
+
+    try:
+        return apply_proposal(proposal_id, decided_by=user.id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/proposals/{proposal_id}/reject", response_model=ProposalOut)
+def reject_proposal_endpoint(proposal_id: uuid.UUID, user: WriteUser):
+    from src.modules.ai_agent.proposals import reject_proposal
+
+    try:
+        return reject_proposal(proposal_id, decided_by=user.id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/settings", response_model=SettingsOut)
+def get_settings_endpoint(user: WriteUser, db: Session = Depends(get_db)):
+    from src.modules.ai_agent.proposals import get_autopapply
+
+    return {"autopapply": get_autopapply(db, user.id)}
+
+
+@router.put("/settings", response_model=SettingsOut)
+def update_settings(body: SettingsOut, user: WriteUser, db: Session = Depends(get_db)):
+    """Автоприменение — только для ролей user/admin (readonly → 403)."""
+    from src.modules.ai_agent.proposals import set_autopapply
+
+    if getattr(user, "role", "user") == "readonly":
+        raise HTTPException(403, "autopapply is not available for readonly")
+    set_autopapply(db, user.id, body.autopapply)
+    db.commit()
+    return {"autopapply": body.autopapply}

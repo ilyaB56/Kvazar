@@ -54,6 +54,13 @@ def _seed_ai_chain(db) -> None:
             config={"base_url": "http://ollama:11434", "timeout_seconds": 300},
         ))
 
+    # токен, созданный до введения owner_user_id, привязываем к админу
+    orphan = db.scalar(select(ApiToken).where(ApiToken.name == "ai-agent"))
+    if orphan is not None and orphan.owner_user_id is None:
+        admin = db.scalar(select(User).where(User.role == "admin"))
+        if admin is not None:
+            orphan.owner_user_id = admin.id
+
     if db.scalar(select(ApiToken).where(ApiToken.name == "ai-agent")) is None:
         from src.modules.integrations.crypto import encrypt_dict
 

@@ -3,7 +3,7 @@ import { nextTick, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { ChatLineRound, Delete, Plus } from '@element-plus/icons-vue'
-import { get, post, del } from '../api/client'
+import { get, post, put, del } from '../api/client'
 
 const { t } = useI18n()
 
@@ -78,6 +78,59 @@ function scrollToBottom() {
 }
 
 onMounted(loadSessions)
+
+import { onMounted as _om } from 'vue'
+// proposals tab state
+interface Proposal {
+  id: string
+  action_type: string
+  payload: Record<string, unknown>
+  reason: string
+  status: string
+  result: Record<string, unknown>
+  created_at: string
+}
+const proposals = ref<Proposal[]>([])
+const autopapply = ref(false)
+const deciding = ref<Record<string, boolean>>({})
+
+async function loadProposals() {
+  proposals.value = await get<Proposal[]>('/ai/proposals')
+}
+
+async function loadSettings() {
+  const s = await get<{ autopapply: boolean }>('/ai/settings')
+  autopapply.value = s.autopapply
+}
+
+async function toggleAutopapply(value: boolean | string | number) {
+  const newValue = Boolean(value)
+  await put('/ai/settings', { autopapply: newValue })
+  autopapply.value = newValue
+}
+
+async function approve(row: Proposal) {
+  deciding.value[row.id] = true
+  try {
+    await post(`/ai/proposals/${row.id}/approve`)
+    await loadProposals()
+  } finally {
+    deciding.value[row.id] = false
+  }
+}
+
+async function reject(row: Proposal) {
+  deciding.value[row.id] = true
+  try {
+    await post(`/ai/proposals/${row.id}/reject`)
+    await loadProposals()
+  } finally {
+    deciding.value[row.id] = false
+  }
+}
+
+_om(() => { loadProposals(); loadSettings() })
+
 </script>
 
 <template>
@@ -87,6 +140,9 @@ onMounted(loadSessions)
       <el-button :icon="Plus" @click="newSession">{{ t('ai.newSession') }}</el-button>
     </div>
 
+
+    <el-tabs>
+      <el-tab-pane :label="t('ai.tabChat')">
     <div class="assistant__layout">
       <el-aside width="240px" class="assistant__sessions">
         <div
@@ -132,6 +188,46 @@ onMounted(loadSessions)
         </div>
       </div>
     </div>
+      </el-tab-pane>
+
+      <el-tab-pane :label="t('ai.tabProposals')">
+        <div class="assistant__autopapply">
+          <el-switch v-model="autopapply" @change="toggleAutopapply" />
+          <span>{{ t('ai.autopapply') }}</span>
+          <span class="muted">{{ t('ai.autopapplyHint') }}</span>
+        </div>
+        <el-table :data="proposals">
+          <el-table-column :label="t('ai.proposalType')" width="170">
+            <template #default="{ row }">{{ t(`ai.action.${row.action_type}`) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('ai.proposalPayload')" min-width="220">
+            <template #default="{ row }">
+              {{ row.payload.kind }} · {{ row.payload.amount }} {{ row.payload.currency }} · {{ row.payload.description }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="reason" :label="t('ai.proposalReason')" min-width="150" />
+          <el-table-column :label="t('ai.proposalStatus')" width="130">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'approved' || row.status === 'auto_applied' ? 'success' : row.status === 'rejected' || row.status === 'failed' ? 'danger' : 'info'">
+                {{ t(`ai.status.${row.status}`) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column width="200">
+            <template #default="{ row }">
+              <template v-if="row.status === 'pending'">
+                <el-button size="small" type="success" :loading="deciding[row.id]" @click="approve(row)">
+                  {{ t('ai.approve') }}
+                </el-button>
+                <el-button size="small" type="danger" :loading="deciding[row.id]" @click="reject(row)">
+                  {{ t('ai.reject') }}
+                </el-button>
+              </template>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
@@ -225,5 +321,12 @@ onMounted(loadSessions)
   gap: 8px;
   padding-top: 8px;
   border-top: 1px solid #e4e7ed;
+}
+
+.assistant__autopapply {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
 }
 </style>

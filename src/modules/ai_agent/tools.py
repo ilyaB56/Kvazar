@@ -7,6 +7,7 @@ API учёта через connection ai-self-api с X-API-Token (ADR-006 п.4);
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 from sqlalchemy import select
@@ -125,3 +126,33 @@ def run_tool(name: str, args: dict) -> Any:
         return tool(**(args or {}))
     except TypeError as exc:
         return {"error": f"bad args for {name}: {exc}"}
+
+
+def propose_transaction(*, operated_at: str, amount: str, currency: str,
+                        account_id: str, kind: str = "income",
+                        category_id: str | None = None,
+                        counterparty_id: str | None = None,
+                        description: str = "", user_id: str = "") -> dict:
+    """Единственный write-инструмент (этап E): создаёт proposal, не транзакцию.
+
+    ADR-006 п.5: запись — через предложение; автоприменение — по настройке
+    пользователя (создаёт auto_applied proposal с полным аудитом).
+    """
+    from src.modules.ai_agent.proposals import create_proposal
+
+    if not user_id:
+        return {"error": "propose_transaction requires user_id"}
+    proposal = create_proposal(
+        user_id=uuid.UUID(user_id), action_type="create_transaction",
+        payload={
+            "kind": kind, "operated_at": operated_at, "amount": str(amount),
+            "currency": currency, "account_id": account_id,
+            "category_id": category_id, "counterparty_id": counterparty_id,
+            "description": description,
+        },
+        reason="предложено ИИ-ассистентом из диалога",
+    )
+    return {"proposal_id": str(proposal.id), "status": proposal.status}
+
+
+TOOLS["propose_transaction"] = propose_transaction

@@ -79,3 +79,33 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text)
     meta: Mapped[dict] = mapped_column(JSONB, default=dict)  # sources, tools_used
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Proposal(Base):
+    """Предложение записи (ADR-006 п.5): агент предлагает, человек применяет.
+
+    payload для create_transaction — поля транзакции; деньги строками.
+    """
+
+    __table_args__ = ({"schema": SCHEMA},)
+    __tablename__ = "proposals"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("erp_core.users.id"), index=True)
+    action_type: Mapped[str] = mapped_column(String(40))  # create_transaction | categorize
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), index=True)
+    result: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("erp_core.users.id"))
+
+
+class UserSettings(Base):
+    __table_args__ = ({"schema": SCHEMA},)
+    __tablename__ = "user_settings"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("erp_core.users.id"), primary_key=True)
+    autopapply: Mapped[bool] = mapped_column(Boolean, default=False)
