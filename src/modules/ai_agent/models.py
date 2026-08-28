@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import UserDefinedType
 
@@ -53,3 +53,29 @@ class Chunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list] = mapped_column(Vector1024)
+
+
+class ChatSession(Base):
+    """Сессия диалога; chat_messages — полное логирование (ADR-006 п.7)."""
+
+    __table_args__ = ({"schema": SCHEMA},)
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.users.id"), index=True)
+    title: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ChatMessage(Base):
+    __table_args__ = ({"schema": SCHEMA},)
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.chat_sessions.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(20))  # user | assistant | system
+    content: Mapped[str] = mapped_column(Text)
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict)  # sources, tools_used
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

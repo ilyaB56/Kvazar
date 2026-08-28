@@ -23,6 +23,7 @@ export default {
     sync: 'Синхронизации',
     system: 'Обновления и бэкапы',
     notifications: 'Уведомления',
+    assistant: 'ИИ-ассистент',
     accounting: 'Учёт',
     crm: 'CRM',
     ai: 'ИИ-агент',
@@ -40,6 +41,15 @@ export default {
     test: 'Тест',
     testSent: 'Тестовое сообщение отправлено',
     testFailed: 'Отправка не удалась (проверьте connection Telegram)',
+  },
+  ai: {
+    title: 'ИИ-ассистент',
+    newSession: 'Новая сессия',
+    noSessions: 'Нет сессий',
+    untitled: 'Без заголовка',
+    placeholder: 'Спросите о документах, курсах или движении денег…',
+    send: 'Отправить',
+    sources: 'Источники',
   },
   system: {
     title: 'Обновления и бэкапы',
