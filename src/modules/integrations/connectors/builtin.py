@@ -62,7 +62,8 @@ class HttpRestConnector(BaseConnector):
     def fetch(self, endpoint: str = "", params: dict | None = None) -> ConnectorResult:
         try:
             with self._client() as client:
-                response = client.get(endpoint, params=params or {})
+                # params={} затирает query в endpoint (поведение httpx)
+                response = client.get(endpoint, params=params or None)
                 response.raise_for_status()
                 return ConnectorResult(ok=True, data=response.json())
         except httpx.HTTPError as exc:

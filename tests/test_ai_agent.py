@@ -46,3 +46,57 @@ def test_mock_embeddings_bag_of_words_semantics():
     unrelated = _hash_embed("бухгалтерия налог")
     assert cosine(dog, cat) > 0.0            # общее слово «собака»
     assert cosine(dog, cat) > cosine(dog, unrelated)
+
+
+# ---------- Оркестрация инструментов и лимит шагов (этап D) ----------
+
+def test_extract_tool_call():
+    from src.modules.ai_agent.chat import _extract_tool_call
+
+    assert _extract_tool_call('{"tool": "get_rate", "args": {"currency": "USD", "date": "2026-08-01"}}') == {
+        "tool": "get_rate", "args": {"currency": "USD", "date": "2026-08-01"}}
+    # обычный текст и повреждённый JSON — не tool-call
+    assert _extract_tool_call('За август поступило 100 руб.') is None
+    assert _extract_tool_call('{"tool": broken') is None
+    assert _extract_tool_call('{"другой": "json"}') is None
+
+
+def test_tool_loop_and_step_limit(monkeypatch):
+    from src.modules.ai_agent import chat as chat_mod
+
+    scripted = '{"tool": "get_cashflow", "args": {"date_from": "2026-08-01", "date_to": "2026-08-31"}}'
+    calls = []
+    responses = iter([{"content": scripted}, {"content": "Итого 100 руб."}])
+
+    def fake_chat(messages, scenario="d", scripted_content=None):
+        calls.append(list(messages))
+        return next(responses)
+
+    def fake_tool(name, args):
+        return {"closing_balance": "100.00"}
+
+    monkeypatch.setattr(chat_mod, "chat", fake_chat)
+    monkeypatch.setattr("src.modules.ai_agent.tools.run_tool", fake_tool, raising=False)
+    import src.modules.ai_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "run_tool", fake_tool)
+
+    messages = [{"role": "user", "content": "сколько пришло"}]
+    answer, used = chat_mod.chat_with_tools(messages, "test")
+    assert any(t["tool"] == "get_cashflow" and t["ok"] for t in used)
+    assert "100" in answer
+    # результат инструмента приходит экранированным блоком [ДАННЫЕ]
+    assert any("[ДАННЫЕ: результат инструмента" in m["content"] for m in calls[-1])
+
+    # зацикленный мок -> останов по лимиту
+    monkeypatch.setattr(chat_mod, "chat", lambda m, scenario="d", scripted_content=None:
+                        {"content": scripted_content})
+    answer2, used2 = chat_mod.chat_with_tools(messages, "test", scripted_content=scripted)
+    assert len(used2) == 5
+    assert "лимит" in answer2.lower()
+
+
+def test_tools_whitelist_rejects_unknown():
+    from src.modules.ai_agent.tools import run_tool
+
+    result = run_tool("delete_everything", {})
+    assert "unknown tool" in result["error"]
