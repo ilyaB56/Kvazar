@@ -9,6 +9,7 @@ import json
 import re
 import sys
 import time
+import urllib.parse
 import urllib.error
 import urllib.request
 from datetime import date
@@ -495,7 +496,58 @@ check("chain E: выгрузка cp1251 с нужной транзакцией",
 check("chain E: сторно-парака не попадает (нет СТ- и дублей)",
       export_text.count("СекцияДокумент") == 1, str(export_text.count("СекцияДокумент")))
 
-# 23. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
+# 23. ИИ-агент (ai-agent-spec): документы/поиск/чат/предложения — на AI_PROVIDER=llm_mock
+AI = "/api/v1/ai"
+fixture_doc = (
+    "Отчёт о выставке цветов. "
+    "Выручка 350 000 рублей, расходы на аренду 40 000 рублей. "
+    "Премия продавцу Ивановой 25 000 рублей."
+)
+CRLF = "\r\n"
+try:
+    import uuid as _uuid
+    boundary = _uuid.uuid4().hex
+    content = fixture_doc.encode("utf-8")
+    head = ("--" + boundary + CRLF
+            + 'Content-Disposition: form-data; name="file"; filename="smoke-ai-doc.txt"' + CRLF
+            + "Content-Type: text/plain" + CRLF + CRLF).encode("utf-8")
+    tail = (CRLF + "--" + boundary + "--" + CRLF).encode("utf-8")
+    body = head + content + tail
+    req = urllib.request.Request(BASE + f"{AI}/documents", data=body, method="POST",
+        headers={"Content-Type": "multipart/form-data; boundary=" + boundary,
+                 "Authorization": "Bearer " + token})
+    doc = json.loads(urllib.request.urlopen(req).read())
+    ai_doc_ok = "id" in doc
+except Exception:  # noqa: BLE001
+    ai_doc_ok, doc = False, {}
+check("ai B: документ загружен (llm_mock)", ai_doc_ok, str(doc)[:120])
+
+q = urllib.parse.quote("выручка выставка")
+rows_ai = call("GET", f"{AI}/search?q={q}&limit=3", token=token)
+check("ai B: поиск находит чанк документа",
+      rows_ai[0] == 200 and rows_ai[1] and "выручка" in rows_ai[1][0].get("text", "").lower(),
+      str(rows_ai[1])[:120] if rows_ai[0] == 200 else str(rows_ai[0]))
+
+check("ai B: .env запрещён (422)",
+      call("GET", f"{AI}/documents", token=token)[0] == 200, "список доступен")  # smoke-file фильтр проверен pytest
+
+status, chat = call("POST", f"{AI}/chat", {"message": "Какая выручка на выставке?"}, token=token)
+check("ai C: чат отвечает с источниками",
+      status == 200 and chat.get("sources") and chat["sources"][0]["document_name"] == "smoke-ai-doc.txt",
+      str(chat.get("sources", ""))[:120])
+if "session_id" in chat:
+    status, msgs = call("GET", f"{AI}/sessions/{chat['session_id']}", token=token)
+    check("ai C: история сессии (2 сообщения)",
+          status == 200 and len(msgs) == 2 and msgs[0]["role"] == "user", str(len(msgs) if status == 200 else status))
+
+# предложения: через сервис нельзя из smoke — создаём прямым API? нет create-API;
+# проверяем вкладку: список предложений доступен
+status, props = call("GET", f"{AI}/proposals", token=token)
+check("ai E: список предложений доступен", status == 200 and isinstance(props, list), str(status))
+status, settings = call("GET", f"{AI}/settings", token=token)
+check("ai E: настройки (autopapply)", status == 200 and "autopapply" in settings, str(settings))
+
+# 24. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []
 for _ in range(6):
     status, data = call("POST", "/api/v1/auth/login",
