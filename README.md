@@ -98,7 +98,17 @@ docker compose up -d --build web
 - **Только локальный Ollama** (данные не покидают контур). Профиль:
   `docker compose --profile ai up -d`, прогрев моделей:
   `docker compose exec api python -m src.modules.ai_agent.pull_models`.
-  Дев/тесты — `AI_PROVIDER=llm_mock` (детерминированный мок).
+  Дев/тесты — `AI_PROVIDER=llm_mock` (детерминированный мок); переключение
+  на живую модель — через `.env` (`AI_PROVIDER=ollama`, модель —
+  `AI_CHAT_MODEL`).
+- **Память**: 7B-модель требует ~5 ГБ свободной памяти Docker VM; на
+  машинах с ≤8 ГБ RAM используйте `AI_CHAT_MODEL=qwen2.5:3b-instruct`.
+- **Профиль ai обязателен**: без `--profile ai` контейнер `ollama` не
+  поднимается и DNS-имя `ollama` внутри сети compose пропадает —
+  connection/провайдер будут падать. Конфигурация live-запуска:
+  `docker compose --profile ai up -d` с `AI_PROVIDER=ollama` в `.env`.
+- `pull_models` по умолчанию ходит в `http://ollama:11434` (внутри
+  compose); запуск с хоста — `OLLAMA_BASE_URL=http://localhost:11434`.
 - Внешние LLM выключены (`ENABLE_EXTERNAL_LLM=false`); включение —
   отдельным решением (поправка ADR-006).
 - **Режим агента**: чтение — сразу (отчёты, поиск, RAG), запись — только

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 from src.config import get_settings
@@ -15,10 +16,10 @@ from src.modules.integrations.connectors.llm import OllamaConnector
 
 def main() -> int:
     settings = get_settings()
-    # коннектор сам держит сетевой код; для pull используем его base_url
+    # Запуск внутри compose: ollama — отдельный сервис (http://ollama:11434).
+    # При запуске с хоста переопределить: OLLAMA_BASE_URL=http://localhost:11434
+    base = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
     connector = OllamaConnector(code="ollama", display_name="pull")
-    base = connector.config.get("base_url", "http://localhost:11434").replace(
-        "http://ollama:", "http://localhost:")
     for model in (settings.ai_chat_model, settings.ai_embed_model):
         print(f"pulling {model} …", flush=True)
         result = connector.pull_model(model, base_url=base)

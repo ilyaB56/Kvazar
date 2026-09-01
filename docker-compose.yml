@@ -42,9 +42,10 @@ services:
       BACKUP_RETENTION: "3"
       BACKUP_SCHEDULE: "03:00"
       UPDATE_MANIFEST_URL: file:///app/deploy/test-manifest.json
-      # ИИ-агент (ADR-006): прод — ollama; дев/тесты — llm_mock
-      AI_PROVIDER: llm_mock
-      AI_CHAT_MODEL: qwen2.5:7b-instruct
+      # ИИ-агент (ADR-006): прод — ollama; дев/тесты — llm_mock.
+      # Провайдер переопределяется через .env (AI_PROVIDER=ollama).
+      AI_PROVIDER: ${AI_PROVIDER:-llm_mock}
+      AI_CHAT_MODEL: ${AI_CHAT_MODEL:-qwen2.5:7b-instruct}
       AI_EMBED_MODEL: bge-m3
       AI_MAX_TOOL_STEPS: "5"
     ports:
