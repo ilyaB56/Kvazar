@@ -1,5 +1,8 @@
 services:
+  # После рестарта Docker-движка контейнеры поднимаются сами (актуально для
+  # коробочной установки: сервер клиента перезагрузили — ERP поднялась сама).
   db:
+    restart: unless-stopped
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: erp
@@ -16,6 +19,7 @@ services:
       retries: 10
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     ports:
       - "6379:6379"
@@ -26,6 +30,7 @@ services:
       retries: 10
 
   api:
+    restart: unless-stopped
     build: .
     command: sh -c "alembic upgrade head && python -m src.seed && uvicorn src.main:app --host 0.0.0.0 --port 8000"
     environment: &app_env
@@ -62,6 +67,7 @@ services:
         condition: service_healthy
 
   worker:
+    restart: unless-stopped
     build: .
     command: celery -A src.worker.celery_app worker --loglevel=info -Q integrations,default
     environment: *app_env
@@ -74,6 +80,7 @@ services:
         condition: service_healthy
 
   beat:
+    restart: unless-stopped
     build: .
     command: celery -A src.worker.celery_app beat --loglevel=info
     environment: *app_env
@@ -84,6 +91,7 @@ services:
         condition: service_healthy
 
   web:
+    restart: unless-stopped
     build: ./frontend
     ports:
       - "8080:80"
@@ -99,6 +107,7 @@ services:
   # Локальный LLM (ADR-006): поднимается профилем ai —
   # docker compose --profile ai up -d; прогрев моделей: README ai-agent
   ollama:
+    restart: unless-stopped
     image: ollama/ollama:latest
     profiles: ["ai"]
     volumes:
