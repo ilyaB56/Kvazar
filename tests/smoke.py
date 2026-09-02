@@ -391,7 +391,8 @@ if "id" in cbr_job:
     call("POST", f"/api/v1/integrations/sync-jobs/{cbr_job['id']}/run", token=token)
     for _ in range(20):  # воркер после рестартов движка может взять задачу с задержкой — окно 60 c
         time.sleep(3)
-        status, rows = call("GET", f"{ACC}/rates?currency=USD&date_from={today}&date_to={today}", token=token)
+        # EUR, не USD: секция 10 сама перезаписывает USD-курс в manual
+        status, rows = call("GET", f"{ACC}/rates?currency=EUR&date_from={today}&date_to={today}", token=token)
         if status == 200 and any(r.get("source") == "connector" for r in rows):
             cbr_ok = True
             break
