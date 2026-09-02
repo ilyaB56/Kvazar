@@ -266,3 +266,161 @@ def crm_history(entity_type: str, entity_id: str, user: WriteUser,
          "changed_at": r.changed_at.isoformat(), "diff": r.diff, "reason": r.reason}
         for r in rows
     ]
+
+
+# ---------- Коммуникации и задачи (этап B) ----------
+
+class CommunicationIn(BaseModel):
+    kind: str = "note"
+    content: str
+    occurred_at: object = None
+
+
+class CommunicationOut(BaseModel):
+    id: uuid.UUID
+    deal_id: uuid.UUID
+    kind: str
+    content: str
+    occurred_at: object = None
+    created_by: uuid.UUID
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ActivityIn(BaseModel):
+    title: str
+    due_at: object
+
+
+class ActivityPatch(BaseModel):
+    title: str | None = None
+    due_at: object = None
+    done: bool | None = None
+
+
+class ActivityOut(BaseModel):
+    id: uuid.UUID
+    deal_id: uuid.UUID
+    title: str
+    due_at: object = None
+    done: bool
+    done_at: datetime | None
+    created_by: uuid.UUID
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/deals/{deal_id}/communications", response_model=list[CommunicationOut])
+def list_communications(deal_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+    _get_deal(db, deal_id)
+    return db.scalars(select(m.Communication).where(m.Communication.deal_id == deal_id)
+                      .order_by(m.Communication.occurred_at.desc())).all()
+
+
+@router.post("/deals/{deal_id}/communications", response_model=CommunicationOut, status_code=201)
+def create_communication(deal_id: uuid.UUID, body: CommunicationIn, user: WriteUser,
+                         db: Session = Depends(get_db)):
+    from datetime import date as date_type
+
+    _get_deal(db, deal_id)
+    if body.kind not in ("call", "email", "meeting", "note", "other"):
+        raise HTTPException(422, "kind must be call|email|meeting|note|other")
+    occurred = body.occurred_at or date_type.today()
+    if isinstance(occurred, str):
+        occurred = date_type.fromisoformat(occurred)
+    row = m.Communication(deal_id=deal_id, kind=body.kind, content=body.content,
+                          occurred_at=occurred, created_by=user.id)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.get("/deals/{deal_id}/activities", response_model=list[ActivityOut])
+def list_deal_activities(deal_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+    _get_deal(db, deal_id)
+    return db.scalars(select(m.Activity).where(m.Activity.deal_id == deal_id)
+                      .order_by(m.Activity.due_at)).all()
+
+
+def _create_activity(db: Session, deal_id: uuid.UUID, body: ActivityIn,
+                     user_id: uuid.UUID) -> m.Activity:
+    from datetime import date as date_type
+
+    due = body.due_at
+    if isinstance(due, str):
+        due = date_type.fromisoformat(due)
+    if not isinstance(due, date_type):
+        raise HTTPException(422, "due_at must be a date")
+    row = m.Activity(deal_id=deal_id, title=body.title, due_at=due, created_by=user_id)
+    db.add(row)
+    db.flush()
+    from src.core import events
+
+    events.publish(db, "crm.activity.created", {
+        "activity_id": str(row.id), "deal_id": str(deal_id),
+        "title": row.title, "due_at": row.due_at.isoformat(),
+    })
+    return row
+
+
+@router.post("/deals/{deal_id}/activities", response_model=ActivityOut, status_code=201)
+def create_activity(deal_id: uuid.UUID, body: ActivityIn, user: WriteUser,
+                    db: Session = Depends(get_db)):
+    _get_deal(db, deal_id)
+    row = _create_activity(db, deal_id, body, user.id)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.patch("/activities/{activity_id}", response_model=ActivityOut)
+def patch_activity(activity_id: uuid.UUID, body: ActivityPatch, user: WriteUser,
+                   db: Session = Depends(get_db)):
+    from datetime import date as date_type
+
+    row = db.get(m.Activity, activity_id)
+    if row is None:
+        raise HTTPException(404, "Activity not found")
+    changes = body.model_dump(exclude_unset=True)
+    if "done" in changes:
+        row.done = changes.pop("done")
+        from datetime import UTC, datetime as dt
+
+        row.done_at = dt.now(UTC) if row.done else None
+    if "due_at" in changes and changes["due_at"] is not None:
+        due = changes["due_at"]
+        if isinstance(due, str):
+            due = date_type.fromisoformat(due)
+        row.due_at = due
+    if changes.get("title"):
+        row.title = changes["title"]
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.get("/activities", response_model=list[ActivityOut])
+def list_activities(user: WriteUser, db: Session = Depends(get_db),
+                    due_before: object = None, status: str | None = None,
+                    responsible_id: uuid.UUID | None = None):
+    """Общий список задач: свои + все для админа; фильтры due_before/status/responsible."""
+    from datetime import date as date_type
+
+    is_admin = getattr(user, "role", "user") == "admin"
+    query = select(m.Activity).join(m.Deal, m.Deal.id == m.Activity.deal_id).where(
+        m.Deal.is_deleted.is_(False))
+    if not is_admin:
+        query = query.where(m.Deal.responsible_id == user.id)
+    elif responsible_id:
+        query = query.where(m.Deal.responsible_id == responsible_id)
+    if due_before is not None:
+        before = date_type.fromisoformat(due_before) if isinstance(due_before, str) else due_before
+        query = query.where(m.Activity.due_at <= before)
+    if status == "open":
+        query = query.where(m.Activity.done.is_(False))
+    elif status == "done":
+        query = query.where(m.Activity.done.is_(True))
+    return db.scalars(query.order_by(m.Activity.due_at)).all()
