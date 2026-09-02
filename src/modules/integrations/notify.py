@@ -26,6 +26,11 @@ NOTIFY_EVENTS = (
     "integration.sync.failed",
     "system.updated",
     "system.rollback",
+    # витрина CRM (mini-crm-spec, этап A)
+    "crm.deal.created",
+    "crm.deal.stage_changed",
+    "crm.deal.won",
+    "crm.deal.lost",
 )
 
 

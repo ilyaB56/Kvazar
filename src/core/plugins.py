@@ -46,12 +46,19 @@ def _ai_agent_manifest() -> Manifest:
     return manifest
 
 
+def _mini_crm_manifest() -> Manifest:
+    from src.modules.mini_crm.manifest import manifest
+
+    return manifest
+
+
 # Порядок = порядок зависимостей. Ядро всегда первым.
 MANIFESTS: list[Manifest] = [
     _core_manifest(),
     _integrations_manifest(),
     _mgmt_accounting_manifest(),
     _ai_agent_manifest(),
+    _mini_crm_manifest(),
 ]
 
 
