@@ -29,7 +29,7 @@ def test_retention_keeps_last_n(db):
     """Сверх BACKUP_RETENTION удаляются самые старые (файл + строка)."""
     session = db()
     try:
-        before = session.scalars(select(Backup)).all()
+        before = session.scalars(select(Backup).order_by(Backup.created_at)).all()
         base = datetime.now(UTC) - timedelta(days=100)
         for i in range(4):
             session.add(Backup(

@@ -389,7 +389,7 @@ cbr_job, _ = get_or_create(
 cbr_ok = False
 if "id" in cbr_job:
     call("POST", f"/api/v1/integrations/sync-jobs/{cbr_job['id']}/run", token=token)
-    for _ in range(7):  # ждём выполнения и диспетчер up to ~21 c
+    for _ in range(20):  # воркер после рестартов движка может взять задачу с задержкой — окно 60 c
         time.sleep(3)
         status, rows = call("GET", f"{ACC}/rates?currency=USD&date_from={today}&date_to={today}", token=token)
         if status == 200 and any(r.get("source") == "connector" for r in rows):
@@ -498,56 +498,116 @@ check("chain E: сторно-парака не попадает (нет СТ- и
 
 # 23. ИИ-агент (ai-agent-spec): документы/поиск/чат/предложения — на AI_PROVIDER=llm_mock
 AI = "/api/v1/ai"
-fixture_doc = (
-    "Отчёт о выставке цветов. "
-    "Выручка 350 000 рублей, расходы на аренду 40 000 рублей. "
-    "Премия продавцу Ивановой 25 000 рублей."
-)
-CRLF = "\r\n"
-try:
-    import uuid as _uuid
-    boundary = _uuid.uuid4().hex
-    content = fixture_doc.encode("utf-8")
-    head = ("--" + boundary + CRLF
-            + 'Content-Disposition: form-data; name="file"; filename="smoke-ai-doc.txt"' + CRLF
-            + "Content-Type: text/plain" + CRLF + CRLF).encode("utf-8")
-    tail = (CRLF + "--" + boundary + "--" + CRLF).encode("utf-8")
-    body = head + content + tail
-    req = urllib.request.Request(BASE + f"{AI}/documents", data=body, method="POST",
-        headers={"Content-Type": "multipart/form-data; boundary=" + boundary,
-                 "Authorization": "Bearer " + token})
-    doc = json.loads(urllib.request.urlopen(req).read())
-    ai_doc_ok = "id" in doc
-except Exception:  # noqa: BLE001
-    ai_doc_ok, doc = False, {}
-check("ai B: документ загружен (llm_mock)", ai_doc_ok, str(doc)[:120])
+status, sysver = call("GET", "/api/v1/system/version", token=token)
+ai_mock = status == 200 and sysver.get("ai_provider") == "llm_mock"
+check("ai: провайдер llm_mock (иначе ai-секции невозможны)", ai_mock,
+      str(sysver.get("ai_provider", "?")) + " — для регресса: AI_PROVIDER=llm_mock docker compose up -d")
+if ai_mock:
+    fixture_doc = (
+        "Отчёт о выставке цветов. "
+        "Выручка 350 000 рублей, расходы на аренду 40 000 рублей. "
+        "Премия продавцу Ивановой 25 000 рублей."
+    )
+    CRLF = "\r\n"
+    try:
+        import uuid as _uuid
+        boundary = _uuid.uuid4().hex
+        content = fixture_doc.encode("utf-8")
+        head = ("--" + boundary + CRLF
+                + 'Content-Disposition: form-data; name="file"; filename="smoke-ai-doc.txt"' + CRLF
+                + "Content-Type: text/plain" + CRLF + CRLF).encode("utf-8")
+        tail = (CRLF + "--" + boundary + "--" + CRLF).encode("utf-8")
+        body = head + content + tail
+        req = urllib.request.Request(BASE + f"{AI}/documents", data=body, method="POST",
+            headers={"Content-Type": "multipart/form-data; boundary=" + boundary,
+                     "Authorization": "Bearer " + token})
+        doc = json.loads(urllib.request.urlopen(req).read())
+        ai_doc_ok = "id" in doc
+    except Exception:  # noqa: BLE001
+        ai_doc_ok, doc = False, {}
+    check("ai B: документ загружен (llm_mock)", ai_doc_ok, str(doc)[:120])
 
-q = urllib.parse.quote("выручка выставка")
-rows_ai = call("GET", f"{AI}/search?q={q}&limit=3", token=token)
-check("ai B: поиск находит чанк документа",
-      rows_ai[0] == 200 and rows_ai[1] and "выручка" in rows_ai[1][0].get("text", "").lower(),
-      str(rows_ai[1])[:120] if rows_ai[0] == 200 else str(rows_ai[0]))
+    q = urllib.parse.quote("выручка выставка")
+    rows_ai = call("GET", f"{AI}/search?q={q}&limit=3", token=token)
+    check("ai B: поиск находит чанк документа",
+          rows_ai[0] == 200 and rows_ai[1] and "выручка" in rows_ai[1][0].get("text", "").lower(),
+          str(rows_ai[1])[:120] if rows_ai[0] == 200 else str(rows_ai[0]))
 
-check("ai B: .env запрещён (422)",
-      call("GET", f"{AI}/documents", token=token)[0] == 200, "список доступен")  # smoke-file фильтр проверен pytest
+    check("ai B: .env запрещён (422)",
+          call("GET", f"{AI}/documents", token=token)[0] == 200, "список доступен")  # smoke-file фильтр проверен pytest
 
-status, chat = call("POST", f"{AI}/chat", {"message": "Какая выручка на выставке?"}, token=token)
-check("ai C: чат отвечает с источниками",
-      status == 200 and chat.get("sources") and chat["sources"][0]["document_name"] == "smoke-ai-doc.txt",
-      str(chat.get("sources", ""))[:120])
-if "session_id" in chat:
-    status, msgs = call("GET", f"{AI}/sessions/{chat['session_id']}", token=token)
-    check("ai C: история сессии (2 сообщения)",
-          status == 200 and len(msgs) == 2 and msgs[0]["role"] == "user", str(len(msgs) if status == 200 else status))
+    status, chat = call("POST", f"{AI}/chat", {"message": "Какая выручка на выставке?"}, token=token)
+    check("ai C: чат отвечает с источниками",
+          status == 200 and chat.get("sources") and chat["sources"][0]["document_name"] == "smoke-ai-doc.txt",
+          str(chat.get("sources", ""))[:120])
+    if "session_id" in chat:
+        status, msgs = call("GET", f"{AI}/sessions/{chat['session_id']}", token=token)
+        check("ai C: история сессии (2 сообщения)",
+              status == 200 and len(msgs) == 2 and msgs[0]["role"] == "user", str(len(msgs) if status == 200 else status))
 
-# предложения: через сервис нельзя из smoke — создаём прямым API? нет create-API;
-# проверяем вкладку: список предложений доступен
-status, props = call("GET", f"{AI}/proposals", token=token)
-check("ai E: список предложений доступен", status == 200 and isinstance(props, list), str(status))
-status, settings = call("GET", f"{AI}/settings", token=token)
-check("ai E: настройки (autopapply)", status == 200 and "autopapply" in settings, str(settings))
+    # предложения: через сервис нельзя из smoke — создаём прямым API? нет create-API;
+    # проверяем вкладку: список предложений доступен
+    status, props = call("GET", f"{AI}/proposals", token=token)
+    check("ai E: список предложений доступен", status == 200 and isinstance(props, list), str(status))
+    status, settings = call("GET", f"{AI}/settings", token=token)
+    check("ai E: настройки (autopapply)", status == 200 and "autopapply" in settings, str(settings))
 
-# 24. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
+# 24. mini_crm (mini-crm-spec): воронка, сделки, задачи, pipeline
+CRM = "/api/v1/crm"
+status, crm_stages = call("GET", f"{CRM}/stages", token=token)
+stage_by_name = {s["name"]: s for s in crm_stages} if status == 200 else {}
+check("crm A: стадии воронки (6, сид)",
+      status == 200 and len(crm_stages) == 6 and any(s["is_won"] for s in crm_stages),
+      str(len(crm_stages)))
+
+status, crm_deal = call("POST", f"{CRM}/deals", {
+    "title": f"smoke-crm-{run_tag}", "stage_id": stage_by_name["Новая"]["id"],
+    "amount": "100000", "currency": "RUB"}, token=token)
+check("crm A: сделка создана", status == 201 and Decimal(crm_deal["amount_base"]) == Decimal("100000"),
+      str(crm_deal.get("amount_base")))
+
+status, outbox_crm = call("GET", "/api/v1/events/outbox?event_name=crm.deal.created&limit=10", token=token)
+check("crm A: crm.deal.created в outbox",
+      status == 200 and any(e["payload"]["deal_id"] == crm_deal["id"] for e in outbox_crm))
+
+status, moved = call("POST", f"{CRM}/deals/{crm_deal['id']}/move",
+                     {"stage_id": stage_by_name["Согласование"]["id"]}, token=token)
+check("crm A: move по стадиям", status == 200, str(status))
+status, won_deal = call("POST", f"{CRM}/deals/{crm_deal['id']}/move",
+                        {"stage_id": stage_by_name["Выиграна"]["id"]}, token=token)
+check("crm A: move в won", status == 200, str(status))
+status, err_move = call("POST", f"{CRM}/deals/{crm_deal['id']}/move",
+                        {"stage_id": stage_by_name["Проиграна"]["id"]}, token=token)
+check("crm A: won → lost = 422", status == 422, str(status))
+
+status, found_crm = call("GET", f"{CRM}/deals?q=smoke-crm", token=token)
+check("crm A: поиск q= по названию",
+      status == 200 and any(d["id"] == crm_deal["id"] for d in found_crm),
+      str(len(found_crm) if status == 200 else status))
+
+status, crm_hist = call("GET", f"{CRM}/history/crm.deal/{crm_deal['id']}", token=token)
+check("crm A: версии crm.deal", status == 200 and len(crm_hist) >= 1, str(len(crm_hist) if status == 200 else status))
+
+# задачи: просроченные и событие
+status, crm_act = call("POST", f"{CRM}/deals/{crm_deal['id']}/activities",
+                       {"title": "smoke-звонок", "due_at": "2020-01-01"}, token=token)
+check("crm B: задача создана", status == 201, str(status)[:100])
+status, done_act = call("PATCH", f"{CRM}/activities/{crm_act['id']}", {"done": True}, token=token)
+check("crm B: done проставлен", status == 200 and done_act.get("done") is True, str(status))
+status, overdue = call("GET", f"{CRM}/activities?due_before={today}&status=open", token=token)
+check("crm B: просроченных нет (наша выполнена)", status == 200 and isinstance(overdue, list), str(status))
+status, outbox_act = call("GET", "/api/v1/events/outbox?event_name=crm.activity.created&limit=10", token=token)
+check("crm B: crm.activity.created в outbox",
+      status == 200 and any(e["payload"]["activity_id"] == crm_act["id"] for e in outbox_act))
+
+status, pipe = call("GET", f"{CRM}/report/pipeline", token=token)
+check("crm C: pipeline-отчёт",
+      status == 200 and "stages" in pipe and "weighted" in pipe["totals"], str(pipe)[:120])
+status, pipe_won = call("GET", f"{CRM}/report/pipeline?date_from={today}&date_to={today}", token=token)
+check("crm C: выиграно за период", status == 200 and pipe_won["won"]["count"] >= 1,
+      str(pipe_won.get("won")))
+
+# 25. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []
 for _ in range(6):
     status, data = call("POST", "/api/v1/auth/login",

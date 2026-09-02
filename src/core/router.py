@@ -365,6 +365,7 @@ def system_version(user: CurrentUser):
         "version": __version__,
         "channel": get_settings().update_channel,
         "latest": latest,
+        "ai_provider": get_settings().ai_provider,
     }
 
 

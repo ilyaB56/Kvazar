@@ -18,8 +18,11 @@ from src.worker import celery_app
 logger = logging.getLogger(__name__)
 
 _redis_client = None
-# пока задание выполняется, повторная постановка в очередь не допускается (этап B)
+# пока задание выполняется, повторная постановка в очередь не допускается (этап B).
+# Флаг хранит таймстамп старта: если воркер убит без finally (рестарт движка),
+# протухший флаг снимается сам, а не ждёт весь TTL
 LOCK_TTL_SECONDS = 1800
+LOCK_STALE_SECONDS = 600
 
 
 def _redis():
@@ -31,6 +34,21 @@ def _redis():
 
         _redis_client = redis.Redis.from_url(get_settings().redis_url)
     return _redis_client
+
+
+def _acquire_job_lock(job_id: str) -> bool:
+    import time
+
+    key = f"sync_job_in_progress:{job_id}"
+    client = _redis()
+    if client.set(key, str(time.time()), nx=True, ex=LOCK_TTL_SECONDS):
+        return True
+    started = client.get(key)
+    if started is not None and time.time() - float(started) > LOCK_STALE_SECONDS:
+        # протухший флаг (воркер погиб) — снимаем и захватываем заново
+        client.delete(key)
+        return bool(client.set(key, str(time.time()), nx=True, ex=LOCK_TTL_SECONDS))
+    return False
 
 
 @celery_app.task
@@ -136,8 +154,7 @@ def dispatch_outbox_task() -> int:
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
 def run_job(self, job_id: str) -> dict:
-    lock_key = f"sync_job_in_progress:{job_id}"
-    if not _redis().set(lock_key, "1", nx=True, ex=LOCK_TTL_SECONDS):
+    if not _acquire_job_lock(job_id):
         logger.info("job %s already running, skip duplicate", job_id)
         return {"skipped": True, "reason": "already running"}
     db = SessionLocal()
@@ -195,4 +212,4 @@ def run_job(self, job_id: str) -> dict:
         raise
     finally:
         db.close()
-        _redis().delete(lock_key)
+        _redis().delete(f"sync_job_in_progress:{job_id}")
