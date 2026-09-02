@@ -9,7 +9,7 @@ half-up до копеек, курс замораживается при созд
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -165,8 +165,16 @@ def move_deal(db: Session, deal: m.Deal, *, user_id: uuid.UUID, to_stage_id: uui
         raise CrmError(422, "Direct move between won and lost is not allowed")
 
     deal.stage_id = target.id
-    if target.is_lost:
-        deal.lost_reason = deal.lost_reason  # сохраняется при реанимации/возврате
+    now = datetime.now(UTC)
+    if target.is_won:
+        deal.won_at = now
+        deal.lost_at = None
+    elif target.is_lost:
+        deal.lost_at = now
+        deal.won_at = None
+    else:  # реанимация в открытую — сброс отметок
+        deal.won_at = None
+        deal.lost_at = None
     if not target.is_lost:
         deal.lost_reason = None
     db.flush()
@@ -203,3 +211,73 @@ def mark_deleted(db: Session, deal: m.Deal, *, user_id: uuid.UUID, reason: str) 
     record_version(db, "crm.deal", str(deal.id), user_id,
                    {"is_deleted": {"old": False, "new": True}}, reason=reason)
     return deal
+
+
+# ---------- Отчёт pipeline (этап C) ----------
+
+def pipeline(db: Session, responsible_id: uuid.UUID | None,
+             date_from: date | None, date_to: date | None) -> dict:
+    """Воронка по открытым стадиям + выиграно/проиграно за период.
+
+    weighted = Σ amount_base × probability/100 (квантование half-up до копеек,
+    ADR-003); всё в базовой валюте, деньги строками.
+    """
+    stages = db.scalars(select(m.Stage).where(
+        m.Stage.is_active.is_(True),
+        m.Stage.is_won.is_(False),
+        m.Stage.is_lost.is_(False),
+    ).order_by(m.Stage.position)).all()
+
+    rows = []
+    grand_count = 0
+    grand_total = Decimal(0)
+    grand_weighted = Decimal(0)
+    for stage in stages:
+        deals = db.scalars(select(m.Deal).where(
+            m.Deal.stage_id == stage.id,
+            m.Deal.is_deleted.is_(False),
+        )).all()
+        if responsible_id is not None:
+            deals = [d for d in deals if d.responsible_id == responsible_id]
+        total = sum((d.amount_base or Decimal(0) for d in deals), Decimal(0))
+        probability = stage.probability or 0
+        weighted = quantize2(sum(
+            ((d.amount_base or Decimal(0)) * probability / Decimal(100) for d in deals),
+            Decimal(0)))
+        rows.append({
+            "stage_id": str(stage.id), "stage": stage.name,
+            "probability": probability,
+            "count": len(deals),
+            "total": quantize2(total),
+            "weighted": weighted,
+        })
+        grand_count += len(deals)
+        grand_total += total
+        grand_weighted += weighted
+
+    def _period(column):
+        query = select(m.Deal).where(m.Deal.is_deleted.is_(False), column.isnot(None))
+        if date_from is not None:
+            query = query.where(column >= datetime.combine(date_from, datetime.min.time()))
+        if date_to is not None:
+            query = query.where(column <= datetime.combine(date_to, datetime.max.time()))
+        won_lost = db.scalars(query).all()
+        if responsible_id is not None:
+            won_lost = [d for d in won_lost if d.responsible_id == responsible_id]
+        return won_lost
+
+    won_deals = _period(m.Deal.won_at)
+    lost_deals = _period(m.Deal.lost_at)
+    return {
+        "stages": rows,
+        "totals": {
+            "count": grand_count,
+            "total": quantize2(grand_total),
+            "weighted": quantize2(grand_weighted),
+        },
+        "won": {
+            "count": len(won_deals),
+            "total": quantize2(sum((d.amount_base or Decimal(0) for d in won_deals), Decimal(0))),
+        },
+        "lost": {"count": len(lost_deals)},
+    }

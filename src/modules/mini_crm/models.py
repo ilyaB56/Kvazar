@@ -57,6 +57,9 @@ class Deal(Base):
     amount_base: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
 
     expected_close_at: Mapped[date | None] = mapped_column(Date)
+    # этап C: момент входа в won/lost (для отчёта pipeline «за период»)
+    won_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lost_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lost_reason: Mapped[str | None] = mapped_column(Text)
     dimensions: Mapped[dict] = mapped_column(JSONB, default=dict)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)

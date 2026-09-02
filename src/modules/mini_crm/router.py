@@ -424,3 +424,19 @@ def list_activities(user: WriteUser, db: Session = Depends(get_db),
     elif status == "done":
         query = query.where(m.Activity.done.is_(True))
     return db.scalars(query.order_by(m.Activity.due_at)).all()
+
+
+# ---------- Отчёт pipeline (этап C) ----------
+
+@router.get("/report/pipeline")
+def pipeline_report(user: WriteUser, db: Session = Depends(get_db),
+                    responsible_id: uuid.UUID | None = None,
+                    date_from: object = None, date_to: object = None):
+    from datetime import date as date_type
+
+    def to_date(value):
+        if value is None or isinstance(value, date_type):
+            return value
+        return date_type.fromisoformat(str(value))
+
+    return service.pipeline(db, responsible_id, to_date(date_from), to_date(date_to))
