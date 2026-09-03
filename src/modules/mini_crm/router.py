@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from typing import Annotated
 
-from src.core.auth import AdminUser, WriteUser
+from src.core.auth import AdminUser, CurrentUser, WriteUser
 from src.core.models import RecordVersion
 from src.db import get_db
 from src.modules.mini_crm import models as m
@@ -116,7 +116,7 @@ class ReasonIn(BaseModel):
 # ---------- Стадии ----------
 
 @router.get("/stages", response_model=list[StageOut])
-def list_stages(user: WriteUser, db: Session = Depends(get_db)):
+def list_stages(user: CurrentUser, db: Session = Depends(get_db)):
     return db.scalars(select(m.Stage).order_by(m.Stage.position)).all()
 
 
@@ -177,7 +177,7 @@ def _enrich(db: Session, deals: list[m.Deal]) -> list[dict]:
 
 
 @router.get("/deals", response_model=list[DealOut])
-def list_deals(user: WriteUser, q: str | None = None, stage_id: uuid.UUID | None = None,
+def list_deals(user: CurrentUser, q: str | None = None, stage_id: uuid.UUID | None = None,
                db: Session = Depends(get_db)):
     query = select(m.Deal).where(m.Deal.is_deleted.is_(False)).order_by(m.Deal.created_at.desc())
     if stage_id:
@@ -205,7 +205,7 @@ def create_deal(body: DealIn, user: WriteUser, db: Session = Depends(get_db)):
 
 
 @router.get("/deals/{deal_id}", response_model=DealOut)
-def get_deal(deal_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+def get_deal(deal_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
     return _enrich(db, [_get_deal(db, deal_id)])[0]
 
 
@@ -244,7 +244,7 @@ def delete_mark(deal_id: uuid.UUID, body: ReasonIn, admin: AdminUser,
 
 
 @router.get("/deals/{deal_id}/counterparty")
-def deal_counterparty(deal_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+def deal_counterparty(deal_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
     deal = _get_deal(db, deal_id)
     if not deal.counterparty_id:
         return {"counterparty_id": None, "name": None}
@@ -254,7 +254,7 @@ def deal_counterparty(deal_id: uuid.UUID, user: WriteUser, db: Session = Depends
 
 
 @router.get("/history/{entity_type}/{entity_id}")
-def crm_history(entity_type: str, entity_id: str, user: WriteUser,
+def crm_history(entity_type: str, entity_id: str, user: CurrentUser,
                 db: Session = Depends(get_db)):
     rows = db.scalars(
         select(RecordVersion)
@@ -313,7 +313,7 @@ class ActivityOut(BaseModel):
 
 
 @router.get("/deals/{deal_id}/communications", response_model=list[CommunicationOut])
-def list_communications(deal_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+def list_communications(deal_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
     _get_deal(db, deal_id)
     return db.scalars(select(m.Communication).where(m.Communication.deal_id == deal_id)
                       .order_by(m.Communication.occurred_at.desc())).all()
@@ -339,7 +339,7 @@ def create_communication(deal_id: uuid.UUID, body: CommunicationIn, user: WriteU
 
 
 @router.get("/deals/{deal_id}/activities", response_model=list[ActivityOut])
-def list_deal_activities(deal_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+def list_deal_activities(deal_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
     _get_deal(db, deal_id)
     return db.scalars(select(m.Activity).where(m.Activity.deal_id == deal_id)
                       .order_by(m.Activity.due_at)).all()
@@ -403,7 +403,7 @@ def patch_activity(activity_id: uuid.UUID, body: ActivityPatch, user: WriteUser,
 
 
 @router.get("/activities", response_model=list[ActivityOut])
-def list_activities(user: WriteUser, db: Session = Depends(get_db),
+def list_activities(user: CurrentUser, db: Session = Depends(get_db),
                     due_before: object = None, status: str | None = None,
                     responsible_id: uuid.UUID | None = None):
     """Общий список задач: свои + все для админа; фильтры due_before/status/responsible."""
@@ -429,7 +429,7 @@ def list_activities(user: WriteUser, db: Session = Depends(get_db),
 # ---------- Отчёт pipeline (этап C) ----------
 
 @router.get("/report/pipeline")
-def pipeline_report(user: WriteUser, db: Session = Depends(get_db),
+def pipeline_report(user: CurrentUser, db: Session = Depends(get_db),
                     responsible_id: uuid.UUID | None = None,
                     date_from: object = None, date_to: object = None):
     from datetime import date as date_type

@@ -73,6 +73,8 @@ def readonly_headers(client, admin_headers):
     ("POST", "/api/v1/accounting/categories", {"name": "x", "kind": "income"}),
     ("POST", "/api/v1/accounting/counterparties", {"name": "x"}),
     ("POST", "/api/v1/accounting/rates", {"date": "2099-01-01", "currency": "USD", "rate": "1"}),
+    ("POST", "/api/v1/crm/deals", {"title": "x", "stage_id": "00000000-0000-0000-0000-000000000000",
+                                   "amount": "1"}),
 ])
 def test_readonly_cannot_write(client, readonly_headers, method, path, body):
     response = client.request(method, path, json=body, headers=readonly_headers)
@@ -86,6 +88,11 @@ def test_readonly_can_read(client, readonly_headers):
         "/api/v1/accounting/periods",
         "/api/v1/integrations/connectors",
         "/api/v1/integrations/connections",
+        # mini_crm: все GET доступны readonly (security-plan P0.1)
+        "/api/v1/crm/stages",
+        "/api/v1/crm/deals",
+        "/api/v1/crm/activities",
+        "/api/v1/crm/report/pipeline",
     ):
         assert client.get(path, headers=readonly_headers).status_code == 200, path
 

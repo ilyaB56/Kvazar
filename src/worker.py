@@ -19,6 +19,19 @@ from src.core.plugins import register_event_handlers  # noqa: E402
 
 register_event_handlers()
 
+# Celery prefork: пул соединений БД создан в родителе ДО форка — унаследованные
+# сокеты шарятся между процессами и портят протокол libpq («no message from
+# libpq», зависания диспетчера). Сбрасываем пул в каждом воркере: соединения
+# создаются заново после форка.
+from celery.signals import worker_process_init  # noqa: E402
+
+
+@worker_process_init.connect()
+def _reset_db_pool(**_kwargs) -> None:
+    from src.db import engine
+
+    engine.dispose(close=False)
+
 
 def _parse_schedule(hhmm: str) -> crontab:
     """BACKUP_SCHEDULE='HH:MM' → crontab; читается при старте beat."""
