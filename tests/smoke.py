@@ -66,8 +66,8 @@ check("GET /health", status == 200 and data.get("status") == "ok", str(data))
 try:
     with urllib.request.urlopen("http://localhost:8080/", timeout=10) as page:
         html = page.read().decode("utf-8", errors="replace")
-    check("GET web :8080 — приложение (title ERP, бандл)",
-          page.status == 200 and "<title>ERP</title>" in html and "/assets/" in html,
+    check("GET web :8080 — приложение (Квазар, бандл)",
+          page.status == 200 and "<title>Квазар</title>" in html and "/assets/" in html,
           f"status={page.status}")
 except Exception as exc:  # noqa: BLE001 — любая ошибка сети = провал проверки
     check("GET web :8080 — приложение (title ERP, бандл)", False, str(exc)[:120])

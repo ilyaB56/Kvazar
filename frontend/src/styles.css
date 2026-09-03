@@ -1,21 +1,11 @@
-/* Системный шрифтовой стек — без внешних шрифтов (ADR-001) */
+/* Высота каркаса; фон и типографика body — в styles/tokens.css
+   (--background из тем + Geist Sans как --font-sans). Здесь только
+   переходные классы старых экранов на Element Plus (удаляются в этапе G). */
 html,
 body,
 #app {
   height: 100%;
   margin: 0;
-}
-
-body {
-  font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    Roboto,
-    'Helvetica Neue',
-    Arial,
-    sans-serif;
-  background: #f5f7fa;
 }
 
 .page {
