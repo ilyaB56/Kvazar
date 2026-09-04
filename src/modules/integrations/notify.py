@@ -31,6 +31,9 @@ NOTIFY_EVENTS = (
     "crm.deal.stage_changed",
     "crm.deal.won",
     "crm.deal.lost",
+    # складское ядро (resources-core-spec §5, этап A)
+    "acc.inventory.stock_changed",
+    "acc.inventory.low_stock",
 )
 
 

@@ -608,6 +608,130 @@ status, pipe_won = call("GET", f"{CRM}/report/pipeline?date_from={today}&date_to
 check("crm C: выиграно за период", status == 200 and pipe_won["won"]["count"] >= 1,
       str(pipe_won.get("won")))
 
+# 24b. Склад (resources-core-spec, этап A): НСИ + двойная запись + серийники
+status, units = call("GET", f"{ACC}/units", token=token)
+check("inv A: справочник единиц (seed)",
+      status == 200 and {"шт", "кг", "л", "м", "час", "мес", "лицензия"} <= {u["code"] for u in units},
+      f"{len(units)} ед.")
+status, locations = call("GET", f"{ACC}/locations", token=token)
+loc = {l["name"]: l for l in locations}
+check("inv A: локации — склады + системные транзиты",
+      status == 200
+      and {"Основной склад", "Цифровой склад", "Поставщик", "Клиент", "Производство", "Брак"} <= set(loc)
+      and all(l["is_transit"] for n, l in loc.items()
+              if n in ("Поставщик", "Клиент", "Производство", "Брак")),
+      str(sorted(loc))[:120])
+
+inv_sku = f"SMOKE-INV-{run_tag}"  # уникален за прогон — остатки детерминированы
+status, inv_item = call("POST", f"{ACC}/items", {
+    "sku": inv_sku, "name": "smoke widget", "kind": "physical", "unit_code": "шт",
+    "low_stock_threshold": "7",
+}, token=token)
+check("inv A: номенклатура создана (avg_cost NULL)",
+      status == 201 and inv_item["avg_cost"] is None, str(inv_item)[:120])
+status, _dup = call("POST", f"{ACC}/items",
+                    {"sku": inv_sku, "name": "dup", "kind": "physical", "unit_code": "шт"}, token=token)
+check("inv A: дубль sku → 422", status == 422, str(_dup)[:100])
+
+main = loc["Основной склад"]
+status, rec_moves = call("POST", f"{ACC}/stock/adjustment", {
+    "location_id": main["id"],
+    "lines": [{"item_id": inv_item["id"], "qty_fact": "10", "unit_cost": "100"}],
+}, token=token)
+check("inv A: оприходование 10 @ 100 (первый приход)",
+      status == 201 and len(rec_moves) == 1 and rec_moves[0]["qty"] == "10.0000",
+      str(rec_moves)[:120])
+status, inv_item2 = call("GET", f"{ACC}/items/{inv_item['id']}", token=token)
+check("inv A: avg_cost первого прихода = 100",
+      status == 200 and inv_item2["avg_cost"] == "100.0000", str(inv_item2.get("avg_cost")))
+
+status, _err = call("POST", f"{ACC}/stock/adjustment", {
+    "location_id": loc["Цифровой склад"]["id"],
+    "lines": [{"item_id": inv_item["id"], "qty_fact": "1"}],
+}, token=token)
+check("inv A: kind_mismatch → 422", status == 422 and "kind_mismatch" in str(_err), str(status))
+
+status, wh2 = call("POST", f"{ACC}/locations",
+                   {"name": f"smoke-склад-{run_tag}", "kind": "physical"}, token=token)
+status, tmove = call("POST", f"{ACC}/stock/transfer", {
+    "item_id": inv_item["id"], "qty": "4",
+    "from_location_id": main["id"], "to_location_id": wh2["id"],
+}, token=token)
+check("inv A: перемещение 4 по avg_cost", status == 201 and tmove["unit_cost"] == "100.0000",
+      str(tmove)[:120])
+status, _err = call("POST", f"{ACC}/stock/transfer", {
+    "item_id": inv_item["id"], "qty": "7",
+    "from_location_id": main["id"], "to_location_id": wh2["id"],
+}, token=token)
+check("inv A: insufficient_stock → 422", status == 422 and "insufficient_stock" in str(_err),
+      str(status))
+
+# списание до факта 3: на руках 3+4=7 ≤ порог 7 → acc.inventory.low_stock
+status, off_moves = call("POST", f"{ACC}/stock/adjustment", {
+    "location_id": main["id"], "lines": [{"item_id": inv_item["id"], "qty_fact": "3"}],
+}, token=token)
+check("inv A: списание по факту 3 (по avg_cost)",
+      status == 201 and off_moves[0]["qty"] == "3.0000" and off_moves[0]["unit_cost"] == "100.0000",
+      str(off_moves)[:120])
+
+status, balances = call("GET", f"{ACC}/stock/balances?item_id={inv_item['id']}", token=token)
+by_loc = {b["location_id"]: b for b in balances}
+check("inv A: остатки двойной записи (3 + 4)",
+      status == 200 and len(balances) == 2
+      and by_loc[main["id"]]["qty"] == "3.0000" and by_loc[wh2["id"]]["qty"] == "4.0000",
+      str(balances)[:160])
+check("inv A: стоимость остатков по средней (300.0000)",
+      by_loc[main["id"]]["value"] == "300.0000", str(by_loc[main["id"]].get("value")))
+status, journal = call("GET", f"{ACC}/stock/moves?item_id={inv_item['id']}", token=token)
+check("inv A: журнал движений (3 операции)", status == 200 and len(journal) == 3, str(len(journal)))
+
+status, outbox_sc = call("GET",
+                         "/api/v1/events/outbox?event_name=acc.inventory.stock_changed&limit=10", token=token)
+check("inv A: acc.inventory.stock_changed в outbox",
+      status == 200 and any(inv_item["id"] in str(e["payload"]) for e in outbox_sc))
+status, outbox_low = call("GET",
+                          "/api/v1/events/outbox?event_name=acc.inventory.low_stock&limit=10", token=token)
+check("inv A: acc.inventory.low_stock в outbox (7 ≤ порог 7)",
+      status == 200 and any(e["payload"].get("sku") == inv_sku for e in outbox_low))
+
+# цифровой товар: серийники (qty=1 на код, Fernet внутри)
+dig_sku = f"SMOKE-DIG-{run_tag}"
+status, dig = call("POST", f"{ACC}/items", {
+    "sku": dig_sku, "name": "smoke код пополнения", "kind": "digital", "unit_code": "лицензия",
+}, token=token)
+check("inv A: digital → tracking=serial по умолчанию",
+      status == 201 and dig["tracking"] == "serial", str(dig)[:120])
+dig_codes = [f"SMOKE-CODE-{run_tag}-{i}" for i in (1, 2)]
+status, ser_moves = call("POST", f"{ACC}/stock/adjustment", {
+    "location_id": loc["Цифровой склад"]["id"],
+    "lines": [{"item_id": dig["id"], "serial_codes": dig_codes, "unit_cost": "50"}],
+}, token=token)
+check("inv A: приход 2 серийников (qty=2)", status == 201 and ser_moves[0]["qty"] == "2.0000",
+      str(ser_moves)[:120])
+status, dig2 = call("POST", f"{ACC}/locations",
+                    {"name": f"smoke-цифра-{run_tag}", "kind": "digital"}, token=token)
+status, _err = call("POST", f"{ACC}/stock/transfer", {
+    "item_id": dig["id"], "qty": "1",
+    "from_location_id": loc["Цифровой склад"]["id"], "to_location_id": dig2["id"],
+    "serial_codes": ["NO-SUCH-CODE"],
+}, token=token)
+check("inv A: serial_not_found → 422", status == 422 and "serial_not_found" in str(_err), str(status))
+status, ser_move = call("POST", f"{ACC}/stock/transfer", {
+    "item_id": dig["id"], "qty": "1",
+    "from_location_id": loc["Цифровой склад"]["id"], "to_location_id": dig2["id"],
+    "serial_codes": [dig_codes[0]],
+}, token=token)
+check("inv A: перемещение серийника", status == 201 and ser_move["qty"] == "1.0000",
+      str(ser_move)[:120])
+status, void_moves = call("POST", f"{ACC}/stock/adjustment", {
+    "location_id": dig2["id"], "lines": [{"item_id": dig["id"], "serial_codes": []}],
+}, token=token)
+check("inv A: недостача серийника → void", status == 201 and void_moves[0]["qty"] == "1.0000",
+      str(void_moves)[:120])
+status, dig_balances = call("GET", f"{ACC}/stock/balances?item_id={dig['id']}", token=token)
+check("inv A: остаток цифровых после void (1)",
+      status == 200 and sum(Decimal(b["qty"]) for b in dig_balances) == 1, str(dig_balances)[:140])
+
 # 25. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []
 for _ in range(6):

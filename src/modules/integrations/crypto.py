@@ -1,30 +1,21 @@
-"""Шифрование секретов подключений (Fernet, симметричное)."""
+"""Шифрование секретов подключений (Fernet, симметричное).
+
+Сам Fernet — в src/core/crypto.py (ключ SECRETS_KEY общий на систему);
+здесь — словарная обёртка credentials подключений.
+"""
 
 from __future__ import annotations
 
-import base64
+import json
 
-from cryptography.fernet import Fernet
-
-from src.config import get_settings
-
-
-def _fernet() -> Fernet:
-    key = get_settings().secrets_key.encode()
-    # Допускаем сырую строку любой длины: приводим к валидному Fernet-ключу.
-    key = base64.urlsafe_b64encode(key.ljust(32, b"\0")[:32])
-    return Fernet(key)
+from src.core.crypto import decrypt_str, encrypt_str
 
 
 def encrypt_dict(data: dict) -> str:
-    import json
-
-    return _fernet().encrypt(json.dumps(data).encode()).decode()
+    return encrypt_str(json.dumps(data))
 
 
 def decrypt_dict(blob: str) -> dict:
-    import json
-
     if not blob:
         return {}
-    return json.loads(_fernet().decrypt(blob.encode()))
+    return json.loads(decrypt_str(blob))
