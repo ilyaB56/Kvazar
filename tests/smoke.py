@@ -614,12 +614,12 @@ check("inv A: справочник единиц (seed)",
       status == 200 and {"шт", "кг", "л", "м", "час", "мес", "лицензия"} <= {u["code"] for u in units},
       f"{len(units)} ед.")
 status, locations = call("GET", f"{ACC}/locations", token=token)
-loc = {l["name"]: l for l in locations}
+loc = {row["name"]: row for row in locations}
 check("inv A: локации — склады + системные транзиты",
       status == 200
       and {"Основной склад", "Цифровой склад", "Поставщик", "Клиент", "Производство", "Брак"} <= set(loc)
-      and all(l["is_transit"] for n, l in loc.items()
-              if n in ("Поставщик", "Клиент", "Производство", "Брак")),
+      and all(row["is_transit"] for name, row in loc.items()
+              if name in ("Поставщик", "Клиент", "Производство", "Брак")),
       str(sorted(loc))[:120])
 
 inv_sku = f"SMOKE-INV-{run_tag}"  # уникален за прогон — остатки детерминированы
@@ -731,6 +731,102 @@ check("inv A: недостача серийника → void", status == 201 and
 status, dig_balances = call("GET", f"{ACC}/stock/balances?item_id={dig['id']}", token=token)
 check("inv A: остаток цифровых после void (1)",
       status == 200 and sum(Decimal(b["qty"]) for b in dig_balances) == 1, str(dig_balances)[:140])
+
+# 24c. Закупки (resources-core-spec, этап B): заказы, приёмки, оплаты, сторно
+sup, _ = get_or_create(
+    f"{ACC}/counterparties", lambda c: c.get("name") == f"smoke-поставщик-{run_tag}",
+    {"name": f"smoke-поставщик-{run_tag}"}, token,
+)
+status, b_item = call("POST", f"{ACC}/items", {
+    "sku": f"SMOKE-B-{run_tag}", "name": "smoke закупка", "kind": "physical", "unit_code": "шт",
+}, token=token)
+check("pur B: номенклатура закупки", status == 201, str(b_item)[:100])
+status, pay_acc = call("POST", f"{ACC}/accounts",
+                       {"name": f"smoke-pay-{run_tag}", "currency": "RUB"}, token=token)
+
+status, po = call("POST", f"{ACC}/purchase-orders", {
+    "counterparty_id": sup["id"], "currency": "RUB",
+    "lines": [{"item_id": b_item["id"], "qty": "8", "unit_price": "125"}],
+}, token=token)
+check("pur B: заказ создан (1000.00, draft, курс заморожен)",
+      status == 201 and po["status"] == "draft" and po["amount_base"] == "1000.00"
+      and Decimal(po["rate"]) == 1,
+      str(po)[:120])
+status, po = call("POST", f"{ACC}/purchase-orders/{po['id']}/confirm", token=token)
+check("pur B: confirm → номер ЗП-", status == 200 and po["status"] == "confirmed"
+      and po["number"].startswith("ЗП-"), str(po.get("number")))
+
+status, over = call("POST", f"{ACC}/receipts", {
+    "purchase_order_id": po["id"],
+    "lines": [{"item_id": b_item["id"], "qty": "9"}],
+}, token=token)
+check("pur B: приёмка сверх заказа → 422 over_receipt",
+      status == 422 and "over_receipt" in str(over), str(status))
+
+status, r1 = call("POST", f"{ACC}/receipts", {
+    "purchase_order_id": po["id"],
+    "lines": [{"item_id": b_item["id"], "qty": "3"}],  # цена из заказа: 125 × 1
+}, token=token)
+status, r1 = call("POST", f"{ACC}/receipts/{r1['id']}/post", token=token)
+check("pur B: частичная приёмка 3 (себестоимость из заказа)",
+      status == 200 and r1["status"] == "posted" and r1["number"].startswith("ПМ-"),
+      str(r1)[:120])
+status, b_item2 = call("GET", f"{ACC}/items/{b_item['id']}", token=token)
+check("pur B: avg_cost = 125 после первой приёмки",
+      b_item2["avg_cost"] == "125.0000", str(b_item2.get("avg_cost")))
+
+status, r2 = call("POST", f"{ACC}/receipts", {
+    "purchase_order_id": po["id"],
+    "lines": [{"item_id": b_item["id"], "qty": "5", "unit_cost": "200"}],
+}, token=token)
+status, r2 = call("POST", f"{ACC}/receipts/{r2['id']}/post", token=token)
+status, b_item3 = call("GET", f"{ACC}/items/{b_item['id']}", token=token)
+# средняя: (3×125 + 5×200) / 8 = 171.875
+check("pur B: заказ received, средняя 171.8750 (пересчёт приёмками)",
+      r2["status"] == "posted" and b_item3["avg_cost"] == "171.8750",
+      str(b_item3.get("avg_cost")))
+status, bal = call("GET", f"{ACC}/stock/balances?item_id={b_item['id']}", token=token)
+check("pur B: на складе 8 после двух приёмок",
+      status == 200 and sum(Decimal(b["qty"]) for b in bal) == 8, str(bal)[:120])
+
+status, payment = call("POST", f"{ACC}/purchase-orders/{po['id']}/pay", {
+    "account_id": pay_acc["id"], "amount": "400",
+}, token=token)
+check("pur B: частичная оплата — транзакция СК проведена",
+      status == 200 and payment["status"] == "posted"
+      and (payment.get("doc_number") or "").startswith("СК-"),
+      str(payment)[:120])
+
+status, cp_bal = call("GET",
+                      f"{ACC}/reports/counterparty-balance?counterparty_id={sup['id']}", token=token)
+check("pur B: сальдо поставщика (принято 1375, оплачено 400, долг 975)",
+      status == 200 and cp_bal["received_amount_base"] == "1375.00"
+      and cp_bal["paid_amount_base"] == "400.00" and cp_bal["balance"] == "975.00",
+      str(cp_bal)[:140])
+
+status, rep = call("GET", f"{ACC}/reports/purchases", token=token)
+row = next((r for r in rep.get("by_counterparty", []) if r["counterparty_id"] == sup["id"]), None)
+check("pur B: отчёт закупок по поставщику",
+      status == 200 and row and row["orders_amount_base"] == "1000.00"
+      and row["received_amount_base"] == "1375.00",
+      str(row)[:140])
+
+status, r1s = call("POST", f"{ACC}/receipts/{r1['id']}/unpost", {"reason": "smoke-сторно"}, token=token)
+check("pur B: сторно приёмки (is_stornoed)", status == 200 and r1s["is_stornoed"] is True,
+      str(r1s)[:100])
+status, bal2 = call("GET", f"{ACC}/stock/balances?item_id={b_item['id']}", token=token)
+check("pur B: после сторно на складе 5",
+      status == 200 and sum(Decimal(b["qty"]) for b in bal2) == 5, str(bal2)[:120])
+status, cp_bal2 = call("GET",
+                       f"{ACC}/reports/counterparty-balance?counterparty_id={sup['id']}", token=token)
+check("pur B: сальдо после сторно (1000 − 400 = 600)",
+      cp_bal2["received_amount_base"] == "1000.00" and cp_bal2["balance"] == "600.00",
+      str(cp_bal2.get("balance")))
+
+status, outbox_pur = call("GET",
+                          "/api/v1/events/outbox?event_name=acc.purchase.received&limit=5", token=token)
+check("pur B: acc.purchase.received в outbox",
+      status == 200 and any(r2["id"] == e["payload"]["receipt_id"] for e in outbox_pur))
 
 # 25. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []

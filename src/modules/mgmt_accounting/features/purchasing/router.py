@@ -1,0 +1,312 @@
+"""API фичи purchasing (resources-core §3.3, §6): заказы, приёмки, оплаты.
+
+Весь — под авторизацией; GET — CurrentUser, мутации — WriteUser (§8).
+Деньги/количества в ответах — строками (ADR-003).
+"""
+
+from __future__ import annotations
+
+import uuid
+from contextlib import contextmanager
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, BeforeValidator, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from src.core.auth import CurrentUser, WriteUser
+from src.db import get_db
+from src.modules.mgmt_accounting.features.purchasing import models as m
+from src.modules.mgmt_accounting.features.purchasing import service
+from src.modules.mgmt_accounting.router import TransactionOut
+from src.modules.mgmt_accounting.service import AccountingError
+
+router = APIRouter(tags=["purchasing"])
+
+MoneyStr = Annotated[str, BeforeValidator(lambda v: str(v) if isinstance(v, Decimal) else v)]
+
+
+@contextmanager
+def svc():
+    """Перевод бизнес-ошибок сервисного слоя в HTTP-ответы."""
+    try:
+        yield
+    except AccountingError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+
+
+# ---------- Schemas ----------
+
+class OrderLineIn(BaseModel):
+    item_id: uuid.UUID
+    qty: Decimal = Field(gt=0)
+    unit_price: Decimal = Field(ge=0)
+
+
+class OrderIn(BaseModel):
+    counterparty_id: uuid.UUID
+    currency: str = Field(default="RUB", pattern=r"^[A-Z]{3}$")
+    note: str = ""
+    lines: list[OrderLineIn] = Field(min_length=1)
+
+
+class OrderLineOut(BaseModel):
+    id: uuid.UUID
+    item_id: uuid.UUID
+    qty: MoneyStr
+    unit_price: MoneyStr
+    amount: MoneyStr
+
+    model_config = {"from_attributes": True}
+
+
+class OrderOut(BaseModel):
+    id: uuid.UUID
+    number: str | None
+    counterparty_id: uuid.UUID
+    status: str
+    currency: str
+    rate: MoneyStr | None
+    amount: MoneyStr
+    amount_base: MoneyStr
+    note: str
+    created_at: datetime
+    lines: list[OrderLineOut] = []
+
+    model_config = {"from_attributes": True}
+
+
+class ReceiptLineIn(BaseModel):
+    item_id: uuid.UUID
+    qty: Decimal = Field(gt=0)
+    unit_cost: Decimal | None = Field(default=None, ge=0)  # базовая валюта
+    location_id: uuid.UUID | None = None
+    serial_codes: list[str] | None = None
+
+
+class ReceiptIn(BaseModel):
+    purchase_order_id: uuid.UUID | None = None
+    counterparty_id: uuid.UUID | None = None  # наследуется из заказа
+    counterparty_doc: str | None = Field(default=None, max_length=60)
+    moved_at: date | None = None
+    note: str = ""
+    lines: list[ReceiptLineIn] = Field(min_length=1)
+
+
+class ReceiptLineOut(BaseModel):
+    id: uuid.UUID
+    item_id: uuid.UUID
+    location_id: uuid.UUID | None
+    qty: MoneyStr
+    unit_cost: MoneyStr | None
+    serial_codes: list[str] | None
+
+    model_config = {"from_attributes": True}
+
+
+class ReceiptOut(BaseModel):
+    id: uuid.UUID
+    number: str | None
+    purchase_order_id: uuid.UUID | None
+    counterparty_id: uuid.UUID
+    status: str
+    is_stornoed: bool
+    counterparty_doc: str | None
+    note: str
+    moved_at: date
+    created_at: datetime
+    lines: list[ReceiptLineOut] = []
+
+    model_config = {"from_attributes": True}
+
+
+class PayIn(BaseModel):
+    account_id: uuid.UUID
+    amount: Decimal = Field(gt=0)
+    operated_at: date | None = None
+    description: str = ""
+
+
+class ReasonIn(BaseModel):
+    reason: str = Field(min_length=1)
+
+
+# ---------- Заказы ----------
+
+def _order_with_lines(db: Session, order: m.PurchaseOrder) -> OrderOut:
+    lines = db.scalars(
+        select(m.PurchaseOrderLine).where(m.PurchaseOrderLine.order_id == order.id)
+    ).all()
+    return OrderOut.model_validate(order).model_copy(
+        update={"lines": [OrderLineOut.model_validate(line) for line in lines]}
+    )
+
+
+def _get_order(db: Session, order_id: uuid.UUID) -> m.PurchaseOrder:
+    order = db.get(m.PurchaseOrder, order_id)
+    if order is None:
+        raise HTTPException(404, "Purchase order not found")
+    return order
+
+
+@router.get("/purchase-orders", response_model=list[OrderOut])
+def list_orders(
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+    status: str | None = None,
+    counterparty_id: uuid.UUID | None = None,
+):
+    query = select(m.PurchaseOrder).order_by(m.PurchaseOrder.created_at.desc())
+    if status is not None:
+        query = query.where(m.PurchaseOrder.status == status)
+    if counterparty_id is not None:
+        query = query.where(m.PurchaseOrder.counterparty_id == counterparty_id)
+    return [
+        _order_with_lines(db, order) for order in db.scalars(query).all()
+    ]
+
+
+@router.post("/purchase-orders", response_model=OrderOut, status_code=201)
+def create_order(body: OrderIn, user: WriteUser, db: Session = Depends(get_db)):
+    with svc():
+        order = service.create_order(db, user_id=user.id, data=body.model_dump())
+    db.commit()
+    return _order_with_lines(db, order)
+
+
+@router.get("/purchase-orders/{order_id}", response_model=OrderOut)
+def get_order(order_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+    return _order_with_lines(db, _get_order(db, order_id))
+
+
+@router.post("/purchase-orders/{order_id}/confirm", response_model=OrderOut)
+def confirm_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+    order = _get_order(db, order_id)
+    with svc():
+        service.confirm_order(db, order, user_id=user.id)
+    db.commit()
+    return _order_with_lines(db, order)
+
+
+@router.post("/purchase-orders/{order_id}/cancel", response_model=OrderOut)
+def cancel_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+    order = _get_order(db, order_id)
+    with svc():
+        service.cancel_order(db, order, user_id=user.id)
+    db.commit()
+    return _order_with_lines(db, order)
+
+
+@router.post("/purchase-orders/{order_id}/pay", response_model=TransactionOut)
+def pay_order(order_id: uuid.UUID, body: PayIn, user: WriteUser, db: Session = Depends(get_db)):
+    """Оплата заказа: исходящая транзакция, категория «Закупки товаров»
+    (авто-seed), контрагент наследуется; частичные — несколько оплат (§3.3)."""
+    order = _get_order(db, order_id)
+    with svc():
+        txn = service.pay_order(db, order=order, user_id=user.id, data=body.model_dump())
+    db.commit()
+    db.refresh(txn)
+    return txn
+
+
+# ---------- Приёмки ----------
+
+def _receipt_with_lines(db: Session, receipt: m.Receipt) -> ReceiptOut:
+    lines = db.scalars(
+        select(m.ReceiptLine).where(m.ReceiptLine.receipt_id == receipt.id)
+    ).all()
+    return ReceiptOut.model_validate(receipt).model_copy(
+        update={"lines": [ReceiptLineOut.model_validate(line) for line in lines]}
+    )
+
+
+def _get_receipt(db: Session, receipt_id: uuid.UUID) -> m.Receipt:
+    receipt = db.get(m.Receipt, receipt_id)
+    if receipt is None:
+        raise HTTPException(404, "Receipt not found")
+    return receipt
+
+
+@router.get("/receipts", response_model=list[ReceiptOut])
+def list_receipts(
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+    status: str | None = None,
+    purchase_order_id: uuid.UUID | None = None,
+):
+    query = select(m.Receipt).order_by(m.Receipt.created_at.desc())
+    if status is not None:
+        query = query.where(m.Receipt.status == status)
+    if purchase_order_id is not None:
+        query = query.where(m.Receipt.purchase_order_id == purchase_order_id)
+    return [
+        _receipt_with_lines(db, receipt) for receipt in db.scalars(query).all()
+    ]
+
+
+@router.post("/receipts", response_model=ReceiptOut, status_code=201)
+def create_receipt(body: ReceiptIn, user: WriteUser, db: Session = Depends(get_db)):
+    with svc():
+        receipt = service.create_receipt(db, user_id=user.id, data=body.model_dump())
+    db.commit()
+    return _receipt_with_lines(db, receipt)
+
+
+@router.get("/receipts/{receipt_id}", response_model=ReceiptOut)
+def get_receipt(receipt_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+    return _receipt_with_lines(db, _get_receipt(db, receipt_id))
+
+
+@router.post("/receipts/{receipt_id}/post", response_model=ReceiptOut)
+def post_receipt(receipt_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+    receipt = _get_receipt(db, receipt_id)
+    with svc():
+        service.post_receipt(db, receipt)
+    db.commit()
+    return _receipt_with_lines(db, receipt)
+
+
+@router.post("/receipts/{receipt_id}/unpost", response_model=ReceiptOut)
+def unpost_receipt(
+    receipt_id: uuid.UUID, body: ReasonIn, user: WriteUser, db: Session = Depends(get_db)
+):
+    """Сторно приёмки: инверсионные движения, только без последующих (§6)."""
+    receipt = _get_receipt(db, receipt_id)
+    with svc():
+        service.unpost_receipt(db, receipt, user_id=user.id, reason=body.reason)
+    db.commit()
+    return _receipt_with_lines(db, receipt)
+
+
+# ---------- Отчёты ----------
+
+@router.get("/reports/purchases")
+def purchases_report(
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+    date_from: date | None = None,
+    date_to: date | None = None,
+    counterparty_id: uuid.UUID | None = None,
+):
+    from datetime import timedelta
+
+    date_to = date_to or date.today()
+    date_from = date_from or (date_to - timedelta(days=365))
+    with svc():
+        return service.purchases_report(db, date_from, date_to, counterparty_id)
+
+
+@router.get("/reports/counterparty-balance")
+def counterparty_balance(
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+    counterparty_id: uuid.UUID = None,
+    on_date: date | None = None,
+):
+    if counterparty_id is None:
+        raise HTTPException(422, "counterparty_id is required")
+    with svc():
+        return service.counterparty_balance(db, counterparty_id, on_date=on_date)
