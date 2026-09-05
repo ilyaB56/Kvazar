@@ -367,6 +367,8 @@ def post_shipment(db: Session, shipment: m.Shipment) -> m.Shipment:
     # резерв v1: отгруженное снимается со строки заказа
     _apply_reserve_delta(db, order, shipment, restore=False)
     db.flush()
+    record_version(db, "acc.sales.shipment", str(shipment.id), shipment.created_by,
+                   {"status": {"old": "draft", "new": "posted"}, "number": {"new": shipment.number}})
     _recompute_order_status(db, order)
     events.publish(db, "acc.sales.shipped", {
         "shipment_id": str(shipment.id),

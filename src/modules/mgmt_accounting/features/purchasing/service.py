@@ -325,6 +325,8 @@ def post_receipt(db: Session, receipt: m.Receipt) -> m.Receipt:
     receipt.number = acc_service.next_doc_number(db, m.RECEIPT_DOC_TYPE, receipt.moved_at)
     receipt.posted_at = datetime.now(UTC)
     db.flush()
+    record_version(db, "acc.purchase.receipt", str(receipt.id), receipt.created_by,
+                   {"status": {"old": "draft", "new": "posted"}, "number": {"new": receipt.number}})
     if order is not None:
         _recompute_order_status(db, order)
     events.publish(db, "acc.purchase.received", {
@@ -354,16 +356,23 @@ def unpost_receipt(db: Session, receipt: m.Receipt, *, user_id: uuid.UUID, reaso
     transit = db.scalar(select(inv.Location).where(
         inv.Location.name == "Поставщик", inv.Location.is_transit
     ))
+    # строгий баланс: строки одного (товар, склад) суммируются — построчная
+    # проверка пропустила бы случай 8+8 при остатке 15
+    needed: dict[tuple[uuid.UUID, uuid.UUID], Decimal] = {}
     for move in moves:
-        item = inv_service.get_item(db, move.item_id)
-        location = inv_service.get_location(db, move.to_location_id)
-        balance = inv_service.location_balance(db, item.id, location.id)
-        if balance < move.qty:
+        key = (move.item_id, move.to_location_id)
+        needed[key] = needed.get(key, Decimal(0)) + move.qty
+    for (item_id, location_id), qty in needed.items():
+        item = inv_service.get_item(db, item_id)
+        location = inv_service.get_location(db, location_id)
+        balance = inv_service.location_balance(db, item_id, location_id)
+        if balance < qty:
             raise AccountingError(
                 422,
                 f"has_subsequent_moves: {item.sku} on «{location.name}» "
-                f"balance {balance} < received {move.qty}",
+                f"balance {balance} < received {qty}",
             )
+    for move in moves:
         serials = db.scalars(select(inv.ItemSerial).where(
             inv.ItemSerial.received_move_id == move.id
         )).all()

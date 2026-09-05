@@ -180,6 +180,8 @@ def post_order(db: Session, order: m.ProductionOrder) -> m.ProductionOrder:
     order.material_cost = inv_service.quantize4(material_cost)
     order.posted_at = datetime.now(UTC)
     db.flush()
+    record_version(db, "acc.production.order", str(order.id), order.created_by,
+                   {"status": {"old": "draft", "new": "posted"}, "number": {"new": order.number}})
     events.publish(db, "acc.production.order.posted", {
         "order_id": str(order.id),
         "number": order.number,

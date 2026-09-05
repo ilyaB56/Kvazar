@@ -47,6 +47,11 @@ class OrderLineIn(BaseModel):
 
 
 class OrderIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "counterparty_id": "uuid-поставщик", "currency": "RUB",
+        "lines": [{"item_id": "uuid", "qty": "10", "unit_price": "125"}],
+    }}}
+
     counterparty_id: uuid.UUID
     currency: str = Field(default="RUB", pattern=r"^[A-Z]{3}$")
     note: str = ""
@@ -88,6 +93,17 @@ class ReceiptLineIn(BaseModel):
 
 
 class ReceiptIn(BaseModel):
+    # unit_cost — в базовой валюте; для строки заказа по умолчанию
+    # цена × замороженный курс заказа
+    model_config = {"json_schema_extra": {"example": {
+        "purchase_order_id": "uuid-заказа",
+        "counterparty_doc": "накладная №45",
+        "lines": [
+            {"item_id": "uuid", "qty": "4", "unit_cost": "125"},
+            {"item_id": "uuid-цифровой", "qty": "2", "serial_codes": ["CODE-1", "CODE-2"]},
+        ],
+    }}}
+
     purchase_order_id: uuid.UUID | None = None
     counterparty_id: uuid.UUID | None = None  # наследуется из заказа
     counterparty_doc: str | None = Field(default=None, max_length=60)
@@ -124,6 +140,11 @@ class ReceiptOut(BaseModel):
 
 
 class PayIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "account_id": "uuid-счёта", "amount": "400",
+        "description": "частичная оплата",
+    }}}
+
     account_id: uuid.UUID
     amount: Decimal = Field(gt=0)
     operated_at: date | None = None
@@ -174,6 +195,7 @@ def create_order(body: OrderIn, user: WriteUser, db: Session = Depends(get_db)):
     with svc():
         order = service.create_order(db, user_id=user.id, data=body.model_dump())
     db.commit()
+    db.refresh(order)  # единый формат сумм с GET: значения из БД
     return _order_with_lines(db, order)
 
 
@@ -188,6 +210,7 @@ def confirm_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(ge
     with svc():
         service.confirm_order(db, order, user_id=user.id)
     db.commit()
+    db.refresh(order)
     return _order_with_lines(db, order)
 
 
@@ -197,6 +220,7 @@ def cancel_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get
     with svc():
         service.cancel_order(db, order, user_id=user.id)
     db.commit()
+    db.refresh(order)
     return _order_with_lines(db, order)
 
 
@@ -252,6 +276,7 @@ def create_receipt(body: ReceiptIn, user: WriteUser, db: Session = Depends(get_d
     with svc():
         receipt = service.create_receipt(db, user_id=user.id, data=body.model_dump())
     db.commit()
+    db.refresh(receipt)  # единый формат сумм с GET: значения из БД
     return _receipt_with_lines(db, receipt)
 
 
@@ -266,6 +291,7 @@ def post_receipt(receipt_id: uuid.UUID, user: WriteUser, db: Session = Depends(g
     with svc():
         service.post_receipt(db, receipt)
     db.commit()
+    db.refresh(receipt)
     return _receipt_with_lines(db, receipt)
 
 
@@ -278,6 +304,7 @@ def unpost_receipt(
     with svc():
         service.unpost_receipt(db, receipt, user_id=user.id, reason=body.reason)
     db.commit()
+    db.refresh(receipt)
     return _receipt_with_lines(db, receipt)
 
 

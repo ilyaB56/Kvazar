@@ -47,6 +47,13 @@ class OrderLineIn(BaseModel):
 
 
 class OrderIn(BaseModel):
+    # counterparty_id не нужен, если передан crm_deal_id — префилл из сделки
+    model_config = {"json_schema_extra": {"example": {
+        "counterparty_id": "uuid-клиент", "crm_deal_id": "uuid-сделки-опционально",
+        "currency": "RUB",
+        "lines": [{"item_id": "uuid", "qty": "2", "unit_price": "300"}],
+    }}}
+
     counterparty_id: uuid.UUID | None = None  # или префилл из crm_deal_id
     crm_deal_id: uuid.UUID | None = None
     currency: str = Field(default="RUB", pattern=r"^[A-Z]{3}$")
@@ -90,6 +97,12 @@ class ShipmentLineIn(BaseModel):
 
 
 class ShipmentIn(BaseModel):
+    # serial_codes: пусто → FIFO-автовыбор при проведении; иначе полный список
+    model_config = {"json_schema_extra": {"example": {
+        "sales_order_id": "uuid-заказа",
+        "lines": [{"item_id": "uuid", "qty": "2"}],
+    }}}
+
     sales_order_id: uuid.UUID
     counterparty_doc: str | None = Field(default=None, max_length=60)
     moved_at: date | None = None
@@ -125,6 +138,10 @@ class ShipmentOut(BaseModel):
 
 
 class PayIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "account_id": "uuid-счёта", "amount": "400",
+    }}}
+
     account_id: uuid.UUID
     amount: Decimal = Field(gt=0)
     operated_at: date | None = None
@@ -176,6 +193,7 @@ def create_order(body: OrderIn, user: WriteUser, db: Session = Depends(get_db)):
     with svc():
         order = service.create_order(db, user_id=user.id, data=body.model_dump())
     db.commit()
+    db.refresh(order)  # единый формат сумм с GET: значения из БД
     return _order_with_lines(db, order)
 
 
@@ -190,6 +208,7 @@ def confirm_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(ge
     with svc():
         service.confirm_order(db, order, user_id=user.id)
     db.commit()
+    db.refresh(order)
     return _order_with_lines(db, order)
 
 
@@ -199,6 +218,7 @@ def cancel_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get
     with svc():
         service.cancel_order(db, order, user_id=user.id)
     db.commit()
+    db.refresh(order)
     return _order_with_lines(db, order)
 
 
@@ -252,6 +272,7 @@ def create_shipment(body: ShipmentIn, user: WriteUser, db: Session = Depends(get
     with svc():
         shipment = service.create_shipment(db, user_id=user.id, data=body.model_dump())
     db.commit()
+    db.refresh(shipment)  # единый формат сумм с GET: значения из БД
     return _shipment_with_lines(db, shipment)
 
 
@@ -266,6 +287,7 @@ def post_shipment(shipment_id: uuid.UUID, user: WriteUser, db: Session = Depends
     with svc():
         service.post_shipment(db, shipment)
     db.commit()
+    db.refresh(shipment)
     return _shipment_with_lines(db, shipment)
 
 
@@ -278,6 +300,7 @@ def unpost_shipment(
     with svc():
         service.unpost_shipment(db, shipment, user_id=user.id, reason=body.reason)
     db.commit()
+    db.refresh(shipment)
     return _shipment_with_lines(db, shipment)
 
 

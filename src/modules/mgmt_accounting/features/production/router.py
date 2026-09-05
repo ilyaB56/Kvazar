@@ -44,6 +44,14 @@ class ComponentIn(BaseModel):
 
 
 class TechCardIn(BaseModel):
+    # за одно применение карты: qty_out продукции из компонентов
+    model_config = {"json_schema_extra": {"example": {
+        "name": "Изделие А", "product_item_id": "uuid-продукции", "qty_out": "1",
+        "components": [
+            {"item_id": "uuid-м1", "qty": "2"}, {"item_id": "uuid-м2", "qty": "4"},
+        ],
+    }}}
+
     name: str = Field(min_length=1, max_length=255)
     product_item_id: uuid.UUID
     qty_out: Decimal = Field(gt=0)
@@ -63,6 +71,10 @@ class TechCardOut(BaseModel):
 
 
 class ProductionOrderIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "tech_card_id": "uuid-карты", "qty_planned": "2",
+    }}}
+
     tech_card_id: uuid.UUID
     qty_planned: Decimal = Field(gt=0)
     moved_at: date | None = None
@@ -150,6 +162,7 @@ def post_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_d
     with svc():
         service.post_order(db, order)
     db.commit()
+    db.refresh(order)
     return order
 
 
@@ -162,6 +175,7 @@ def unpost_order(
     with svc():
         service.unpost_order(db, order, user_id=user.id, reason=body.reason)
     db.commit()
+    db.refresh(order)
     return order
 
 

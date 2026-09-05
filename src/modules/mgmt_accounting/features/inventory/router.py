@@ -41,6 +41,12 @@ def svc():
 # ---------- Schemas: НСИ ----------
 
 class ItemIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "sku": "WIDGET-01", "name": "Виджет алюминиевый", "kind": "physical",
+        "unit_code": "шт", "barcode": "4600000000000",
+        "sale_price": "1500.00", "low_stock_threshold": "5",
+    }}}
+
     sku: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=255)
     kind: str = Field(pattern=r"^(physical|digital|service)$")
@@ -84,6 +90,10 @@ class UnitOut(BaseModel):
 
 
 class LocationIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "name": "Склад №2", "kind": "physical",  # physical | digital
+    }}}
+
     name: str = Field(min_length=1, max_length=255)
     kind: str = Field(pattern=r"^(physical|digital)$")
 
@@ -101,6 +111,12 @@ class LocationOut(BaseModel):
 # ---------- Schemas: склад ----------
 
 class TransferIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "item_id": "uuid", "qty": "4",
+        "from_location_id": "uuid-склад-1", "to_location_id": "uuid-склад-2",
+        "note": "перемещение между складами",
+    }}}
+
     item_id: uuid.UUID
     qty: Decimal = Field(gt=0)
     from_location_id: uuid.UUID
@@ -119,6 +135,16 @@ class AdjustmentLine(BaseModel):
 
 
 class AdjustmentIn(BaseModel):
+    # инвентаризация: строка = ФАКТ; излишек/недостача уйдут через транзит «Брак»;
+    # для серийных товаров serial_codes — полный список кодов на локации
+    model_config = {"json_schema_extra": {"example": {
+        "location_id": "uuid",
+        "lines": [
+            {"item_id": "uuid", "qty_fact": "7", "unit_cost": "100"},
+            {"item_id": "uuid-цифровой", "serial_codes": ["CODE-1", "CODE-2"]},
+        ],
+    }}}
+
     location_id: uuid.UUID
     lines: list[AdjustmentLine] = Field(min_length=1)
     moved_at: date | None = None

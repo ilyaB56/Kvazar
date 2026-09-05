@@ -308,6 +308,59 @@ def test_unpost_receipt_reverses_moves(db):
     assert order.status == "received"
 
 
+def test_unpost_receipt_aggregates_same_item_lines(db):
+    """Строгий unpost (этап E): строки одного (товар, склад) суммируются —
+    построчная проверка пропускала случай 8+8 при остатке 11."""
+    user_id = _admin_id(db)
+    supplier = _supplier(db, f"pytest-агр-{RUN}")
+    widget = _item(db)
+    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад"))
+
+    base = service.create_receipt(db, user_id=user_id, data={
+        "counterparty_id": supplier.id,
+        "lines": [{"item_id": widget.id, "qty": Decimal(15), "unit_cost": Decimal("1")}],
+    })
+    service.post_receipt(db, base)
+    db.commit()
+
+    order = _order(db, user_id, supplier.id, [
+        {"item_id": widget.id, "qty": Decimal(16), "unit_price": Decimal("1")},
+    ])
+    service.confirm_order(db, order, user_id=user_id)
+    receipt = service.create_receipt(db, user_id=user_id, data={
+        "purchase_order_id": order.id,
+        "lines": [
+            {"item_id": widget.id, "qty": Decimal(8)},
+            {"item_id": widget.id, "qty": Decimal(8)},
+        ],
+    })
+    service.post_receipt(db, receipt)
+    db.commit()
+    assert inv_service.location_balance(db, widget.id, main.id) == Decimal(31)
+
+    second = inv_service.create_location(db, {"name": f"pytest-агр-склад-{RUN}", "kind": "physical"})
+    db.commit()
+    inv_service.transfer_stock(db, user_id=user_id, data={
+        "item_id": widget.id, "qty": Decimal(20),
+        "from_location_id": main.id, "to_location_id": second.id,
+    })
+    db.commit()  # остаток 11 < 16 суммарно (но каждая строка ≤ 11)
+
+    with pytest.raises(AccountingError, match="has_subsequent_moves"):
+        service.unpost_receipt(db, receipt, user_id=user_id, reason="агрегат")
+        db.commit()
+    db.rollback()
+
+    inv_service.transfer_stock(db, user_id=user_id, data={
+        "item_id": widget.id, "qty": Decimal(20),
+        "from_location_id": second.id, "to_location_id": main.id,
+    })
+    db.commit()
+    service.unpost_receipt(db, receipt, user_id=user_id, reason="вернули товар")
+    db.commit()
+    assert inv_service.location_balance(db, widget.id, main.id) == Decimal(15)
+
+
 # ---------- Оплаты и взаиморасчёты ----------
 
 def test_payments_category_source_and_balance(db):

@@ -749,7 +749,7 @@ status, po = call("POST", f"{ACC}/purchase-orders", {
     "lines": [{"item_id": b_item["id"], "qty": "8", "unit_price": "125"}],
 }, token=token)
 check("pur B: заказ создан (1000.00, draft, курс заморожен)",
-      status == 201 and po["status"] == "draft" and po["amount_base"] == "1000.00"
+      status == 201 and po["status"] == "draft" and Decimal(po["amount_base"]) == 1000
       and Decimal(po["rate"]) == 1,
       str(po)[:120])
 status, po = call("POST", f"{ACC}/purchase-orders/{po['id']}/confirm", token=token)
@@ -847,7 +847,7 @@ status, so = call("POST", f"{ACC}/sales-orders", {
     "lines": [{"item_id": s_item["id"], "qty": "10", "unit_price": "100"}],
 }, token=token)
 check("sal C: заказ клиента создан (1000.00, курс заморожен)",
-      status == 201 and so["status"] == "draft" and so["amount_base"] == "1000.00"
+      status == 201 and so["status"] == "draft" and Decimal(so["amount_base"]) == 1000
       and Decimal(so["rate"]) == 1, str(so)[:120])
 status, so = call("POST", f"{ACC}/sales-orders/{so['id']}/confirm", token=token)
 check("sal C: confirm → номер ЗК- и резерв строки",
