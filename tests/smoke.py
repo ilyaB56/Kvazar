@@ -950,6 +950,109 @@ status, outbox_sal = call("GET",
 check("sal C: acc.sales.shipped в outbox",
       status == 200 and any(dig_shp["id"] == e["payload"]["shipment_id"] for e in outbox_sal))
 
+# 24e. Сборка (resources-core-spec, этап D): купил 2 материала → собрал → продал
+prd_items = {}
+for sku_suffix, unit in (("M1", "шт"), ("M2", "шт"), ("P", "шт")):
+    status, prd_items[sku_suffix] = call("POST", f"{ACC}/items", {
+        "sku": f"SMOKE-PRD-{sku_suffix}-{run_tag}", "name": f"smoke {sku_suffix}",
+        "kind": "physical", "unit_code": unit,
+    }, token=token)
+m1, m2, prd = prd_items["M1"], prd_items["M2"], prd_items["P"]
+
+status, prd_po = call("POST", f"{ACC}/purchase-orders", {
+    "counterparty_id": sup["id"], "currency": "RUB",
+    "lines": [
+        {"item_id": m1["id"], "qty": "20", "unit_price": "30"},
+        {"item_id": m2["id"], "qty": "20", "unit_price": "5"},
+    ],
+}, token=token)
+call("POST", f"{ACC}/purchase-orders/{prd_po['id']}/confirm", token=token)
+for receipt_body in (
+    {"purchase_order_id": prd_po["id"], "lines": [
+        {"item_id": m1["id"], "qty": "10"}, {"item_id": m2["id"], "qty": "20"}]},
+    {"purchase_order_id": prd_po["id"], "lines": [
+        {"item_id": m1["id"], "qty": "10", "unit_cost": "50"}]},
+):
+    status, rcpt = call("POST", f"{ACC}/receipts", receipt_body, token=token)
+    call("POST", f"{ACC}/receipts/{rcpt['id']}/post", token=token)
+status, m1_state = call("GET", f"{ACC}/items/{m1['id']}", token=token)
+check("prd D: куплены материалы, средняя m1 = 40 (30 и 50)",
+      m1_state["avg_cost"] == "40.0000", str(m1_state.get("avg_cost")))
+
+status, card = call("POST", f"{ACC}/tech-cards", {
+    "name": f"smoke-сборка-{run_tag}", "product_item_id": prd["id"], "qty_out": "1",
+    "components": [{"item_id": m1["id"], "qty": "2"}, {"item_id": m2["id"], "qty": "4"}],
+}, token=token)
+check("prd D: тех.карта создана (1 изделие = 2×m1 + 4×m2)",
+      status == 201 and len(card["components"]) == 2, str(card)[:110])
+
+status, prd_order = call("POST", f"{ACC}/production-orders", {
+    "tech_card_id": card["id"], "qty_planned": "2",
+}, token=token)
+status, prd_order = call("POST", f"{ACC}/production-orders/{prd_order['id']}/post", token=token)
+check("prd D: сборка проведена (СБ-, себестоимость 200 за партию)",
+      status == 200 and prd_order["status"] == "posted"
+      and prd_order["number"].startswith("СБ-")
+      and Decimal(prd_order["material_cost"]) == 200,
+      str(prd_order)[:120])
+
+status, prd_state = call("GET", f"{ACC}/items/{prd['id']}", token=token)
+status, prd_bal = call("GET", f"{ACC}/stock/balances?item_id={prd['id']}", token=token)
+check("prd D: 2 изделия по себестоимости 100 (= Σ материалов)",
+      prd_state["avg_cost"] == "100.0000"
+      and sum(Decimal(b["qty"]) for b in prd_bal) == 2,
+      str(prd_state.get("avg_cost")))
+
+# резервы: заказ продаж резервирует весь m1 — сборке не хватает
+status, rsv_so = call("POST", f"{ACC}/sales-orders", {
+    "counterparty_id": cust["id"],
+    "lines": [{"item_id": m1["id"], "qty": "16", "unit_price": "99"}],
+}, token=token)
+call("POST", f"{ACC}/sales-orders/{rsv_so['id']}/confirm", token=token)
+status, rsv_prd = call("POST", f"{ACC}/production-orders", {
+    "tech_card_id": card["id"], "qty_planned": "1",
+}, token=token)
+status, _rsv_err = call("POST", f"{ACC}/production-orders/{rsv_prd['id']}/post", token=token)
+check("prd D: сборка не расходует резерв → 422 insufficient_stock (reserved)",
+      status == 422 and "reserved" in str(_rsv_err), str(status))
+call("POST", f"{ACC}/sales-orders/{rsv_so['id']}/cancel", token=token)
+
+# продали изделия: маржа 2×(300−100) = 400
+status, prd_so = call("POST", f"{ACC}/sales-orders", {
+    "counterparty_id": cust["id"],
+    "lines": [{"item_id": prd["id"], "qty": "2", "unit_price": "300"}],
+}, token=token)
+call("POST", f"{ACC}/sales-orders/{prd_so['id']}/confirm", token=token)
+status, prd_shp = call("POST", f"{ACC}/shipments", {
+    "sales_order_id": prd_so["id"], "lines": [{"item_id": prd["id"], "qty": "2"}],
+}, token=token)
+status, prd_shp = call("POST", f"{ACC}/shipments/{prd_shp['id']}/post", token=token)
+status, prd_rep = call("GET", f"{ACC}/reports/sales", token=token)
+prd_row = next((r for r in prd_rep.get("by_item", []) if r["item_id"] == prd["id"]), None)
+check("prd D: продано изделие, маржа изделия 400.00",
+      prd_row and prd_row["margin_base"] == "400.00" and prd_row["revenue_base"] == "600.00",
+      str(prd_row)[:120])
+
+# сторно сборки: продано — запрещено; вернули продажу — прошло
+status, _p_err = call("POST", f"{ACC}/production-orders/{prd_order['id']}/unpost",
+                      {"reason": "smoke"}, token=token)
+check("prd D: сторно сборки с проданной продукцией → 422 has_subsequent_moves",
+      status == 422 and "has_subsequent_moves" in str(_p_err), str(status))
+call("POST", f"{ACC}/shipments/{prd_shp['id']}/unpost", {"reason": "smoke-возврат"}, token=token)
+status, prd_un = call("POST", f"{ACC}/production-orders/{prd_order['id']}/unpost",
+                      {"reason": "smoke-сторно-сборки"}, token=token)
+check("prd D: сторно сборки — материалы вернулись, продукция списана",
+      status == 200 and prd_un["is_stornoed"] is True, str(prd_un)[:100])
+status, m1_bal_fin = call("GET", f"{ACC}/stock/balances?item_id={m1['id']}", token=token)
+check("prd D: m1 на складе снова 20",
+      sum(Decimal(b["qty"]) for b in m1_bal_fin) == 20, str(m1_bal_fin)[:110])
+
+status, outbox_prd = call("GET",
+                          "/api/v1/events/outbox?event_name=acc.production.order.posted&limit=5",
+                          token=token)
+check("prd D: acc.production.order.posted в outbox",
+      status == 200 and any(prd_order["id"] == e["payload"]["order_id"] for e in outbox_prd))
+
 # 25. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []
 for _ in range(6):

@@ -42,6 +42,8 @@ NOTIFY_EVENTS = (
     "acc.sales.order.created",
     "acc.sales.order.confirmed",
     "acc.sales.shipped",
+    # сборка (resources-core-spec §5, этап D)
+    "acc.production.order.posted",
 )
 
 

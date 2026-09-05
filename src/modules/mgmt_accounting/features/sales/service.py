@@ -190,6 +190,21 @@ def _remaining_by_item(db: Session, order_id: uuid.UUID) -> dict[uuid.UUID, Deci
     return {item_id: qty - shipped.get(item_id, Decimal(0)) for item_id, qty in ordered.items()}
 
 
+def reserved_qty_by_item(db: Session, item_id: uuid.UUID) -> Decimal:
+    """Зарезервировано активными заказами продаж (резерв v1 — статус строки).
+    Доступный остаток = физический − резерв; используется производством
+    (сборка не расходует зарезервированное)."""
+    total = db.execute(
+        select(func.coalesce(func.sum(m.SalesOrderLine.reserved_qty), 0))
+        .join(m.SalesOrder, m.SalesOrder.id == m.SalesOrderLine.order_id)
+        .where(
+            m.SalesOrderLine.item_id == item_id,
+            m.SalesOrder.status.notin_(["cancelled", "closed"]),
+        )
+    ).scalar_one()
+    return Decimal(total)
+
+
 def _recompute_order_status(db: Session, order: m.SalesOrder) -> None:
     if order.status in ("cancelled", "draft"):
         return
