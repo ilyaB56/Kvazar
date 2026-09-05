@@ -32,17 +32,19 @@ const DOWNLOADS = [
     icon: FileText,
     tone: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300',
     title: 'Презентация макетов (PDF)',
-    desc: '13 экранов: все разделы, обе темы и мобильный вид · ≈ 2,4 МБ',
-    href: '/downloads/tehnoprom-erp-mockups.pdf',
-    fileName: 'tehnoprom-erp-mockups.pdf',
+    desc: 'Экраны сборки v0.11: все разделы, интеграционное ядро и мобильный вид',
+    href: '/downloads/quasar-erp-mockups.pdf',
+    fileName: 'quasar-erp-mockups.pdf',
+    badge: null,
   },
   {
     icon: FileArchive,
     tone: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300',
     title: 'Исходный код (ZIP)',
-    desc: 'Проект Next.js + TypeScript, запускается двумя командами · ≈ 280 КБ',
-    href: '/downloads/tehnoprom-erp-source.zip',
-    fileName: 'tehnoprom-erp-source.zip',
+    desc: 'Собирается в момент скачивания — в архиве всегда последняя сборка',
+    href: '/api/export/source',
+    fileName: 'quasar-erp-source.zip',
+    badge: 'всегда актуальная',
   },
 ] as const
 
@@ -177,7 +179,14 @@ export function ShareDialog({
                       <d.icon className="h-5 w-5" />
                     </span>
                     <div className="min-w-0 flex-1 overflow-hidden">
-                      <p className="truncate text-sm font-semibold">{d.title}</p>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <p className="truncate text-sm font-semibold">{d.title}</p>
+                        {d.badge && (
+                          <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-300">
+                            {d.badge}
+                          </span>
+                        )}
+                      </div>
                       <p className="truncate text-xs text-muted-foreground">{d.desc}</p>
                     </div>
                     <a

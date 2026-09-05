@@ -18,6 +18,7 @@ import {
   UsersRound,
   FileBarChart2,
   Settings,
+  PlugZap,
   Plus,
   FilePlus2,
   UserPlus,
@@ -63,6 +64,7 @@ export function CommandPalette({ open, onOpenChange, onNavigate, onOpenProfile, 
     { label: 'Финансы', view: 'finance', icon: <Banknote />, hint: 'Счета и платежи' },
     { label: 'Персонал', view: 'hr', icon: <UsersRound />, hint: 'Сотрудники и отделы' },
     { label: 'Отчёты', view: 'reports', icon: <FileBarChart2 />, hint: 'Аналитика' },
+    { label: 'Интеграции', view: 'integrations', icon: <PlugZap />, hint: 'Ядро и коннекторы' },
     { label: 'Настройки', view: 'settings', icon: <Settings />, hint: 'Параметры системы' },
   ]
 
@@ -127,6 +129,11 @@ export function CommandPalette({ open, onOpenChange, onNavigate, onOpenProfile, 
             <KeyRound className="text-emerald-600" />
             Права доступа
             <span className="ml-auto text-xs text-muted-foreground">Настройки → Роли</span>
+          </CommandItem>
+          <CommandItem value="коннекторы ядро интеграции ozon эдо 1с банк" onSelect={() => go('integrations')}>
+            <PlugZap className="text-emerald-600" />
+            Журнал трафика ядра
+            <span className="ml-auto text-xs text-muted-foreground">Интеграции → Коннекторы</span>
           </CommandItem>
           <CommandItem
             value="профиль роли мой аккаунт сессии безопасность"

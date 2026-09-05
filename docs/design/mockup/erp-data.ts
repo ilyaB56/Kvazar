@@ -1,5 +1,5 @@
 // ============================================================
-// Мок-данные для макетов интерфейса ERP-системы «ТехноПром»
+// Мок-данные макета ERP-платформы «Квазар» · демо-компания ООО «ТехноПром»
 // ============================================================
 
 export type OrderStatus = "new" | "processing" | "shipping" | "done" | "cancelled"
@@ -773,16 +773,17 @@ export const permModules: { key: string; label: string }[] = [
   { key: "inventory", label: "Склад" },
   { key: "finance", label: "Финансы" },
   { key: "hr", label: "Персонал" },
+  { key: "integrations", label: "Интеграции" },
   { key: "settings", label: "Настройки" },
 ]
 
 // [role][module] -> full / ro / none
 export const permissionMatrix: Record<RoleId, Record<string, PermValue>> = {
-  admin: { dashboard: "full", sales: "full", inventory: "full", finance: "full", hr: "full", settings: "full" },
-  head: { dashboard: "full", sales: "full", inventory: "full", finance: "full", hr: "full", settings: "ro" },
-  manager: { dashboard: "ro", sales: "full", inventory: "full", finance: "none", hr: "none", settings: "none" },
-  accountant: { dashboard: "ro", sales: "none", inventory: "none", finance: "full", hr: "ro", settings: "none" },
-  storekeeper: { dashboard: "none", sales: "ro", inventory: "full", finance: "none", hr: "none", settings: "none" },
+  admin: { dashboard: "full", sales: "full", inventory: "full", finance: "full", hr: "full", integrations: "full", settings: "full" },
+  head: { dashboard: "full", sales: "full", inventory: "full", finance: "full", hr: "full", integrations: "ro", settings: "ro" },
+  manager: { dashboard: "ro", sales: "full", inventory: "full", finance: "none", hr: "none", integrations: "none", settings: "none" },
+  accountant: { dashboard: "ro", sales: "none", inventory: "none", finance: "full", hr: "ro", integrations: "ro", settings: "none" },
+  storekeeper: { dashboard: "none", sales: "ro", inventory: "full", finance: "none", hr: "none", integrations: "none", settings: "none" },
 }
 
 export const permValueMap: Record<PermValue, { label: string; short: string; cls: string }> = {
@@ -896,3 +897,62 @@ export function downloadCsv(
   a.remove()
   URL.revokeObjectURL(url)
 }
+
+// ---------- Интеграционное ядро (модуль «Интеграции») ----------
+export type ConnectorStatus = "connected" | "error" | "available" | "off"
+
+export interface Connector {
+  id: string
+  name: string
+  vendor: string
+  desc: string
+  status: ConnectorStatus
+  lastSync: string
+  eventsPerDay: number
+}
+
+export const connectorStatusMap: Record<ConnectorStatus, { label: string; badge: string; iconCls: string }> = {
+  connected: { label: "Подключено", badge: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400", iconCls: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
+  error: { label: "Ошибка", badge: "bg-red-500/15 text-red-700 dark:text-red-400", iconCls: "bg-red-500/10 text-red-600 dark:text-red-400" },
+  available: { label: "Доступно", badge: "bg-violet-500/15 text-violet-700 dark:text-violet-300", iconCls: "bg-violet-500/10 text-violet-600 dark:text-violet-300" },
+  off: { label: "Отключено", badge: "bg-zinc-500/15 text-muted-foreground", iconCls: "bg-zinc-500/10 text-muted-foreground" },
+}
+
+export const connectorsData: Connector[] = [
+  { id: "CN-01", name: "1С:Бухгалтерия", vendor: "Учётная система", desc: "Двусторонняя синхронизация проводок, счетов и НДС", status: "connected", lastSync: "5 мин назад", eventsPerDay: 1840 },
+  { id: "CN-02", name: "Сбербанк Банк-клиент", vendor: "Банк", desc: "Выписка, платёжные поручения, статусы исполнения", status: "connected", lastSync: "12 мин назад", eventsPerDay: 412 },
+  { id: "CN-03", name: "Контур.Диадок", vendor: "ЭДО", desc: "Юридически значимые документы, КЭП, УПД", status: "connected", lastSync: "2 мин назад", eventsPerDay: 96 },
+  { id: "CN-04", name: "Ozon Seller API", vendor: "Маркетплейс", desc: "Остатки, цены, заказы FBO/FBS", status: "error", lastSync: "2 ч назад · истёк API-ключ", eventsPerDay: 0 },
+  { id: "CN-05", name: "Wildberries API", vendor: "Маркетплейс", desc: "Цены и остатки, сборочные задания", status: "available", lastSync: "—", eventsPerDay: 0 },
+  { id: "CN-06", name: "Интернет-магазин", vendor: "E-commerce", desc: "Заказы с сайта, статусы отгрузки, остатки на витрине", status: "connected", lastSync: "1 мин назад", eventsPerDay: 720 },
+  { id: "CN-07", name: "SMTP-рассылки", vendor: "Уведомления", desc: "Счета, акты и статусы заказов клиентам на почту", status: "off", lastSync: "отключено вручную", eventsPerDay: 0 },
+  { id: "CN-08", name: "Честный знак", vendor: "Маркировка", desc: "Коды маркировки, ввод в оборот и выбытие", status: "available", lastSync: "—", eventsPerDay: 0 },
+]
+
+export const integrationCoreStats = {
+  uptime: "99,98%",
+  events24h: 12_483,
+  queue: 3,
+  trafficPerMin: "1,7 МБ",
+  blockedExternal: 27,
+  gatewayUrl: "https://core.квазар.local/api/v1",
+}
+
+export interface CoreEvent {
+  id: number
+  time: string
+  connector: string
+  action: string
+  tone: "in" | "out" | "ok" | "err"
+  status: string
+}
+
+// Стартовая лента (дальше вид генерирует события в реальном времени)
+export const coreEventsData: CoreEvent[] = [
+  { id: 6, time: "12:41:07", connector: "Контур.Диадок", action: "входящие: 3 УПД от ООО «ХимЛаб»", tone: "in", status: "200 OK" },
+  { id: 5, time: "12:40:52", connector: "Сбербанк Банк-клиент", action: "подтверждение платежа по СЧ-10537", tone: "in", status: "200 OK" },
+  { id: 4, time: "12:40:31", connector: "Интернет-магазин", action: "выгрузка статусов заказов", tone: "out", status: "200 OK" },
+  { id: 3, time: "12:39:58", connector: "Ядро", action: "прямая попытка доступа из модуля «Склад» заблокирована", tone: "err", status: "403" },
+  { id: 2, time: "12:39:12", connector: "1С:Бухгалтерия", action: "синхронизация справочника номенклатуры · 214 позиций", tone: "ok", status: "200 OK" },
+  { id: 1, time: "12:38:40", connector: "Ozon Seller API", action: "обновление остатков · отклонено: истёк API-ключ", tone: "err", status: "401" },
+]

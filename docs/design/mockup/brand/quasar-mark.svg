@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" width="512" height="512" role="img" aria-labelledby="qt">
+  <title id="qt">Квазар — знак ERP-платформы: ядро интеграционной платформы, орбита изолированных модулей, точка-спутник (подключаемая интеграция)</title>
+  <defs>
+    <linearGradient id="qg" x1="10" y1="14" x2="54" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c084fc"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <radialGradient id="qc" cx="0.4" cy="0.35" r="0.9">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.55" stop-color="#e9d5ff"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </radialGradient>
+  </defs>
+  <!-- орбита модулей -->
+  <ellipse cx="32" cy="32" rx="26" ry="11.5" stroke="url(#qg)" stroke-width="3.5" stroke-linecap="round" transform="rotate(-18 32 32)"/>
+  <!-- точка-спутник: подключаемая интеграция -->
+  <circle cx="53.5" cy="21.5" r="4" fill="url(#qg)"/>
+  <!-- светящееся ядро платформы и ИИ -->
+  <circle cx="32" cy="32" r="11" fill="url(#qc)"/>
+  <circle cx="28.5" cy="28.5" r="3.2" fill="#ffffff" opacity="0.85"/>
+</svg>

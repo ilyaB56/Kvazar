@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { getOrderItems, fmtMoney, DEMO_TODAY, type OrderRow } from '@/lib/erp-data'
 import { Printer, FileDown, X, Building2, User, BadgeCheck } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
+import { QuasarMark } from './quasar-mark'
 
 const VAT_RATE = 0.2
 
@@ -93,6 +94,10 @@ export function OrderPrintView({
                   <p>sales@technoprom.ru</p>
                   <p className="mt-1 inline-flex items-center gap-1 rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-700">
                     <BadgeCheck className="h-3 w-3" /> ЭДО · подписано КЭП
+                  </p>
+                  <p className="mt-1 flex items-center justify-end gap-1 text-[10px] font-medium text-zinc-500">
+                    <QuasarMark className="h-3.5 w-3.5 shrink-0" />
+                    канал обмена: ядро «Квазар»
                   </p>
                 </div>
               </div>
@@ -209,8 +214,9 @@ export function OrderPrintView({
                 </div>
               </div>
 
-              <p className="mt-5 border-t border-dashed border-zinc-300 pt-2 text-center text-[9px] text-zinc-500">
-                Документ сформирован в макете ERP «ТехноПром» · суммы демонстрационные · МЧД и КЭП — имитация
+              <p className="mt-5 flex items-center justify-center gap-1.5 border-t border-dashed border-zinc-300 pt-2 text-center text-[9px] text-zinc-500">
+                <QuasarMark className="h-3 w-3 shrink-0" />
+                Документ сформирован в макете ERP «Квазар» · суммы демонстрационные · МЧД и КЭП — имитация
               </p>
             </div>
 

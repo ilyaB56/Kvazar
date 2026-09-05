@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Image from 'next/image'
 import { motion } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,7 +11,10 @@ import { Separator } from '@/components/ui/separator'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import {
-  BarChart3,
+  AlertCircle,
+  Boxes,
+  BrainCircuit,
+  Briefcase,
   Eye,
   EyeOff,
   KeyRound,
@@ -18,18 +22,16 @@ import {
   Lock,
   LogIn,
   Mail,
+  PlugZap,
   ShieldCheck,
-  Warehouse,
-  Workflow,
-  AlertCircle,
   Sparkles,
 } from 'lucide-react'
 
 const features = [
-  { icon: Warehouse, title: 'Склад и логистика', desc: 'Остатки, резервы, приёмка и отгрузка в реальном времени' },
-  { icon: BarChart3, title: 'Финансы и отчётность', desc: 'Счета, платёжный календарь, P&L без Excel' },
-  { icon: Workflow, title: 'Продажи и заказы', desc: 'Воронка от заявки до отгрузки с контролем сроков' },
-  { icon: ShieldCheck, title: 'Права и аудит', desc: 'Роли, журналы действий, резервное копирование' },
+  { icon: PlugZap, title: 'Интеграционное ядро', desc: 'Единственная точка выхода в интернет: API, банки, ЭДО, 1С' },
+  { icon: BrainCircuit, title: 'Встроенный ИИ', desc: 'Обучается на внутренних документах, ищет и подсказывает' },
+  { icon: Boxes, title: 'Склад и закупки', desc: 'Цифровой учёт остатков, резервы, автозаказ поставщикам' },
+  { icon: Briefcase, title: 'CRM и управленческий учёт', desc: 'Сделки, клиенты, финансы и P&L в одном контуре' },
 ]
 
 const brandStats = [
@@ -71,7 +73,7 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
       }
       toast({
         title: mode === 'guest' ? 'Гостевой демо-вход' : 'Добро пожаловать!',
-        description: 'Вы вошли в демо-контур ERP «ТехноПром»',
+        description: 'Вы вошли в демо-контур ERP «Квазар»',
         duration: 2500,
       })
       onSuccess()
@@ -95,14 +97,21 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
         />
         <div aria-hidden className="pointer-events-none absolute -left-24 top-1/4 h-96 w-96 rounded-full bg-emerald-500/20 blur-[110px]" />
         <div aria-hidden className="pointer-events-none absolute -right-16 bottom-0 h-80 w-80 rounded-full bg-teal-500/15 blur-[100px]" />
+        <div aria-hidden className="pointer-events-none absolute -top-12 right-1/4 h-72 w-72 rounded-full bg-violet-500/25 blur-[100px]" />
 
         <div className="relative flex items-center gap-2.5 px-10 py-8">
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500 text-lg font-bold text-white shadow-lg shadow-emerald-500/25">
-            Т
+          <span className="relative block h-10 w-10 shrink-0 overflow-hidden rounded-xl shadow-lg shadow-violet-500/25 ring-1 ring-white/15">
+            <Image
+              src="/brand/quasar-violet.png"
+              alt="Логотип ERP «Квазар»: светлое ядро в орбитальных кольцах"
+              fill
+              sizes="40px"
+              className="object-cover"
+            />
           </span>
           <div className="leading-tight">
-            <p className="text-base font-bold tracking-tight text-white">ТехноПром</p>
-            <p className="text-xs text-zinc-400">ERP-система производства</p>
+            <p className="text-base font-bold tracking-tight text-white">Квазар</p>
+            <p className="text-xs text-zinc-400">ERP-платформа · интеграционное ядро</p>
           </div>
         </div>
 
@@ -113,9 +122,9 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
             transition={{ duration: 0.45, ease: 'easeOut' }}
             className="max-w-lg text-3xl font-bold leading-tight tracking-tight text-white xl:text-4xl"
           >
-            Управляйте производством
-            <span className="block bg-gradient-to-r from-emerald-300 to-teal-400 bg-clip-text text-transparent">
-              в одной системе
+            Все модули — в одном ядре,
+            <span className="block bg-gradient-to-r from-violet-300 to-fuchsia-400 bg-clip-text text-transparent">
+              связь с миром — только через него
             </span>
           </motion.h1>
           <motion.p
@@ -124,7 +133,7 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
             transition={{ duration: 0.45, delay: 0.08, ease: 'easeOut' }}
             className="mt-3 max-w-md text-sm leading-relaxed text-zinc-400"
           >
-            Заказы, склад, финансы и персонал — связанные контуры вместо разрозненных таблиц.
+            Квазар — ERP-платформа: CRM, склад, закупки и управленческий учёт работают в закрытом контуре, а интеграционное ядро соединяет их с интернетом. Встроенный ИИ обучается на ваших документах.
           </motion.p>
 
           <div className="mt-8 grid max-w-lg gap-3 sm:grid-cols-2">
@@ -134,9 +143,9 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.4, delay: 0.12 + i * 0.07, ease: 'easeOut' }}
-                className="rounded-xl border border-zinc-800/80 bg-zinc-900/60 p-4 backdrop-blur-sm transition-colors hover:border-emerald-500/30"
+                className="rounded-xl border border-zinc-800/80 bg-zinc-900/60 p-4 backdrop-blur-sm transition-colors hover:border-violet-500/30"
               >
-                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400">
+                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-500/15 text-violet-300">
                   <f.icon className="h-4 w-4" />
                 </span>
                 <p className="mt-2.5 text-sm font-semibold text-zinc-100">{f.title}</p>
@@ -163,12 +172,18 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
       <main className="relative flex min-h-screen flex-col items-center justify-center px-4 py-10 sm:px-8">
         {/* мобильный логотип */}
         <div className="mb-8 flex items-center gap-2.5 lg:hidden">
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500 text-lg font-bold text-white shadow-lg shadow-emerald-500/25">
-            Т
+          <span className="relative block h-10 w-10 shrink-0 overflow-hidden rounded-xl shadow-lg shadow-violet-500/25 ring-1 ring-zinc-200">
+            <Image
+              src="/brand/quasar-violet.png"
+              alt="Логотип ERP «Квазар»: светлое ядро в орбитальных кольцах"
+              fill
+              sizes="40px"
+              className="object-cover"
+            />
           </span>
           <div className="leading-tight">
-            <p className="text-base font-bold tracking-tight">ТехноПром</p>
-            <p className="text-xs text-muted-foreground">ERP-система производства</p>
+            <p className="text-base font-bold tracking-tight">Квазар</p>
+            <p className="text-xs text-muted-foreground">ERP-платформа · интеграционное ядро</p>
           </div>
         </div>
 
@@ -320,7 +335,7 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
           </div>
 
           <p className={cn('mt-6 text-center text-xs text-muted-foreground')}>
-            © 2025 ООО «ТехноПром» · макет интерфейса · v0.9.0
+            © 2025 ERP «Квазар» · макет интерфейса · v0.11.0
           </p>
           <p className="mt-1.5 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />

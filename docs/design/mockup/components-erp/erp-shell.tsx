@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useSyncExternalStore } from 'react'
+import Image from 'next/image'
 import { useTheme } from 'next-themes'
 import { motion } from 'framer-motion'
 import { Button } from '@/components/ui/button'
@@ -23,6 +24,7 @@ import { FinanceView } from './finance-view'
 import { HrView } from './hr-view'
 import { ReportsView } from './reports-view'
 import { SettingsView } from './settings-view'
+import { IntegrationsView } from './integrations-view'
 import {
   LayoutDashboard,
   ShoppingCart,
@@ -41,6 +43,7 @@ import {
   Moon,
   PenTool,
   Share2,
+  PlugZap,
 } from 'lucide-react'
 import { CommandPalette } from './command-palette'
 import { NotificationCenter } from './notification-center'
@@ -48,7 +51,7 @@ import { UserProfileDialog } from './user-profile-dialog'
 import { ShareDialog } from './share-dialog'
 import type { ErpNotification } from '@/lib/erp-data'
 
-type ViewId = 'dashboard' | 'sales' | 'inventory' | 'finance' | 'hr' | 'reports' | 'settings'
+type ViewId = 'dashboard' | 'sales' | 'inventory' | 'finance' | 'hr' | 'reports' | 'integrations' | 'settings'
 
 interface NavItem {
   id: ViewId
@@ -78,6 +81,7 @@ const navSections: { title: string; items: NavItem[] }[] = [
   {
     title: 'Система',
     items: [
+      { id: 'integrations', label: 'Интеграции', icon: <PlugZap className="h-4 w-4" />, badge: '1', badgeTone: 'bg-red-500' },
       { id: 'settings', label: 'Настройки', icon: <Settings className="h-4 w-4" /> },
     ],
   },
@@ -90,19 +94,26 @@ const viewTitles: Record<ViewId, { title: string; crumb: string }> = {
   finance: { title: 'Финансы', crumb: 'Счета и платежи' },
   hr: { title: 'Персонал', crumb: 'Сотрудники и отделы' },
   reports: { title: 'Отчёты', crumb: 'Аналитика' },
+  integrations: { title: 'Интеграции', crumb: 'Интеграционное ядро' },
   settings: { title: 'Настройки', crumb: 'Параметры системы' },
 }
 
 function Logo({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center gap-2.5">
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500 font-bold text-white shadow-sm">
-        Т
+      <span className="relative block h-9 w-9 shrink-0 overflow-hidden rounded-lg bg-zinc-950 shadow-sm ring-1 ring-white/15">
+        <Image
+          src="/brand/quasar-violet.png"
+          alt="Логотип ERP «Квазар»: светлое ядро в орбитальных кольцах"
+          fill
+          sizes="36px"
+          className="object-cover"
+        />
       </span>
       {!compact && (
         <div className="leading-tight">
-          <p className="text-sm font-bold tracking-tight text-white">ТехноПром</p>
-          <p className="text-[11px] text-zinc-400">ERP · макет v0.9</p>
+          <p className="text-sm font-bold tracking-tight text-white">Квазар</p>
+          <p className="text-[11px] text-zinc-400">ERP · макет v0.11</p>
         </div>
       )}
     </div>
@@ -207,6 +218,7 @@ export function ErpShell({ onLogout }: { onLogout?: () => void }) {
       case 'finance': return <FinanceView />
       case 'hr': return <HrView />
       case 'reports': return <ReportsView />
+      case 'integrations': return <IntegrationsView />
       case 'settings': return <SettingsView />
     }
   }
@@ -380,10 +392,10 @@ export function ErpShell({ onLogout }: { onLogout?: () => void }) {
         <footer className="mt-auto border-t border-zinc-200 bg-background px-4 py-4 sm:px-6 lg:px-8 dark:border-zinc-800">
           <div className="mx-auto flex w-full max-w-[1400px] flex-col items-center justify-between gap-2 text-xs text-muted-foreground sm:flex-row">
             <p>
-              © 2025 ООО «ТехноПром» · ERP-макет интерфейса · <span className="font-medium text-emerald-700 dark:text-emerald-400">демо-данные</span>
+              © 2025 ERP «Квазар» · макет интерфейса · <span className="font-medium text-emerald-700 dark:text-emerald-400">демо-данные ООО «ТехноПром»</span>
             </p>
             <div className="flex items-center gap-4">
-              <span>Сборка v0.9.0</span>
+              <span>Сборка v0.11.0</span>
               <Separator orientation="vertical" className="hidden h-3 sm:block" />
               <span>БД: 12 483 записи</span>
               <Separator orientation="vertical" className="hidden h-3 sm:block" />

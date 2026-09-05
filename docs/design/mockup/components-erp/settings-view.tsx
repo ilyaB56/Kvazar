@@ -1,6 +1,7 @@
 'use client'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import Image from 'next/image'
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -25,6 +26,8 @@ import {
 import { ViewHeader, DraftNote } from './shared'
 import {
   Building2,
+  Download,
+  Palette,
   Save,
   ShieldCheck,
   BellRing,
@@ -181,6 +184,160 @@ function PermissionsMatrix() {
           <span className="flex items-center gap-1.5"><span className="font-bold text-amber-600 dark:text-amber-400">R/O</span> только чтение</span>
           <span className="flex items-center gap-1.5"><span className="font-bold text-zinc-400 dark:text-zinc-600">—</span> закрыт</span>
           <span className="ml-auto flex items-center gap-1"><Lock className="h-3 w-3" /> роль администратора неизменяема</span>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+const brandVariants = [
+  {
+    src: '/brand/quasar-violet.png',
+    name: 'Ядро · основной знак',
+    note: 'Белое ядро, орбиты модулей и лучи интеграций — фирменный знак системы',
+    tag: 'Выбран',
+    main: true,
+  },
+  {
+    src: '/brand/quasar-amber.png',
+    name: 'Тёплое ядро',
+    note: 'Янтарный аккреционный диск — вариант для презентаций и сайта',
+    tag: null,
+    main: false,
+  },
+  {
+    src: '/brand/quasar-emerald.png',
+    name: 'Изумрудная орбита',
+    note: 'В тон интерфейса — иконки приложений и виджеты',
+    tag: null,
+    main: false,
+  },
+  {
+    src: '/brand/quasar-mono.png',
+    name: 'Монохром',
+    note: 'Для документов, фавиконок и печати в один тон',
+    tag: null,
+    main: false,
+  },
+]
+
+function BrandCard() {
+  const { toast } = useToast()
+
+  const handleDownload = (name: string) => {
+    toast({
+      title: 'Логотип скачивается',
+      description: `Вариант «${name}» сохранится как PNG 1024×1024`,
+      duration: 2500,
+    })
+  }
+
+  const handleDownloadAll = () => {
+    toast({
+      title: 'Архив скачивается',
+      description: 'quasar-logos.zip — 4 варианта в PNG + векторный SVG',
+      duration: 2500,
+    })
+  }
+
+  const handleDownloadSvg = () => {
+    toast({
+      title: 'Вектор скачивается',
+      description: 'quasar-mark.svg — векторный знак, масштабируется без потерь',
+      duration: 2500,
+    })
+  }
+
+  return (
+    <Card className="border-zinc-200 shadow-sm dark:border-zinc-800">
+      <CardHeader className="pb-4">
+        <div className="flex items-start gap-2">
+          <Palette className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+          <div className="min-w-0">
+            <CardTitle className="text-base">Бренд: логотип «Квазар»</CardTitle>
+            <CardDescription>
+              Знак — квазар: раскалённое ядро интеграционной платформы и орбиты изолированных модулей
+            </CardDescription>
+          </div>
+        </div>
+        <CardAction className="flex items-center gap-2 max-sm:col-start-1 max-sm:row-start-2 max-sm:justify-self-end">
+          <a
+            href="/brand/quasar-mark.svg"
+            download
+            onClick={handleDownloadSvg}
+            aria-label="Скачать векторную версию знака в SVG"
+            title="Скачать вектор (SVG)"
+            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-background px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-zinc-100 hover:text-violet-600 dark:border-zinc-800 dark:hover:bg-zinc-800 dark:hover:text-violet-400"
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span className="whitespace-nowrap">SVG</span>
+          </a>
+          <a
+            href="/brand/quasar-logos.zip"
+            download
+            onClick={handleDownloadAll}
+            aria-label="Скачать все варианты логотипа одним ZIP-архивом"
+            title="Скачать все варианты одним архивом"
+            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-background px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-zinc-100 hover:text-violet-600 dark:border-zinc-800 dark:hover:bg-zinc-800 dark:hover:text-violet-400"
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span className="whitespace-nowrap">Скачать все (ZIP)</span>
+          </a>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {brandVariants.map((v) => (
+            <div
+              key={v.src}
+              className={cn(
+                'group overflow-hidden rounded-xl border bg-zinc-950 transition-all',
+                v.main
+                  ? 'border-violet-500/50 shadow-md shadow-violet-500/10'
+                  : 'border-zinc-200 hover:border-violet-500/30 dark:border-zinc-800'
+              )}
+            >
+              <div className="relative aspect-square">
+                <Image
+                  src={v.src}
+                  alt={`Логотип «Квазар» — вариант «${v.name}»`}
+                  fill
+                  sizes="(min-width: 1024px) 25vw, 50vw"
+                  className="object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+                />
+                {v.tag && (
+                  <span className="absolute left-2 top-2 rounded-full bg-violet-500 px-2 py-0.5 text-[10px] font-bold text-white shadow">
+                    {v.tag}
+                  </span>
+                )}
+              </div>
+              <div className="space-y-1 border-t border-zinc-200 bg-card p-3 dark:border-zinc-800">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate text-xs font-semibold">{v.name}</p>
+                  <a
+                    href={v.src}
+                    download
+                    onClick={() => handleDownload(v.name)}
+                    aria-label={`Скачать логотип «${v.name}» в PNG`}
+                    title="Скачать PNG"
+                    className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-zinc-100 hover:text-violet-600 dark:hover:bg-zinc-800 dark:hover:text-violet-400"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </a>
+                </div>
+                <p className="text-[11px] leading-snug text-muted-foreground">{v.note}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Символика знака */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border border-zinc-200 bg-zinc-50/60 px-3.5 py-2.5 text-[11px] text-muted-foreground dark:border-zinc-800 dark:bg-zinc-900/50">
+          <span className="font-semibold text-foreground">Символика:</span>
+          <span><span className="font-bold text-violet-600 dark:text-violet-400">ядро</span> — интеграционная платформа и ИИ</span>
+          <span><span className="font-bold text-violet-600 dark:text-violet-400">орбиты</span> — модули в изолированном контуре</span>
+          <span><span className="font-bold text-violet-600 dark:text-violet-400">точка на орбите</span> — подключаемая интеграция</span>
+          <span><span className="font-bold text-violet-600 dark:text-violet-400">лучи</span> — связь с внешним миром</span>
         </div>
       </CardContent>
     </Card>
@@ -379,6 +536,9 @@ export function SettingsView() {
 
       {/* Роли и права доступа */}
       <PermissionsMatrix />
+
+      {/* Бренд системы: логотип «Квазар» */}
+      <BrandCard />
 
       <DraftNote text="Макет: документооборот, интеграции (1С, банк-клиент, e-commerce), шаблоны доступов и аудит действий." />
     </div>
