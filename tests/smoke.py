@@ -828,6 +828,128 @@ status, outbox_pur = call("GET",
 check("pur B: acc.purchase.received в outbox",
       status == 200 and any(r2["id"] == e["payload"]["receipt_id"] for e in outbox_pur))
 
+# 24d. Продажи (resources-core-spec, этап C): заказы, отгрузки, FIFO-коды, маржа
+cust, _ = get_or_create(
+    f"{ACC}/counterparties", lambda c: c.get("name") == f"smoke-клиент-{run_tag}",
+    {"name": f"smoke-клиент-{run_tag}"}, token,
+)
+status, s_item = call("POST", f"{ACC}/items", {
+    "sku": f"SMOKE-C-{run_tag}", "name": "smoke продажа", "kind": "physical", "unit_code": "шт",
+}, token=token)
+check("sal C: номенклатура продажи", status == 201, str(s_item)[:100])
+status, _ = call("POST", f"{ACC}/stock/adjustment", {
+    "location_id": main["id"],
+    "lines": [{"item_id": s_item["id"], "qty_fact": "10", "unit_cost": "60"}],
+}, token=token)
+
+status, so = call("POST", f"{ACC}/sales-orders", {
+    "counterparty_id": cust["id"], "currency": "RUB",
+    "lines": [{"item_id": s_item["id"], "qty": "10", "unit_price": "100"}],
+}, token=token)
+check("sal C: заказ клиента создан (1000.00, курс заморожен)",
+      status == 201 and so["status"] == "draft" and so["amount_base"] == "1000.00"
+      and Decimal(so["rate"]) == 1, str(so)[:120])
+status, so = call("POST", f"{ACC}/sales-orders/{so['id']}/confirm", token=token)
+check("sal C: confirm → номер ЗК- и резерв строки",
+      status == 200 and so["status"] == "confirmed" and so["number"].startswith("ЗК-")
+      and so["lines"][0]["reserved_qty"] == "10.0000",
+      str(so.get("number")))
+
+status, _over = call("POST", f"{ACC}/shipments", {
+    "sales_order_id": so["id"],
+    "lines": [{"item_id": s_item["id"], "qty": "11"}],
+}, token=token)
+check("sal C: отгрузка сверх заказа → 422 over_shipment",
+      status == 422 and "over_shipment" in str(_over), str(status))
+
+status, shp1 = call("POST", f"{ACC}/shipments", {
+    "sales_order_id": so["id"],
+    "lines": [{"item_id": s_item["id"], "qty": "4"}],
+}, token=token)
+status, shp1 = call("POST", f"{ACC}/shipments/{shp1['id']}/post", token=token)
+check("sal C: частичная отгрузка 4 (списание по средней 60)",
+      status == 200 and shp1["status"] == "posted" and shp1["number"].startswith("ОТ-")
+      and Decimal(shp1["lines"][0]["amount_base"]) == Decimal(400),
+      str(shp1)[:130])
+status, so_now = call("GET", f"{ACC}/sales-orders/{so['id']}", token=token)
+check("sal C: заказ partially_shipped, резерв 6",
+      so_now["status"] == "partially_shipped" and so_now["lines"][0]["reserved_qty"] == "6.0000",
+      so_now.get("status"))
+
+# минус запрещён: второго заказа (7) больше остатка (6)
+status, so2 = call("POST", f"{ACC}/sales-orders", {
+    "counterparty_id": cust["id"], "currency": "RUB",
+    "lines": [{"item_id": s_item["id"], "qty": "7", "unit_price": "100"}],
+}, token=token)
+call("POST", f"{ACC}/sales-orders/{so2['id']}/confirm", token=token)
+status, shp_neg = call("POST", f"{ACC}/shipments", {
+    "sales_order_id": so2["id"],
+    "lines": [{"item_id": s_item["id"], "qty": "7"}],
+}, token=token)
+status, _neg = call("POST", f"{ACC}/shipments/{shp_neg['id']}/post", token=token)
+check("sal C: минус запрещён → 422 insufficient_stock",
+      status == 422 and "insufficient_stock" in str(_neg), str(status))
+
+# цифровой товар: FIFO-выдача кодов без явного списка
+status, dig_item = call("POST", f"{ACC}/items", {
+    "sku": f"SMOKE-DIGC-{run_tag}", "name": "smoke цифровой", "kind": "digital",
+    "unit_code": "лицензия",
+}, token=token)
+sal_codes = [f"SMOKE-SAL-{run_tag}-{i}" for i in (1, 2)]
+status, _ = call("POST", f"{ACC}/stock/adjustment", {
+    "location_id": loc["Цифровой склад"]["id"],
+    "lines": [{"item_id": dig_item["id"], "serial_codes": sal_codes, "unit_cost": "10"}],
+}, token=token)
+status, dig_order = call("POST", f"{ACC}/sales-orders", {
+    "counterparty_id": cust["id"], "currency": "RUB",
+    "lines": [{"item_id": dig_item["id"], "qty": "2", "unit_price": "300"}],
+}, token=token)
+call("POST", f"{ACC}/sales-orders/{dig_order['id']}/confirm", token=token)
+status, dig_shp = call("POST", f"{ACC}/shipments", {
+    "sales_order_id": dig_order["id"],
+    "lines": [{"item_id": dig_item["id"], "qty": "2"}],  # FIFO-автовыбор кодов
+}, token=token)
+status, dig_shp = call("POST", f"{ACC}/shipments/{dig_shp['id']}/post", token=token)
+check("sal C: продажа цифровых — коды выданы FIFO",
+      status == 200 and dig_shp["status"] == "posted", str(dig_shp)[:110])
+status, dig_bal = call("GET", f"{ACC}/stock/balances?item_id={dig_item['id']}", token=token)
+check("sal C: цифровой склад пуст после выдачи", dig_bal == [], str(dig_bal)[:100])
+
+# оплата — входящая транзакция с категорией «Продажи»
+status, s_pay = call("POST", f"{ACC}/sales-orders/{so['id']}/pay", {
+    "account_id": pay_acc["id"], "amount": "400",
+}, token=token)
+check("sal C: оплата — транзакция ПК- проведена",
+      status == 200 and s_pay["kind"] == "income" and s_pay["status"] == "posted"
+      and (s_pay.get("doc_number") or "").startswith("ПК-"), str(s_pay)[:110])
+
+# маржа: выручка 400 + 600, себестоимость 4×60 + 2×10, маржа 740
+status, s_rep = call("GET", f"{ACC}/reports/sales?counterparty_id={cust['id']}", token=token)
+check("sal C: отчёт продаж с маржой (740.00)",
+      status == 200 and s_rep["shipments"]["revenue_base"] == "1000.00"
+      and s_rep["shipments"]["cogs_base"] == "260.00"
+      and s_rep["shipments"]["margin_base"] == "740.00",
+      str(s_rep.get("shipments"))[:120])
+
+# сторно отгрузки: товар возвращается, маржа пересчитывается
+status, shp1s = call("POST", f"{ACC}/shipments/{shp1['id']}/unpost",
+                     {"reason": "smoke-возврат"}, token=token)
+check("sal C: сторно отгрузки (is_stornoed, резерв вернулся)",
+      status == 200 and shp1s["is_stornoed"] is True, str(shp1s)[:100])
+status, c_bal = call("GET", f"{ACC}/stock/balances?item_id={s_item['id']}", token=token)
+check("sal C: после сторно на складе 10",
+      status == 200 and sum(Decimal(b["qty"]) for b in c_bal) == 10, str(c_bal)[:110])
+status, s_rep2 = call("GET", f"{ACC}/reports/sales?counterparty_id={cust['id']}", token=token)
+check("sal C: маржа после сторно (600 − 20 = 580.00)",
+      s_rep2["shipments"]["revenue_base"] == "600.00"
+      and s_rep2["shipments"]["margin_base"] == "580.00",
+      str(s_rep2.get("shipments"))[:120])
+
+status, outbox_sal = call("GET",
+                          "/api/v1/events/outbox?event_name=acc.sales.shipped&limit=5", token=token)
+check("sal C: acc.sales.shipped в outbox",
+      status == 200 and any(dig_shp["id"] == e["payload"]["shipment_id"] for e in outbox_sal))
+
 # 25. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []
 for _ in range(6):

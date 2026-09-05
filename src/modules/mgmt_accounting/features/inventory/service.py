@@ -302,6 +302,7 @@ def _register_serial(
         received_at=moved_at,
     )
     db.add(serial)
+    db.flush()  # сессия без autoflush: сразу виден последующим проверкам
     return serial
 
 

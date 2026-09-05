@@ -54,7 +54,7 @@ def create_order(db: Session, *, user_id: uuid.UUID, data: dict) -> m.PurchaseOr
     """Черновик: номера не потребляет; курс и amount_base замораживаются
     при создании (§2.6) — валюта фиксирует экономику сделки."""
     _get_counterparty(db, data["counterparty_id"])
-    currency = data["currency"]
+    currency = data.get("currency") or acc_service.BASE_CURRENCY
     rate = acc_service.rate_for(db, date.today(), currency)
     lines_data = data.get("lines") or []
     if not lines_data:
