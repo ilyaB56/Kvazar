@@ -7,6 +7,8 @@ import {
 } from 'lucide-vue-next'
 import { get, post } from '../api/client'
 import { useAuthStore } from '../stores/auth'
+import QuasarMark from '../components/brand/QuasarMark.vue'
+import NotificationCenter from './NotificationCenter.vue'
 import { Avatar, Button, Dialog, DropdownMenu, DropdownMenuItem, Input, Label, ToastHost, useToast } from '../components/ui'
 import ChangePasswordDialog from './ChangePasswordDialog.vue'
 
@@ -97,7 +99,9 @@ async function logout() {
     <aside class="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col bg-zinc-900 lg:flex print:hidden">
       <div class="flex h-16 shrink-0 items-center border-b border-zinc-800 px-5">
         <div class="flex items-center gap-2.5">
-          <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500 text-lg font-bold text-white shadow-sm">К</span>
+          <span class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-zinc-950 shadow-sm ring-1 ring-white/15">
+            <QuasarMark class="h-7 w-7" />
+          </span>
           <div class="leading-tight">
             <p class="text-sm font-bold tracking-tight text-white">{{ t('brand.name') }}</p>
             <p class="truncate text-[11px] text-zinc-400" :title="orgName">
@@ -138,7 +142,9 @@ async function logout() {
         <aside class="absolute inset-y-0 left-0 flex w-72 flex-col bg-zinc-900">
           <div class="flex h-16 items-center border-b border-zinc-800 px-5">
             <div class="flex items-center gap-2.5">
-              <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500 text-lg font-bold text-white">К</span>
+              <span class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-zinc-950 shadow-sm ring-1 ring-white/15">
+                <QuasarMark class="h-7 w-7" />
+              </span>
               <div class="leading-tight">
                 <p class="text-sm font-bold text-white">{{ t('brand.name') }}</p>
                 <p class="truncate text-[11px] text-zinc-400 max-w-40">{{ orgName || t('brand.tagline') }}</p>
@@ -181,6 +187,7 @@ async function logout() {
           <Sun v-if="theme === 'dark'" class="h-4 w-4" />
           <Moon v-else class="h-4 w-4" />
         </Button>
+        <NotificationCenter />
         <DropdownMenu align="end">
           <template #trigger>
             <span class="flex items-center gap-2 rounded-full border border-zinc-200 bg-card py-1 pl-1 pr-2.5 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800" :aria-label="t('shell.userMenu')">
