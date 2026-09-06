@@ -248,7 +248,7 @@ const valueMeta: Record<string, { short: string; cls: string }> = {
       </div>
       <div class="flex justify-end gap-2">
         <Button variant="outline" size="sm" @click="createOpen = false">{{ t('permissions.cancel') }}</Button>
-        <Button variant="emerald" size="sm" :disabled="creating || newRole.name.trim().length < 2">
+        <Button variant="emerald" type="submit" size="sm" :disabled="creating || newRole.name.trim().length < 2">
           {{ creating ? t('permissions.creating') : t('permissions.create') }}
         </Button>
       </div>

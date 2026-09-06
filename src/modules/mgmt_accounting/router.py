@@ -13,7 +13,8 @@ from pydantic import BaseModel, BeforeValidator, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from src.core.auth import AdminUser, CurrentUser, WriteUser
+from src.core.auth import AdminUser, require_module
+from src.core.models import User
 from src.core.models import RecordVersion
 from src.db import get_db
 from src.modules.mgmt_accounting import models as m
@@ -204,12 +205,12 @@ class CashflowOut(BaseModel):
 # ---------- Справочники ----------
 
 @router.get("/accounts", response_model=list[AccountOut])
-def list_accounts(user: CurrentUser, db: Session = Depends(get_db)):
+def list_accounts(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db)):
     return db.scalars(select(m.Account).order_by(m.Account.name)).all()
 
 
 @router.post("/accounts", response_model=AccountOut, status_code=201)
-def create_account(body: AccountIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_account(body: AccountIn, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
     account = m.Account(name=body.name, currency=body.currency, company_id=body.company_id,
                         account_number=body.account_number)
     db.add(account)
@@ -220,7 +221,7 @@ def create_account(body: AccountIn, user: WriteUser, db: Session = Depends(get_d
 
 @router.patch("/accounts/{account_id}", response_model=AccountOut)
 def patch_account(
-    account_id: uuid.UUID, body: AccountPatch, user: WriteUser, db: Session = Depends(get_db)
+    account_id: uuid.UUID, body: AccountPatch, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)
 ):
     account = db.get(m.Account, account_id)
     if account is None:
@@ -233,12 +234,12 @@ def patch_account(
 
 
 @router.get("/categories", response_model=list[CategoryOut])
-def list_categories(user: CurrentUser, db: Session = Depends(get_db)):
+def list_categories(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db)):
     return db.scalars(select(m.Category).order_by(m.Category.name)).all()
 
 
 @router.post("/categories", response_model=CategoryOut, status_code=201)
-def create_category(body: CategoryIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_category(body: CategoryIn, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
     if body.parent_id is not None and db.get(m.Category, body.parent_id) is None:
         raise HTTPException(422, f"Unknown parent category: {body.parent_id}")
     category = m.Category(**body.model_dump())
@@ -249,12 +250,12 @@ def create_category(body: CategoryIn, user: WriteUser, db: Session = Depends(get
 
 
 @router.get("/counterparties", response_model=list[CounterpartyOut])
-def list_counterparties(user: CurrentUser, db: Session = Depends(get_db)):
+def list_counterparties(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db)):
     return db.scalars(select(m.Counterparty).order_by(m.Counterparty.name)).all()
 
 
 @router.post("/counterparties", response_model=CounterpartyOut, status_code=201)
-def create_counterparty(body: CounterpartyIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_counterparty(body: CounterpartyIn, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
     with svc():
         counterparty, warning = service.create_counterparty(db, body.model_dump())
     db.commit()
@@ -266,7 +267,7 @@ def create_counterparty(body: CounterpartyIn, user: WriteUser, db: Session = Dep
 
 @router.get("/transactions", response_model=list[TransactionOut])
 def list_transactions(
-    user: CurrentUser,
+    user: User = Depends(require_module("accounting", "ro")),
     db: Session = Depends(get_db),
     date_from: date | None = None,
     date_to: date | None = None,
@@ -302,7 +303,7 @@ def _get_transaction(db: Session, txn_id: uuid.UUID) -> m.Transaction:
 
 
 @router.post("/transactions", response_model=TransactionOut, status_code=201)
-def create_transaction(body: TransactionIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_transaction(body: TransactionIn, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
     with svc():
         txn = service.create_transaction(
             db, user_id=user.id, data=body.model_dump(exclude={"post_immediately"})
@@ -316,7 +317,7 @@ def create_transaction(body: TransactionIn, user: WriteUser, db: Session = Depen
 
 @router.patch("/transactions/{txn_id}", response_model=TransactionOut)
 def patch_transaction(
-    txn_id: uuid.UUID, body: TransactionPatch, user: WriteUser, db: Session = Depends(get_db)
+    txn_id: uuid.UUID, body: TransactionPatch, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)
 ):
     txn = _get_transaction(db, txn_id)
     with svc():
@@ -329,7 +330,7 @@ def patch_transaction(
 
 
 @router.delete("/transactions/{txn_id}")
-def delete_draft(txn_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+def delete_draft(txn_id: uuid.UUID, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
     """Физическое удаление — единственное, и только для черновиков."""
     txn = _get_transaction(db, txn_id)
     if txn.status != "draft":
@@ -340,7 +341,7 @@ def delete_draft(txn_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_d
 
 
 @router.post("/transactions/{txn_id}/post", response_model=TransactionOut)
-def post_transaction(txn_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+def post_transaction(txn_id: uuid.UUID, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
     txn = _get_transaction(db, txn_id)
     with svc():
         service.post_transaction(db, txn)
@@ -351,7 +352,7 @@ def post_transaction(txn_id: uuid.UUID, user: WriteUser, db: Session = Depends(g
 
 @router.post("/transactions/{txn_id}/storno", response_model=TransactionOut)
 def storno_transaction(
-    txn_id: uuid.UUID, body: ReasonIn, user: WriteUser, db: Session = Depends(get_db)
+    txn_id: uuid.UUID, body: ReasonIn, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)
 ):
     txn = _get_transaction(db, txn_id)
     with svc():
@@ -387,7 +388,7 @@ def delete_unmark(
 
 @router.get("/report/cashflow", response_model=CashflowOut)
 def cashflow_report(
-    user: CurrentUser,
+    user: User = Depends(require_module("accounting", "ro")),
     db: Session = Depends(get_db),
     date_from: date = Query(...),
     date_to: date = Query(...),
@@ -400,7 +401,7 @@ def cashflow_report(
 
 @router.get("/export/client-bank")
 def export_client_bank(
-    user: CurrentUser,
+    user: User = Depends(require_module("accounting", "ro")),
     db: Session = Depends(get_db),
     date_from: date = Query(...),
     date_to: date = Query(...),
@@ -424,7 +425,7 @@ def export_client_bank(
 
 @router.get("/rates", response_model=list[RateOut])
 def list_rates(
-    user: CurrentUser,
+    user: User = Depends(require_module("accounting", "ro")),
     db: Session = Depends(get_db),
     currency: str | None = None,
     date_from: date | None = None,
@@ -441,7 +442,7 @@ def list_rates(
 
 
 @router.post("/rates", response_model=RateOut)
-def upsert_rate(body: RateIn, admin: AdminUser, db: Session = Depends(get_db)):
+def upsert_rate(body: RateIn, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
     rate = service.upsert_rate(db, body.date, body.currency, body.rate)
     db.commit()
     db.refresh(rate)
@@ -451,7 +452,7 @@ def upsert_rate(body: RateIn, admin: AdminUser, db: Session = Depends(get_db)):
 # ---------- Периоды ----------
 
 @router.get("/periods", response_model=list[PeriodOut])
-def list_periods(user: CurrentUser, db: Session = Depends(get_db)):
+def list_periods(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db)):
     return db.scalars(select(m.Period).order_by(m.Period.year, m.Period.month)).all()
 
 
@@ -497,7 +498,7 @@ def reopen_period(
 # ---------- История версий ----------
 
 @router.get("/history/{entity_type}/{entity_id}")
-def history(entity_type: str, entity_id: str, user: CurrentUser, db: Session = Depends(get_db)):
+def history(entity_type: str, entity_id: str, user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db)):
     rows = db.scalars(
         select(RecordVersion)
         .where(RecordVersion.entity_type == entity_type, RecordVersion.entity_id == entity_id)

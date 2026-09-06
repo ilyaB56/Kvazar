@@ -115,7 +115,7 @@ export interface Transaction {
   doc_number: string | null
   doc_type_code: string
   kind: 'income' | 'expense' | 'transfer'
-  status: 'draft' | 'posted'
+  status: 'draft' | 'posted' | 'storno'
   operated_at: string
   created_at: string
   amount: string
@@ -135,4 +135,48 @@ export interface Transaction {
   is_deleted: boolean
   is_stornoed: boolean
   storno_of_id: string | null
+}
+
+// ---------- Финансы (этап D) ----------
+
+export interface Account {
+  id: string
+  company_id: string | null
+  name: string
+  currency: string
+  account_number: string | null
+  is_active: boolean
+}
+
+export interface Category {
+  id: string
+  parent_id: string | null
+  name: string
+  kind: string
+  is_active: boolean
+}
+
+export interface Counterparty {
+  id: string
+  internal_code: string
+  name: string
+  inn: string
+  kpp: string
+  contact_id: string | null
+  is_active: boolean
+  warning: string | null
+}
+
+export interface Rate {
+  date: string
+  currency: string
+  rate: string
+  source: string
+}
+
+export interface Period {
+  year: number
+  month: number
+  status: string
+  closed_by: string | null
 }

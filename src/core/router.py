@@ -213,6 +213,8 @@ def list_users(admin: AdminUser, db: Session = Depends(get_db)):
 def create_user(body: UserCreate, admin: AdminUser, db: Session = Depends(get_db)):
     if db.scalar(select(User).where(User.email == body.email)):
         raise HTTPException(409, "Email already exists")
+    if db.get(Role, body.role) is None:
+        raise HTTPException(422, f"Unknown role: {body.role}")
     user = User(
         email=body.email,
         password_hash=hash_password(body.password),

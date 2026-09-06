@@ -49,6 +49,7 @@ export const useAuthStore = defineStore('auth', {
     },
     // первый раздел, доступный пользователю по правам (редирект запрещённых URL)
     firstAvailableRoute(): string {
+      if (this.moduleLevel('accounting') !== 'none') return '/accounting'
       if (this.moduleLevel('integrations') !== 'none') return '/integrations/connections'
       if (this.moduleLevel('ai') !== 'none') return '/assistant'
       if (this.user?.role === 'admin') return '/settings/permissions'

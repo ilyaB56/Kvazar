@@ -75,6 +75,15 @@ const router = createRouter({
           ],
         },
         {
+          path: 'accounting',
+          name: 'finance',
+          component: () => import('../views/FinanceView.vue'),
+          meta: {
+            requiresAuth: true, module: 'accounting', level: 'ro',
+            title: 'Финансы', crumb: 'Счета и платежи',
+          },
+        },
+        {
           path: 'assistant',
           name: 'assistant',
           component: () => import('../views/AssistantView.vue'),

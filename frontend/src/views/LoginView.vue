@@ -67,8 +67,8 @@ function redirectTarget(): string {
   if (typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//')) {
     return redirect
   }
-  // посадочная по правам: оба контура начинаются с подключений интеграций
-  return '/integrations/connections'
+  // посадочная по правам: первый доступный раздел (учёт → интеграции → ИИ …)
+  return auth.firstAvailableRoute()
 }
 
 async function submit() {
