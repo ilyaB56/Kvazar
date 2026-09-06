@@ -10,7 +10,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.core.auth import WriteUser
+from src.core.auth import require_module
+from src.core.models import User
 from src.db import get_db
 from src.modules.ai_agent import models as m
 from src.modules.ai_agent import rag
@@ -30,7 +31,7 @@ class DocumentOut(BaseModel):
 
 
 @router.post("/documents", response_model=DocumentOut, status_code=201)
-async def upload_document(file: UploadFile = File(...), user: WriteUser = None,
+async def upload_document(file: UploadFile = File(...), user: User = Depends(require_module("ai")),
                           db: Session = Depends(get_db)):
     """Загрузка txt/md/csv (лимит 5 МБ); ключи/секреты — 422 (ADR-006)."""
     if file.filename and not file.filename.lower().endswith(rag.ALLOWED_SUFFIXES):
@@ -49,13 +50,13 @@ async def upload_document(file: UploadFile = File(...), user: WriteUser = None,
 
 
 @router.get("/documents", response_model=list[DocumentOut])
-def list_documents(user: WriteUser, db: Session = Depends(get_db)):
+def list_documents(user: User = Depends(require_module("ai", "ro")), db: Session = Depends(get_db)):
     return db.scalars(select(m.Document).where(m.Document.is_deleted.is_(False))
                       .order_by(m.Document.created_at.desc())).all()
 
 
 @router.delete("/documents/{document_id}")
-def remove_document(document_id: uuid.UUID, user: WriteUser,
+def remove_document(document_id: uuid.UUID, user: User = Depends(require_module("ai")),
                     db: Session = Depends(get_db)):
     document = db.get(m.Document, document_id)
     if document is None or document.is_deleted:
@@ -66,7 +67,7 @@ def remove_document(document_id: uuid.UUID, user: WriteUser,
 
 @router.get("/search")
 def search_documents(q: str = Query(...), limit: int = Query(5, ge=1, le=20),
-                     user: WriteUser = None):
+                     user: User = Depends(require_module("ai"))):
     """Top-k чанков по косинусной близости: текст + имя документа."""
     return [
         {"chunk_id": row["chunk_id"] if "chunk_id" in row else row["id"],
@@ -104,7 +105,7 @@ class SessionOut(BaseModel):
 
 
 @router.post("/chat", response_model=ChatOut)
-def ai_chat(body: ChatIn, user: WriteUser):
+def ai_chat(body: ChatIn, user: User = Depends(require_module("ai"))):
     from src.modules.ai_agent.chat import chat_reply
 
     try:
@@ -115,7 +116,7 @@ def ai_chat(body: ChatIn, user: WriteUser):
 
 
 @router.get("/sessions", response_model=list[SessionOut])
-def list_sessions(user: WriteUser, db: Session = Depends(get_db)):
+def list_sessions(user: User = Depends(require_module("ai", "ro")), db: Session = Depends(get_db)):
     return db.scalars(select(m.ChatSession).where(m.ChatSession.user_id == user.id)
                       .order_by(m.ChatSession.created_at.desc())).all()
 
@@ -131,7 +132,7 @@ def _own_session(db, session_id: uuid.UUID, user) -> m.ChatSession:
 
 
 @router.get("/sessions/{session_id}")
-def get_session_messages(session_id: uuid.UUID, user: WriteUser,
+def get_session_messages(session_id: uuid.UUID, user: User = Depends(require_module("ai", "ro")),
                          db: Session = Depends(get_db)):
     session = _own_session(db, session_id, user)
     rows = db.scalars(select(m.ChatMessage).where(m.ChatMessage.session_id == session.id)
@@ -141,7 +142,7 @@ def get_session_messages(session_id: uuid.UUID, user: WriteUser,
 
 
 @router.delete("/sessions/{session_id}")
-def delete_session(session_id: uuid.UUID, user: WriteUser,
+def delete_session(session_id: uuid.UUID, user: User = Depends(require_module("ai")),
                    db: Session = Depends(get_db)):
     session = _own_session(db, session_id, user)
     db.query(m.ChatMessage).filter(m.ChatMessage.session_id == session.id).delete()
@@ -169,7 +170,7 @@ class SettingsOut(BaseModel):
 
 
 @router.get("/proposals", response_model=list[ProposalOut])
-def list_proposals(status: str | None = None, user: WriteUser = None,
+def list_proposals(status: str | None = None, user: User = Depends(require_module("ai", "ro")),
                    db: Session = Depends(get_db)):
     query = select(m.Proposal).order_by(m.Proposal.created_at.desc()).limit(100)
     if status:
@@ -178,7 +179,7 @@ def list_proposals(status: str | None = None, user: WriteUser = None,
 
 
 @router.post("/proposals/{proposal_id}/approve", response_model=ProposalOut)
-def approve_proposal(proposal_id: uuid.UUID, user: WriteUser):
+def approve_proposal(proposal_id: uuid.UUID, user: User = Depends(require_module("ai"))):
     from src.modules.ai_agent.proposals import apply_proposal
 
     try:
@@ -188,7 +189,7 @@ def approve_proposal(proposal_id: uuid.UUID, user: WriteUser):
 
 
 @router.post("/proposals/{proposal_id}/reject", response_model=ProposalOut)
-def reject_proposal_endpoint(proposal_id: uuid.UUID, user: WriteUser):
+def reject_proposal_endpoint(proposal_id: uuid.UUID, user: User = Depends(require_module("ai"))):
     from src.modules.ai_agent.proposals import reject_proposal
 
     try:
@@ -198,14 +199,14 @@ def reject_proposal_endpoint(proposal_id: uuid.UUID, user: WriteUser):
 
 
 @router.get("/settings", response_model=SettingsOut)
-def get_settings_endpoint(user: WriteUser, db: Session = Depends(get_db)):
+def get_settings_endpoint(user: User = Depends(require_module("ai", "ro")), db: Session = Depends(get_db)):
     from src.modules.ai_agent.proposals import get_autopapply
 
     return {"autopapply": get_autopapply(db, user.id)}
 
 
 @router.put("/settings", response_model=SettingsOut)
-def update_settings(body: SettingsOut, user: WriteUser, db: Session = Depends(get_db)):
+def update_settings(body: SettingsOut, user: User = Depends(require_module("ai")), db: Session = Depends(get_db)):
     """Автоприменение — только для ролей user/admin (readonly → 403)."""
     from src.modules.ai_agent.proposals import set_autopapply
 

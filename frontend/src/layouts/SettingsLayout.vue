@@ -10,6 +10,7 @@ const router = useRouter()
 
 const tabs = computed(() => [
   { key: 'system', label: t('settings.system') },
+  { key: 'permissions', label: t('settings.permissions') },
 ])
 const active = computed(() => {
   const match = route.path.match(/\/settings\/(\w+)/)

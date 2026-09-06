@@ -303,7 +303,11 @@ if "id" in u_draft:
     call("DELETE", f"{ACC}/transactions/{u_draft['id']}", token=u_token)  # черновик убираем
 
 status, data = call("POST", "/api/v1/integrations/webhooks", {"name": "x"}, token=u_token)
-check("sec: integrations-мутации только admin (403 для user)", status == 403, str(status))
+check("sec: integrations-мутации по матрице (user=rw → 201)", status == 201, str(status))
+if "id" in data:
+    call("DELETE", f"/api/v1/integrations/webhooks/{data['id']}", token=token)  # чистим
+status, data = call("POST", "/api/v1/integrations/webhooks", {"name": "x"}, token=ro_token)
+check("sec: integrations-мутации readonly (403)", status == 403, str(status))
 
 # 16. Парольная политика (security-p0 п.4)
 status, data = call("POST", "/api/v1/users", {"email": "weak1@erp.local", "password": "12345678"}, token=token)

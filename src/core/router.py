@@ -8,12 +8,13 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.config import get_settings
 from src.core import events
 from src.core.auth import (
+    MODULES,
     AdminUser,
     CurrentUser,
     HumanUser,
@@ -32,6 +33,8 @@ from src.core.models import (
     Contact,
     EventOutbox,
     RevokedToken,
+    Role,
+    RolePermission,
     Setting,
     User,
 )
@@ -223,6 +226,37 @@ def create_user(body: UserCreate, admin: AdminUser, db: Session = Depends(get_db
     return user
 
 
+class UserPatch(BaseModel):
+    full_name: str | None = Field(default=None, max_length=255)
+    role: str | None = Field(default=None, max_length=50)
+    is_active: bool | None = None
+
+
+@router.patch("/users/{user_id}", response_model=UserOut)
+def patch_user(user_id: uuid.UUID, body: UserPatch, admin: AdminUser,
+               db: Session = Depends(get_db)):
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "User not found")
+    if body.role is not None:
+        if db.get(Role, body.role) is None:
+            raise HTTPException(422, f"Unknown role: {body.role}")
+        if user.id == admin.id and body.role != "admin":
+            raise HTTPException(400, "Нельзя снять роль администратора с себя")
+        user.role = body.role
+    if body.full_name is not None:
+        user.full_name = body.full_name
+    if body.is_active is not None:
+        user.is_active = body.is_active
+        if not user.is_active:
+            user.token_version += 1  # деактивация убивает выданные токены
+    db.add(AuditEvent(action="user.updated", entity_type="user", entity_id=str(user.id),
+                      payload=body.model_dump(exclude_none=True)))
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 # ---------- Companies / Contacts ----------
 
 @router.get("/companies", response_model=list[CompanyIn])
@@ -272,6 +306,197 @@ def upsert_setting(body: SettingIn, admin: AdminUser, db: Session = Depends(get_
         db.add(Setting(key=body.key, value=body.value, value_type=body.value_type))
     db.commit()
     return {"ok": True}
+
+
+# ---------- Роли и права (редизайн §6.2) ----------
+
+class PermissionsOut(BaseModel):
+    role: dict
+    permissions: dict[str, str]
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "role": {"key": "user", "name": "Пользователь"},
+                "permissions": {
+                    "accounting": "rw", "crm": "rw", "integrations": "rw",
+                    "ai": "rw", "system": "ro",
+                },
+            }
+        }
+    }
+
+
+class RoleOut(BaseModel):
+    key: str
+    name: str
+    description: str
+    is_builtin: bool
+    color: str
+    users_count: int
+    permissions: dict[str, str]
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "key": "user",
+                "name": "Пользователь",
+                "description": "Работа во всех разделах, настройка системы — только чтение",
+                "is_builtin": True,
+                "color": "teal",
+                "users_count": 3,
+                "permissions": {
+                    "accounting": "rw", "crm": "rw", "integrations": "rw",
+                    "ai": "rw", "system": "ro",
+                },
+            }
+        }
+    }
+
+
+class RoleCreateIn(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    description: str = Field(default="", max_length=500)
+    color: str = Field(default="zinc", max_length=20)
+
+
+class RolePermissionsIn(BaseModel):
+    permissions: dict[str, str]
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {"permissions": {"accounting": "rw", "crm": "ro", "integrations": "none", "ai": "rw", "system": "none"}}
+        }
+    }
+
+
+# Транслитерация для slug-ключа кастомной роли из названия
+_TRANSLIT = str.maketrans({
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+})
+
+
+def _role_slug(name: str) -> str:
+    slug = name.lower().translate(_TRANSLIT)
+    slug = "".join(ch if ch.isalnum() else "-" for ch in slug).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug[:40] or "role"
+
+
+def _role_permissions(db: Session, role_key: str) -> dict[str, str]:
+    if role_key == "admin":
+        return dict.fromkeys(MODULES, "rw")
+    rows = db.scalars(select(RolePermission).where(RolePermission.role_key == role_key)).all()
+    levels = {row.module: row.level for row in rows}
+    return {module: levels.get(module, "none") for module in MODULES}
+
+
+@router.get("/me/permissions", response_model=PermissionsOut)
+def my_permissions(user: CurrentUser, db: Session = Depends(get_db)):
+    role = db.get(Role, user.role)
+    return PermissionsOut(
+        role={"key": user.role, "name": role.name if role else user.role},
+        permissions=_role_permissions(db, user.role),
+    )
+
+
+@router.get("/roles", response_model=list[RoleOut])
+def list_roles(admin: AdminUser, db: Session = Depends(get_db)):
+    roles = db.scalars(select(Role).order_by(Role.is_builtin.desc(), Role.key)).all()
+    counts: dict[str, int] = dict(
+        db.execute(select(User.role, func.count()).group_by(User.role)).all()
+    )
+    return [
+        RoleOut(
+            key=role.key, name=role.name, description=role.description,
+            is_builtin=role.is_builtin, color=role.color,
+            users_count=counts.get(role.key, 0),
+            permissions=_role_permissions(db, role.key),
+        )
+        for role in roles
+    ]
+
+
+@router.post("/roles", response_model=RoleOut, status_code=201)
+def create_role(body: RoleCreateIn, admin: AdminUser, db: Session = Depends(get_db)):
+    key = _role_slug(body.name)
+    if db.get(Role, key):
+        raise HTTPException(409, f"Role key '{key}' already exists")
+    role = Role(key=key, name=body.name, description=body.description,
+                is_builtin=False, color=body.color)
+    db.add(role)
+    # новая роль стартует закрытой во всех модулях — админ откроет нужное
+    for module in MODULES:
+        db.add(RolePermission(role_key=key, module=module, level="none"))
+    db.add(AuditEvent(user_id=admin.id, action="role.created",
+                      entity_type="role", entity_id=key))
+    db.commit()
+    return RoleOut(key=key, name=role.name, description=role.description,
+                   is_builtin=False, color=role.color, users_count=0,
+                   permissions=_role_permissions(db, key))
+
+
+@router.put("/roles/{key}/permissions", response_model=RoleOut)
+def put_role_permissions(key: str, body: RolePermissionsIn,
+                         admin: AdminUser, db: Session = Depends(get_db)):
+    role = db.get(Role, key)
+    if role is None:
+        raise HTTPException(404, "Role not found")
+    if role.key == "admin":
+        raise HTTPException(400, "Роль администратора неизменяема")
+    for module, level in body.permissions.items():
+        if module not in MODULES:
+            raise HTTPException(422, f"Unknown module: {module}")
+        if level not in ("rw", "ro", "none"):
+            raise HTTPException(422, f"Invalid level: {level}")
+    for module in MODULES:
+        level = body.permissions.get(module, "none")
+        row = db.scalar(select(RolePermission).where(
+            RolePermission.role_key == key, RolePermission.module == module))
+        if level == "none":
+            if row:
+                db.delete(row)
+            continue
+        if row:
+            row.level = level
+        else:
+            db.add(RolePermission(role_key=key, module=module, level=level))
+    db.add(AuditEvent(user_id=admin.id, action="role.permissions.updated",
+                      entity_type="role", entity_id=key,
+                      payload={"permissions": body.permissions}))
+    db.commit()
+    counts: dict[str, int] = dict(
+        db.execute(select(User.role, func.count()).group_by(User.role)).all()
+    )
+    return RoleOut(key=role.key, name=role.name, description=role.description,
+                   is_builtin=role.is_builtin, color=role.color,
+                   users_count=counts.get(role.key, 0),
+                   permissions=_role_permissions(db, key))
+
+
+@router.delete("/roles/{key}", response_model=RoleOut)
+def delete_role(key: str, admin: AdminUser, db: Session = Depends(get_db)):
+    role = db.get(Role, key)
+    if role is None:
+        raise HTTPException(404, "Role not found")
+    if role.is_builtin:
+        raise HTTPException(400, "Builtin roles cannot be deleted")
+    users_count = db.scalar(select(func.count()).where(User.role == key))
+    if users_count:
+        raise HTTPException(409, f"Role has {users_count} users, reassign them first")
+    out = RoleOut(key=role.key, name=role.name, description=role.description,
+                  is_builtin=role.is_builtin, color=role.color, users_count=0,
+                  permissions=_role_permissions(db, key))
+    db.delete(role)  # каскад удаляет строки прав
+    db.add(AuditEvent(user_id=admin.id, action="role.deleted",
+                      entity_type="role", entity_id=key))
+    db.commit()
+    return out
 
 
 # ---------- Outbox (админ) ----------

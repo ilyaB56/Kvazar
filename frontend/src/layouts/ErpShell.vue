@@ -34,14 +34,27 @@ function toggleTheme() {
 // ---------- Навигация (§5; фильтрация по правам — этап C) ----------
 // В этапе A показываем только живые разделы; Дашборд/Продажи/Финансы/Отчёты
 // включаются своими этапами (D/E/F), склад/персонал — после бэкенда (ADR-007).
+// Пункт виден, если уровень прав на модуль ≠ none (§6.3); Настройки — админ
+// (system-модуль переводится на require_module в этапе G).
+interface NavItem {
+  to: string
+  label: string
+  icon: typeof Plug
+}
 const navSections = computed(() => [
   {
     title: t('nav.sections.system'),
-    items: [
-      { to: '/integrations/connections', label: t('nav.integrations'), icon: Plug },
-      { to: '/assistant', label: t('nav.assistant'), icon: Bot },
-      { to: '/settings/system', label: t('nav.settings'), icon: Settings2 },
-    ],
+    items: ([
+      auth.moduleLevel('integrations') !== 'none'
+        ? { to: '/integrations/connections', label: t('nav.integrations'), icon: Plug }
+        : null,
+      auth.moduleLevel('ai') !== 'none'
+        ? { to: '/assistant', label: t('nav.assistant'), icon: Bot }
+        : null,
+      auth.isAdmin
+        ? { to: '/settings/system', label: t('nav.settings'), icon: Settings2 }
+        : null,
+    ] as Array<NavItem | null>).filter((item): item is NavItem => item !== null),
   },
 ].filter((section) => section.items.length > 0))
 
@@ -83,6 +96,15 @@ onMounted(() => {
   healthTimer = window.setInterval(checkHealth, 60_000)
 })
 onBeforeUnmount(() => { if (healthTimer !== null) window.clearInterval(healthTimer) })
+
+// ---------- Права: опрос раз в минуту (§6.3: смена прав применяется
+// в течение минуты без перелогина — навигация перестраивается сама) ----------
+let permissionsTimer: number | null = null
+onMounted(() => {
+  void auth.fetchPermissions()
+  permissionsTimer = window.setInterval(() => { void auth.fetchPermissions() }, 60_000)
+})
+onBeforeUnmount(() => { if (permissionsTimer !== null) window.clearInterval(permissionsTimer) })
 
 // ---------- Профиль: смена пароля + выход ----------
 const passwordOpen = ref(false)

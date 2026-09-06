@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.config import get_settings
-from src.core.models import ApiToken, User
+from src.core.models import ApiToken, RolePermission, User
 from src.db import get_db
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -142,3 +142,41 @@ require_admin = require_role("admin")
 
 WriteUser = Annotated[User, Depends(require_write)]
 AdminUser = Annotated[User, Depends(require_admin)]
+
+
+# ---------- Роли и права (редизайн §6.3) ----------
+
+MODULES = ("accounting", "crm", "integrations", "ai", "system")
+
+
+def module_level(db: Session, role_key: str, module: str) -> str:
+    """Уровень доступа роли к модулю: 'rw' | 'ro' | 'none'.
+
+    admin — неизменяемая роль с полным доступом (спека §6.1), строки прав
+    для неё есть в сиде, но проверка не зависит от их наличия.
+    """
+    if role_key == "admin":
+        return "rw"
+    level = db.scalar(
+        select(RolePermission.level).where(
+            RolePermission.role_key == role_key, RolePermission.module == module
+        )
+    )
+    return level or "none"
+
+
+def require_module(module: str, level: str = "rw"):
+    """Зависимость доступа к модулю (§6.3): level 'ro' — только чтение,
+    'rw' — полный; 'none'/нет строки — 403. Право берётся из БД по роли
+    пользователя на каждом запросе — смена прав применяется сразу."""
+
+    def checker(user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> User:
+        actual = module_level(db, user.role, module)
+        if actual == "none" or (level == "rw" and actual != "rw"):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Requires {module}:{level}, role '{user.role}' has '{actual}'",
+            )
+        return user
+
+    return checker

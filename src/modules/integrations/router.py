@@ -11,7 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.core import events
-from src.core.auth import AdminUser, CurrentUser
+from src.core.auth import require_module
+from src.core.models import User
 from src.db import get_db
 from src.modules.integrations import models as m
 from src.modules.integrations.connectors.builtin import registry as connector_registry
@@ -86,19 +87,19 @@ class RecipeIn(BaseModel):
 # ---------- Каталог коннекторов (магазин, backend) ----------
 
 @router.get("/connectors")
-def list_connectors(user: CurrentUser):
+def list_connectors(user: User = Depends(require_module("integrations", "ro"))):
     return connector_registry.available()
 
 
 # ---------- Connections ----------
 
 @router.get("/connections", response_model=list[ConnectionOut])
-def list_connections(user: CurrentUser, db: Session = Depends(get_db)):
+def list_connections(user: User = Depends(require_module("integrations", "ro")), db: Session = Depends(get_db)):
     return db.scalars(select(m.Connection)).all()
 
 
 @router.post("/connections", response_model=ConnectionOut, status_code=201)
-def create_connection(body: ConnectionIn, admin: AdminUser, db: Session = Depends(get_db)):
+def create_connection(body: ConnectionIn, user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
     if not any(c["code"] == body.connector_code for c in connector_registry.available()):
         raise HTTPException(400, f"Unknown connector: {body.connector_code}")
     connection = m.Connection(
@@ -114,7 +115,7 @@ def create_connection(body: ConnectionIn, admin: AdminUser, db: Session = Depend
 
 
 @router.post("/connections/{connection_id}/test")
-def test_connection(connection_id: uuid.UUID, admin: AdminUser, db: Session = Depends(get_db)):
+def test_connection(connection_id: uuid.UUID, user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
     connection = db.get(m.Connection, connection_id)
     if connection is None:
         raise HTTPException(404, "Connection not found")
@@ -133,7 +134,7 @@ def test_connection(connection_id: uuid.UUID, admin: AdminUser, db: Session = De
 # ---------- Webhooks (входящие) ----------
 
 @router.get("/webhooks", response_model=list[WebhookOut])
-def list_webhooks(user: CurrentUser, db: Session = Depends(get_db)):
+def list_webhooks(user: User = Depends(require_module("integrations", "ro")), db: Session = Depends(get_db)):
     endpoints = db.scalars(select(m.WebhookEndpoint)).all()
     return [
         WebhookOut(
@@ -145,7 +146,7 @@ def list_webhooks(user: CurrentUser, db: Session = Depends(get_db)):
 
 
 @router.post("/webhooks", status_code=201)
-def create_webhook(body: WebhookIn, admin: AdminUser, db: Session = Depends(get_db)):
+def create_webhook(body: WebhookIn, user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
     endpoint = m.WebhookEndpoint(
         name=body.name,
         secret_token=secrets.token_urlsafe(32),
@@ -190,7 +191,7 @@ async def receive_hook(
 # ---------- Mappings ----------
 
 @router.post("/mappings", status_code=201)
-def create_mapping(body: MappingIn, admin: AdminUser, db: Session = Depends(get_db)):
+def create_mapping(body: MappingIn, user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
     mapping = m.FieldMapping(**body.model_dump())
     db.add(mapping)
     db.commit()
@@ -201,12 +202,12 @@ def create_mapping(body: MappingIn, admin: AdminUser, db: Session = Depends(get_
 # ---------- Sync jobs ----------
 
 @router.get("/sync-jobs")
-def list_sync_jobs(user: CurrentUser, db: Session = Depends(get_db)):
+def list_sync_jobs(user: User = Depends(require_module("integrations", "ro")), db: Session = Depends(get_db)):
     return db.scalars(select(m.SyncJob).order_by(m.SyncJob.created_at)).all()
 
 
 @router.post("/sync-jobs", status_code=201)
-def create_sync_job(body: SyncJobIn, admin: AdminUser, db: Session = Depends(get_db)):
+def create_sync_job(body: SyncJobIn, user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
     if db.get(m.Connection, body.connection_id) is None:
         raise HTTPException(400, "Unknown connection")
     job = m.SyncJob(**body.model_dump())
@@ -217,7 +218,7 @@ def create_sync_job(body: SyncJobIn, admin: AdminUser, db: Session = Depends(get
 
 
 @router.post("/sync-jobs/{job_id}/run")
-def run_sync_job(job_id: uuid.UUID, admin: AdminUser, db: Session = Depends(get_db)):
+def run_sync_job(job_id: uuid.UUID, user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
     from src.modules.integrations.tasks import run_job
 
     run_job.delay(str(job_id))
@@ -225,7 +226,7 @@ def run_sync_job(job_id: uuid.UUID, admin: AdminUser, db: Session = Depends(get_
 
 
 @router.patch("/sync-jobs/{job_id}")
-def patch_sync_job(job_id: uuid.UUID, body: SyncJobPatch, admin: AdminUser,
+def patch_sync_job(job_id: uuid.UUID, body: SyncJobPatch, user: User = Depends(require_module("integrations")),
                    db: Session = Depends(get_db)):
     """Правка задания (вкл/выкл, cron, endpoint) — планировщик подхватит сам."""
     job = db.get(m.SyncJob, job_id)
@@ -239,7 +240,7 @@ def patch_sync_job(job_id: uuid.UUID, body: SyncJobPatch, admin: AdminUser,
 
 
 @router.get("/sync-runs")
-def list_runs(sync_job_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+def list_runs(sync_job_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")), db: Session = Depends(get_db)):
     runs = db.scalars(
         select(m.SyncRun)
         .where(m.SyncRun.sync_job_id == sync_job_id)
@@ -252,7 +253,7 @@ def list_runs(sync_job_id: uuid.UUID, user: CurrentUser, db: Session = Depends(g
 # ---------- Recipes (no-code конструктор) ----------
 
 @router.post("/recipes", status_code=201)
-def create_recipe(body: RecipeIn, admin: AdminUser, db: Session = Depends(get_db)):
+def create_recipe(body: RecipeIn, user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
     recipe = m.Recipe(**body.model_dump())
     db.add(recipe)
     db.commit()
@@ -282,12 +283,12 @@ class NotificationRuleOut(BaseModel):
 
 
 @router.get("/notification-rules", response_model=list[NotificationRuleOut])
-def list_notification_rules(admin: AdminUser, db: Session = Depends(get_db)):
+def list_notification_rules(user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
     return db.scalars(select(m.NotificationRule).order_by(m.NotificationRule.created_at)).all()
 
 
 @router.post("/notification-rules", response_model=NotificationRuleOut, status_code=201)
-def create_notification_rule(body: NotificationRuleIn, admin: AdminUser,
+def create_notification_rule(body: NotificationRuleIn, user: User = Depends(require_module("integrations")),
                              db: Session = Depends(get_db)):
     from src.modules.integrations.notify import NOTIFY_EVENTS
 
@@ -301,7 +302,7 @@ def create_notification_rule(body: NotificationRuleIn, admin: AdminUser,
 
 
 @router.delete("/notification-rules/{rule_id}", response_model=NotificationRuleOut)
-def delete_notification_rule(rule_id: uuid.UUID, admin: AdminUser,
+def delete_notification_rule(rule_id: uuid.UUID, user: User = Depends(require_module("integrations")),
                              db: Session = Depends(get_db)):
     rule = db.get(m.NotificationRule, rule_id)
     if rule is None:
@@ -312,7 +313,7 @@ def delete_notification_rule(rule_id: uuid.UUID, admin: AdminUser,
 
 
 @router.post("/notification-rules/{rule_id}/test")
-def test_notification_rule(rule_id: uuid.UUID, admin: AdminUser,
+def test_notification_rule(rule_id: uuid.UUID, user: User = Depends(require_module("integrations")),
                            db: Session = Depends(get_db)):
     """«Тест»: отправить Hello по правилу (рендер шаблона на дефолт-полях)."""
     from src.modules.integrations.notify import send_notification
@@ -327,7 +328,7 @@ def test_notification_rule(rule_id: uuid.UUID, admin: AdminUser,
 
 
 @router.get("/recipes")
-def list_recipes(user: CurrentUser, db: Session = Depends(get_db), published_only: bool = False):
+def list_recipes(user: User = Depends(require_module("integrations", "ro")), db: Session = Depends(get_db), published_only: bool = False):
     query = select(m.Recipe)
     if published_only:
         query = query.where(m.Recipe.is_published.is_(True))

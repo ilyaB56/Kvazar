@@ -27,19 +27,29 @@ const router = createRouter({
               path: 'connections',
               name: 'connections',
               component: ConnectionsView,
-              meta: { requiresAuth: true, title: 'Интеграции', crumb: 'Подключения' },
+              meta: {
+                requiresAuth: true, module: 'integrations', level: 'ro',
+                title: 'Интеграции', crumb: 'Подключения',
+              },
             },
             {
               path: 'sync',
               name: 'sync',
               component: SyncView,
-              meta: { requiresAuth: true, title: 'Интеграции', crumb: 'Синхронизации' },
+              meta: {
+                requiresAuth: true, module: 'integrations', level: 'ro',
+                title: 'Интеграции', crumb: 'Синхронизации',
+              },
             },
             {
               path: 'notifications',
               name: 'notifications',
               component: () => import('../views/NotificationsView.vue'),
-              meta: { requiresAuth: true, requiresAdmin: true, title: 'Интеграции', crumb: 'Уведомления' },
+              meta: {
+                requiresAuth: true, requiresAdmin: true,
+                module: 'integrations', level: 'ro',
+                title: 'Интеграции', crumb: 'Уведомления',
+              },
             },
           ],
         },
@@ -55,13 +65,20 @@ const router = createRouter({
               component: () => import('../views/SystemView.vue'),
               meta: { requiresAuth: true, requiresAdmin: true, title: 'Настройки', crumb: 'Система' },
             },
+            {
+              path: 'permissions',
+              name: 'permissions',
+              component: () => import('../views/PermissionsView.vue'),
+              meta: { requiresAuth: true, requiresAdmin: true, title: 'Настройки', crumb: 'Доступы и роли' },
+            },
           ],
         },
         {
           path: 'assistant',
           name: 'assistant',
           component: () => import('../views/AssistantView.vue'),
-          meta: { requiresAuth: true, requiresAdmin: true, title: 'ИИ-ассистент', crumb: 'Диалоги и предложения' },
+          // доступ — по правам ai (§6.3): rw у user по сиду, readonly — ro
+          meta: { requiresAuth: true, module: 'ai', level: 'ro', title: 'ИИ-ассистент', crumb: 'Диалоги и предложения' },
         },
       ],
     },
@@ -79,12 +96,6 @@ router.beforeEach(async (to) => {
   if (to.matched.some((record) => record.meta.requiresAuth) && !auth.isAuthenticated) {
     return { name: 'login' }
   }
-  if (to.matched.some((record) => record.meta.requiresAdmin) && auth.user && auth.user.role !== 'admin') {
-    return { path: '/integrations/connections' }
-  }
-  if (to.name === 'login' && auth.isAuthenticated) {
-    return { path: '/integrations/connections' }
-  }
   if (auth.isAuthenticated && !auth.user) {
     try {
       await auth.fetchMe()
@@ -92,6 +103,32 @@ router.beforeEach(async (to) => {
       auth.logout()
       return { name: 'login' }
     }
+  }
+  if (auth.isAuthenticated && !auth.permissions) {
+    // guard дожидается прав: прямой URL в закрытый модуль уходит редиректом
+    await auth.fetchPermissions()
+  }
+  if (to.matched.some((record) => record.meta.requiresAdmin) && auth.user && auth.user.role !== 'admin') {
+    return { path: auth.firstAvailableRoute() }
+  }
+  // права модуля (§6.3): пункт виден при уровне ≠ none; level 'ro' — только чтение
+  const moduleRecord = to.matched.find((record) => record.meta.module)
+  if (moduleRecord && auth.permissions) {
+    const module = moduleRecord.meta.module as string
+    const need = (moduleRecord.meta.level as string) ?? 'ro'
+    const level = auth.permissions[module] ?? 'none'
+    if (level === 'none' || (need === 'rw' && level !== 'rw')) {
+      const target = auth.firstAvailableRoute()
+      if (target === '/login') {
+        // доступных разделов нет — сессия бесполезна, чистый выход
+        auth.logout()
+        return { name: 'login' }
+      }
+      return { path: target }
+    }
+  }
+  if (to.name === 'login' && auth.isAuthenticated) {
+    return { path: auth.firstAvailableRoute() }
   }
   // заголовок раздела шапки — по meta.title; i18n.global — guard вне setup-контекста
   document.title = to.meta.title

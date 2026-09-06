@@ -26,11 +26,40 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     full_name: Mapped[str] = mapped_column(String(255), default="")
-    role: Mapped[str] = mapped_column(String(50), default="user")  # admin | user | readonly
+    role: Mapped[str] = mapped_column(
+        String(50), ForeignKey(f"{CORE_SCHEMA}.roles.key", ondelete="RESTRICT"), default="user"
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # Версия токенов: += 1 при смене пароля — все ранее выданные токены умирают
     token_version: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Role(Base):
+    """Роль доступа: ключ + отображаемое имя. admin — неизменяемая (rw везде)."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "roles"
+
+    key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str] = mapped_column(Text, default="")
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # цвет-акцент карточки роли в UI (матрица «Доступы и роли»)
+    color: Mapped[str] = mapped_column(String(20), default="zinc")
+
+
+class RolePermission(Base):
+    """Право роли на модуль: 'rw' | 'ro'; отсутствие строки = 'none'."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "role_permissions"
+
+    role_key: Mapped[str] = mapped_column(
+        String(50), ForeignKey(f"{CORE_SCHEMA}.roles.key", ondelete="CASCADE"), primary_key=True
+    )
+    module: Mapped[str] = mapped_column(String(30), primary_key=True)
+    level: Mapped[str] = mapped_column(String(5))
 
 
 class Company(Base):
