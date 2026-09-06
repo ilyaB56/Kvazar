@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Menu, Sun, Moon, LogOut, KeyRound, ChevronsUpDown, Plug, Bot, Settings2, LayoutDashboard, Wallet,
+  Menu, Sun, Moon, LogOut, KeyRound, ChevronsUpDown, Plug, Bot, Settings2, LayoutDashboard, Wallet, TrendingUp,
 } from 'lucide-vue-next'
 import { get, post } from '../api/client'
 import { useAuthStore } from '../stores/auth'
@@ -47,6 +47,9 @@ const navSections = computed(() => [
     items: ([
       auth.moduleLevel('accounting') !== 'none'
         ? { to: '/accounting', label: t('nav.finance'), icon: Wallet }
+        : null,
+      auth.moduleLevel('crm') !== 'none'
+        ? { to: '/crm', label: t('nav.sales'), icon: TrendingUp }
         : null,
       auth.moduleLevel('integrations') !== 'none'
         ? { to: '/integrations/connections', label: t('nav.integrations'), icon: Plug }

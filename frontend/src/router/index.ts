@@ -84,6 +84,15 @@ const router = createRouter({
           },
         },
         {
+          path: 'crm',
+          name: 'crm',
+          component: () => import('../views/CrmView.vue'),
+          meta: {
+            requiresAuth: true, module: 'crm', level: 'ro',
+            title: 'Продажи', crumb: 'Сделки и коммуникации',
+          },
+        },
+        {
           path: 'assistant',
           name: 'assistant',
           component: () => import('../views/AssistantView.vue'),

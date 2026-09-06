@@ -13,7 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from typing import Annotated
 
-from src.core.auth import AdminUser, CurrentUser, WriteUser
+from src.core.auth import AdminUser, require_module
+from src.core.models import User
 from src.core.models import RecordVersion
 from src.db import get_db
 from src.modules.mini_crm import models as m
@@ -92,6 +93,7 @@ class DealOut(BaseModel):
     counterparty_name: str | None = None
     contact_id: uuid.UUID | None
     responsible_id: uuid.UUID | None
+    responsible_name: str | None = None
     amount: MoneyStr
     currency: str
     rate: MoneyStr | None
@@ -116,7 +118,7 @@ class ReasonIn(BaseModel):
 # ---------- Стадии ----------
 
 @router.get("/stages", response_model=list[StageOut])
-def list_stages(user: CurrentUser, db: Session = Depends(get_db)):
+def list_stages(user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db)):
     return db.scalars(select(m.Stage).order_by(m.Stage.position)).all()
 
 
@@ -161,12 +163,18 @@ def delete_stage(stage_id: uuid.UUID, admin: AdminUser, db: Session = Depends(ge
 
 def _enrich(db: Session, deals: list[m.Deal]) -> list[dict]:
     names = service.counterparty_names(db, [d.counterparty_id for d in deals])
+    resp_ids = {d.responsible_id for d in deals if d.responsible_id}
+    resp_names = {
+        str(u.id): (u.full_name or u.email)
+        for u in db.scalars(select(User).where(User.id.in_(resp_ids))).all()
+    } if resp_ids else {}
     return [
         {
             "id": d.id, "title": d.title, "stage_id": d.stage_id,
             "counterparty_id": d.counterparty_id,
             "counterparty_name": names.get(str(d.counterparty_id)) if d.counterparty_id else None,
             "contact_id": d.contact_id, "responsible_id": d.responsible_id,
+            "responsible_name": resp_names.get(str(d.responsible_id)) if d.responsible_id else None,
             "amount": d.amount, "currency": d.currency,
             "rate": d.rate, "amount_base": d.amount_base,
             "expected_close_at": d.expected_close_at, "lost_reason": d.lost_reason,
@@ -177,7 +185,7 @@ def _enrich(db: Session, deals: list[m.Deal]) -> list[dict]:
 
 
 @router.get("/deals", response_model=list[DealOut])
-def list_deals(user: CurrentUser, q: str | None = None, stage_id: uuid.UUID | None = None,
+def list_deals(user: User = Depends(require_module("crm", "ro")), q: str | None = None, stage_id: uuid.UUID | None = None,
                db: Session = Depends(get_db)):
     query = select(m.Deal).where(m.Deal.is_deleted.is_(False)).order_by(m.Deal.created_at.desc())
     if stage_id:
@@ -196,7 +204,7 @@ def _get_deal(db: Session, deal_id: uuid.UUID) -> m.Deal:
 
 
 @router.post("/deals", response_model=DealOut, status_code=201)
-def create_deal(body: DealIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_deal(body: DealIn, user: User = Depends(require_module("crm")), db: Session = Depends(get_db)):
     with svc():
         deal = service.create_deal(db, user_id=user.id, data=body.model_dump())
     db.commit()
@@ -205,12 +213,12 @@ def create_deal(body: DealIn, user: WriteUser, db: Session = Depends(get_db)):
 
 
 @router.get("/deals/{deal_id}", response_model=DealOut)
-def get_deal(deal_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+def get_deal(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db)):
     return _enrich(db, [_get_deal(db, deal_id)])[0]
 
 
 @router.patch("/deals/{deal_id}", response_model=DealOut)
-def patch_deal(deal_id: uuid.UUID, body: DealPatch, user: WriteUser,
+def patch_deal(deal_id: uuid.UUID, body: DealPatch, user: User = Depends(require_module("crm")),
                db: Session = Depends(get_db)):
     deal = _get_deal(db, deal_id)
     with svc():
@@ -222,7 +230,7 @@ def patch_deal(deal_id: uuid.UUID, body: DealPatch, user: WriteUser,
 
 
 @router.post("/deals/{deal_id}/move", response_model=DealOut)
-def move_deal(deal_id: uuid.UUID, body: MoveIn, user: WriteUser,
+def move_deal(deal_id: uuid.UUID, body: MoveIn, user: User = Depends(require_module("crm")),
               db: Session = Depends(get_db)):
     deal = _get_deal(db, deal_id)
     with svc():
@@ -244,7 +252,7 @@ def delete_mark(deal_id: uuid.UUID, body: ReasonIn, admin: AdminUser,
 
 
 @router.get("/deals/{deal_id}/counterparty")
-def deal_counterparty(deal_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+def deal_counterparty(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db)):
     deal = _get_deal(db, deal_id)
     if not deal.counterparty_id:
         return {"counterparty_id": None, "name": None}
@@ -254,7 +262,7 @@ def deal_counterparty(deal_id: uuid.UUID, user: CurrentUser, db: Session = Depen
 
 
 @router.get("/history/{entity_type}/{entity_id}")
-def crm_history(entity_type: str, entity_id: str, user: CurrentUser,
+def crm_history(entity_type: str, entity_id: str, user: User = Depends(require_module("crm", "ro")),
                 db: Session = Depends(get_db)):
     rows = db.scalars(
         select(RecordVersion)
@@ -313,14 +321,14 @@ class ActivityOut(BaseModel):
 
 
 @router.get("/deals/{deal_id}/communications", response_model=list[CommunicationOut])
-def list_communications(deal_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+def list_communications(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db)):
     _get_deal(db, deal_id)
     return db.scalars(select(m.Communication).where(m.Communication.deal_id == deal_id)
                       .order_by(m.Communication.occurred_at.desc())).all()
 
 
 @router.post("/deals/{deal_id}/communications", response_model=CommunicationOut, status_code=201)
-def create_communication(deal_id: uuid.UUID, body: CommunicationIn, user: WriteUser,
+def create_communication(deal_id: uuid.UUID, body: CommunicationIn, user: User = Depends(require_module("crm")),
                          db: Session = Depends(get_db)):
     from datetime import date as date_type
 
@@ -339,7 +347,7 @@ def create_communication(deal_id: uuid.UUID, body: CommunicationIn, user: WriteU
 
 
 @router.get("/deals/{deal_id}/activities", response_model=list[ActivityOut])
-def list_deal_activities(deal_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+def list_deal_activities(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db)):
     _get_deal(db, deal_id)
     return db.scalars(select(m.Activity).where(m.Activity.deal_id == deal_id)
                       .order_by(m.Activity.due_at)).all()
@@ -367,7 +375,7 @@ def _create_activity(db: Session, deal_id: uuid.UUID, body: ActivityIn,
 
 
 @router.post("/deals/{deal_id}/activities", response_model=ActivityOut, status_code=201)
-def create_activity(deal_id: uuid.UUID, body: ActivityIn, user: WriteUser,
+def create_activity(deal_id: uuid.UUID, body: ActivityIn, user: User = Depends(require_module("crm")),
                     db: Session = Depends(get_db)):
     _get_deal(db, deal_id)
     row = _create_activity(db, deal_id, body, user.id)
@@ -377,7 +385,7 @@ def create_activity(deal_id: uuid.UUID, body: ActivityIn, user: WriteUser,
 
 
 @router.patch("/activities/{activity_id}", response_model=ActivityOut)
-def patch_activity(activity_id: uuid.UUID, body: ActivityPatch, user: WriteUser,
+def patch_activity(activity_id: uuid.UUID, body: ActivityPatch, user: User = Depends(require_module("crm")),
                    db: Session = Depends(get_db)):
     from datetime import date as date_type
 
@@ -403,7 +411,7 @@ def patch_activity(activity_id: uuid.UUID, body: ActivityPatch, user: WriteUser,
 
 
 @router.get("/activities", response_model=list[ActivityOut])
-def list_activities(user: CurrentUser, db: Session = Depends(get_db),
+def list_activities(user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db),
                     due_before: object = None, status: str | None = None,
                     responsible_id: uuid.UUID | None = None):
     """Общий список задач: свои + все для админа; фильтры due_before/status/responsible."""
@@ -429,7 +437,7 @@ def list_activities(user: CurrentUser, db: Session = Depends(get_db),
 # ---------- Отчёт pipeline (этап C) ----------
 
 @router.get("/report/pipeline")
-def pipeline_report(user: CurrentUser, db: Session = Depends(get_db),
+def pipeline_report(user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db),
                     responsible_id: uuid.UUID | None = None,
                     date_from: object = None, date_to: object = None):
     from datetime import date as date_type
