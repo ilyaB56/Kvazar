@@ -12,7 +12,7 @@ import time
 import urllib.parse
 import urllib.error
 import urllib.request
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000"
@@ -389,10 +389,13 @@ cbr_job, _ = get_or_create(
 cbr_ok = False
 if "id" in cbr_job:
     call("POST", f"/api/v1/integrations/sync-jobs/{cbr_job['id']}/run", token=token)
+    # ЦБ публикует курсы на дату последнего рабочего дня: в вс/пн утром XML
+    # на «сегодня» несёт вчерашнюю Date — ищем connector-курс в окне 3 дней
+    window_start = (date.fromisoformat(today) - timedelta(days=3)).isoformat()
     for _ in range(20):  # воркер после рестартов движка может взять задачу с задержкой — окно 60 c
         time.sleep(3)
         # EUR, не USD: секция 10 сама перезаписывает USD-курс в manual
-        status, rows = call("GET", f"{ACC}/rates?currency=EUR&date_from={today}&date_to={today}", token=token)
+        status, rows = call("GET", f"{ACC}/rates?currency=EUR&date_from={window_start}&date_to={today}", token=token)
         if status == 200 and any(r.get("source") == "connector" for r in rows):
             cbr_ok = True
             break
