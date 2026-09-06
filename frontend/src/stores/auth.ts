@@ -52,7 +52,7 @@ export const useAuthStore = defineStore('auth', {
       if (this.moduleLevel('integrations') !== 'none') return '/integrations/connections'
       if (this.moduleLevel('ai') !== 'none') return '/assistant'
       if (this.user?.role === 'admin') return '/settings/permissions'
-      return '/login'
+      return '/no-access' // экран «Нет доступа» — не молчаливый выход на /login
     },
     async fetchPermissions(): Promise<void> {
       try {

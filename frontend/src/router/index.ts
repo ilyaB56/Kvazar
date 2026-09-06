@@ -11,6 +11,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
+    { path: '/no-access', name: 'no-access', component: () => import('../views/NoAccessView.vue') },
     {
       path: '/',
       component: ErpShell,
@@ -118,14 +119,11 @@ router.beforeEach(async (to) => {
     const need = (moduleRecord.meta.level as string) ?? 'ro'
     const level = auth.permissions[module] ?? 'none'
     if (level === 'none' || (need === 'rw' && level !== 'rw')) {
-      const target = auth.firstAvailableRoute()
-      if (target === '/login') {
-        // доступных разделов нет — сессия бесполезна, чистый выход
-        auth.logout()
-        return { name: 'login' }
-      }
-      return { path: target }
+      return { path: auth.firstAvailableRoute() }
     }
+  }
+  if (to.name === 'no-access' && !auth.isAuthenticated) {
+    return { name: 'login' }
   }
   if (to.name === 'login' && auth.isAuthenticated) {
     return { path: auth.firstAvailableRoute() }

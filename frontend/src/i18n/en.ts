@@ -147,4 +147,11 @@ export default {
       system: 'System',
     },
   },
+  noAccess: {
+    title: 'No access',
+    description: 'Your account has no accessible sections yet. Ask the administrator to grant the modules you need under “Settings → Access & roles”.',
+    hint: 'Account: {email}. Permissions are re-checked automatically every minute.',
+    recheck: 'Check again',
+    logout: 'Sign out',
+  },
 }
