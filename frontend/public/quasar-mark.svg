@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" width="512" height="512" role="img" aria-labelledby="qt">
-  <title id="qt">Квазар — знак ERP-платформы: ядро интеграционной платформы, орбита изолированных модулей, точка-спутник (подключаемая интеграция)</title>
+  <title id="qt">Квазар — знак ERP-платформы: ядро интеграционной платформы, орбита изолированных модулей, точка-спутник (подключаемая интеграция) и звёзды-модули вокруг ядра</title>
   <defs>
     <linearGradient id="qg" x1="10" y1="14" x2="54" y2="50" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#c084fc"/>
@@ -11,6 +11,14 @@
       <stop offset="1" stop-color="#a855f7"/>
     </radialGradient>
   </defs>
+  <!-- звёзды-модули: подключённые к ERP модули (статичный набор);
+       4-лучевые искры, светлый тон + один изумрудный акцент -->
+  <path stroke="#0f0d17" stroke-opacity="0.3" stroke-width="0.12" d="M0 -1 Q0.2 -0.2 1 0 Q0.2 0.2 0 1 Q-0.2 0.2 -1 0 Q-0.2 -0.2 0 -1 Z" transform="translate(13.5 12.5) scale(2.4)" fill="#ffffff" opacity="0.9"/>
+  <path stroke="#0f0d17" stroke-opacity="0.3" stroke-width="0.12" d="M0 -1 Q0.2 -0.2 1 0 Q0.2 0.2 0 1 Q-0.2 0.2 -1 0 Q-0.2 -0.2 0 -1 Z" transform="translate(41 8) scale(1.5)" fill="#ffffff" opacity="0.75"/>
+  <path stroke="#0f0d17" stroke-opacity="0.3" stroke-width="0.12" d="M0 -1 Q0.2 -0.2 1 0 Q0.2 0.2 0 1 Q-0.2 0.2 -1 0 Q-0.2 -0.2 0 -1 Z" transform="translate(49.5 40) scale(1.4)" fill="#ffffff" opacity="0.65"/>
+  <path stroke="#0f0d17" stroke-opacity="0.3" stroke-width="0.12" d="M0 -1 Q0.2 -0.2 1 0 Q0.2 0.2 0 1 Q-0.2 0.2 -1 0 Q-0.2 -0.2 0 -1 Z" transform="translate(44.5 50.5) scale(2)" fill="#ffffff" opacity="0.8"/>
+  <path stroke="#0f0d17" stroke-opacity="0.3" stroke-width="0.12" d="M0 -1 Q0.2 -0.2 1 0 Q0.2 0.2 0 1 Q-0.2 0.2 -1 0 Q-0.2 -0.2 0 -1 Z" transform="translate(20.5 47) scale(1.6)" fill="#ffffff" opacity="0.7"/>
+  <path stroke="#0f0d17" stroke-opacity="0.3" stroke-width="0.12" d="M0 -1 Q0.2 -0.2 1 0 Q0.2 0.2 0 1 Q-0.2 0.2 -1 0 Q-0.2 -0.2 0 -1 Z" transform="translate(8.5 29.5) scale(1.8)" fill="#34d399" opacity="0.95"/>
   <!-- орбита модулей -->
   <ellipse cx="32" cy="32" rx="26" ry="11.5" stroke="url(#qg)" stroke-width="3.5" stroke-linecap="round" transform="rotate(-18 32 32)"/>
   <!-- точка-спутник: подключаемая интеграция -->
