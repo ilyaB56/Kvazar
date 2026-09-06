@@ -49,6 +49,12 @@ export const useAuthStore = defineStore('auth', {
     },
     // первый раздел, доступный пользователю по правам (редирект запрещённых URL)
     firstAvailableRoute(): string {
+      if (this.isAuthenticated) {
+        if (this.moduleLevel('accounting') !== 'none' || this.moduleLevel('crm') !== 'none'
+          || this.moduleLevel('integrations') !== 'none' || this.moduleLevel('ai') !== 'none') {
+          return '/dashboard'
+        }
+      }
       if (this.moduleLevel('accounting') !== 'none') return '/accounting'
       if (this.moduleLevel('crm') !== 'none') return '/crm'
       if (this.moduleLevel('integrations') !== 'none') return '/integrations/connections'

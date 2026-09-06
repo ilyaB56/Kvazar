@@ -16,7 +16,19 @@ const router = createRouter({
       path: '/',
       component: ErpShell,
       children: [
-        { path: '', redirect: '/integrations/connections' },
+        { path: '', redirect: '/dashboard' },
+        {
+          path: 'dashboard',
+          name: 'dashboard',
+          component: () => import('../views/DashboardView.vue'),
+          meta: { requiresAuth: true, title: 'Дашборд', crumb: 'Сводка контура' },
+        },
+        {
+          path: 'reports',
+          name: 'reports',
+          component: () => import('../views/ReportsView.vue'),
+          meta: { requiresAuth: true, title: 'Отчёты', crumb: 'Аналитика' },
+        },
         // Система → Интеграции (подразделы, §5)
         {
           path: 'integrations',

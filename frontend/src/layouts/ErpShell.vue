@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Menu, Sun, Moon, LogOut, KeyRound, ChevronsUpDown, Plug, Bot, Settings2, LayoutDashboard, Wallet, TrendingUp,
+  BarChart3,
 } from 'lucide-vue-next'
 import { get, post } from '../api/client'
 import { useAuthStore } from '../stores/auth'
@@ -43,13 +44,22 @@ interface NavItem {
 }
 const navSections = computed(() => [
   {
-    title: t('nav.sections.system'),
+    title: t('nav.sections.operations'),
+    items: ([
+      { to: '/dashboard', label: t('nav.dashboard'), icon: LayoutDashboard },
+    ] satisfies Array<NavItem>),
+  },
+  {
+    title: t('nav.sections.domains'),
     items: ([
       auth.moduleLevel('accounting') !== 'none'
         ? { to: '/accounting', label: t('nav.finance'), icon: Wallet }
         : null,
       auth.moduleLevel('crm') !== 'none'
         ? { to: '/crm', label: t('nav.sales'), icon: TrendingUp }
+        : null,
+      auth.moduleLevel('accounting') !== 'none' || auth.moduleLevel('crm') !== 'none'
+        ? { to: '/reports', label: t('nav.reports'), icon: BarChart3 }
         : null,
       auth.moduleLevel('integrations') !== 'none'
         ? { to: '/integrations/connections', label: t('nav.integrations'), icon: Plug }
