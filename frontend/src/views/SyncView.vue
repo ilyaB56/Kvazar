@@ -1,13 +1,20 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+// Синхронизации (этап G — переприход на ui-библиотеку): задания, запуск
+// вручную, журнал прогонов выбранного задания с автоповтором после запуска.
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
-import { CaretRight, Refresh } from '@element-plus/icons-vue'
+import { Play, RefreshCw } from 'lucide-vue-next'
 import { get, post } from '../api/client'
 import type { SyncJob, SyncRun } from '../api/types'
+import { Badge, Button, Card, CardContent, EmptyState, Skeleton, useToast } from '../components/ui'
+import { useAuthStore } from '../stores/auth'
 
-const { t } = useI18n()
+const { t, d } = useI18n()
+const auth = useAuthStore()
+const toast = useToast()
+const canWrite = computed(() => auth.moduleLevel('integrations') === 'rw')
 
+const loading = ref(true)
 const jobs = ref<SyncJob[]>([])
 const selected = ref<SyncJob | null>(null)
 const runs = ref<SyncRun[]>([])
@@ -38,7 +45,7 @@ async function loadRuns() {
 function selectJob(job: SyncJob) {
   selected.value = job
   runs.value = []
-  loadRuns()
+  void loadRuns()
 }
 
 function scheduleRunsAutoRefresh() {
@@ -46,10 +53,8 @@ function scheduleRunsAutoRefresh() {
   autoAttempts = 0
   autoTimer = window.setInterval(() => {
     autoAttempts += 1
-    loadRuns()
-    if (autoAttempts >= 6) {
-      stopAutoRefresh()
-    }
+    void loadRuns()
+    if (autoAttempts >= 6) stopAutoRefresh()
   }, 5000)
 }
 
@@ -64,114 +69,126 @@ async function runNow(job: SyncJob) {
   running.value[job.id] = true
   try {
     await post(`/integrations/sync-jobs/${job.id}/run`)
-    ElMessage.success(t('sync.queued'))
-    if (selected.value?.id === job.id) {
-      scheduleRunsAutoRefresh()
-    }
+    toast.success(t('sync.queued'))
+    if (selected.value?.id === job.id) scheduleRunsAutoRefresh()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('errors.unknown'))
+    toast.apiError(error)
   } finally {
     running.value[job.id] = false
   }
 }
 
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString('ru-RU')
-}
-
-onMounted(loadJobs)
+onMounted(async () => {
+  try {
+    await loadJobs()
+  } finally {
+    loading.value = false
+  }
+})
 onBeforeUnmount(stopAutoRefresh)
 </script>
 
 <template>
-  <div class="page">
-    <div class="page__header">
-      <h2 class="page__title">{{ t('sync.title') }}</h2>
-    </div>
+  <div class="space-y-4">
+    <p class="text-base font-semibold">{{ t('sync.title') }}</p>
 
-    <el-table
-      :data="jobs"
-      highlight-current-row
-      @current-change="(job: SyncJob | null) => job && selectJob(job)"
-    >
-      <el-table-column prop="name" :label="t('sync.name')" min-width="160" />
-      <el-table-column :label="t('sync.direction')" width="130">
-        <template #default="{ row }">
-          <el-tag>{{ row.direction === 'fetch' ? t('sync.directionFetch') : t('sync.directionPush') }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="cron" :label="t('sync.cron')" width="120" />
-      <el-table-column prop="endpoint" :label="t('sync.endpoint')" min-width="140" />
-      <el-table-column :label="t('sync.active')" width="90">
-        <template #default="{ row }">
-          {{ row.is_active ? t('sync.yes') : t('sync.no') }}
-        </template>
-      </el-table-column>
-      <el-table-column width="200">
-        <template #default="{ row }">
-          <el-button
-            size="small"
-            type="primary"
-            :icon="CaretRight"
-            :loading="running[row.id]"
-            @click.stop="runNow(row)"
-          >
-            {{ t('sync.runNow') }}
-          </el-button>
-        </template>
-      </el-table-column>
-      <template #empty>
-        {{ t('sync.empty') }}
-      </template>
-    </el-table>
+    <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+      <CardContent class="p-0">
+        <div v-if="loading" class="space-y-2 p-4">
+          <Skeleton class="h-10 w-full" />
+          <Skeleton class="h-10 w-full" />
+        </div>
+        <div v-else-if="jobs.length === 0" class="p-6">
+          <EmptyState :title="t('ui.emptyTitle')" :description="t('sync.empty')" />
+        </div>
+        <div v-else class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                <th class="px-3 py-2 font-medium">{{ t('sync.name') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('sync.direction') }}</th>
+                <th class="hidden px-3 py-2 font-medium sm:table-cell">{{ t('sync.cron') }}</th>
+                <th class="hidden px-3 py-2 font-medium md:table-cell">{{ t('sync.endpoint') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('sync.active') }}</th>
+                <th v-if="canWrite" class="px-3 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="job in jobs" :key="job.id"
+                class="cursor-pointer border-t border-zinc-100 transition-colors hover:bg-zinc-50/60 dark:border-zinc-800/70 dark:hover:bg-zinc-800/40"
+                :class="selected?.id === job.id && 'bg-emerald-50/50 dark:bg-emerald-950/20'"
+                @click="selectJob(job)"
+              >
+                <td class="px-3 py-2 font-medium">{{ job.name }}</td>
+                <td class="px-3 py-2">
+                  <Badge variant="outline">
+                    {{ job.direction === 'fetch' ? t('sync.directionFetch') : t('sync.directionPush') }}
+                  </Badge>
+                </td>
+                <td class="hidden px-3 py-2 font-mono text-xs text-muted-foreground sm:table-cell">{{ job.cron }}</td>
+                <td class="hidden px-3 py-2 text-muted-foreground md:table-cell">{{ job.endpoint || '—' }}</td>
+                <td class="px-3 py-2 text-muted-foreground">{{ job.is_active ? t('sync.yes') : t('sync.no') }}</td>
+                <td v-if="canWrite" class="px-3 py-2 text-right" @click.stop>
+                  <Button
+                    variant="outline" size="sm" class="gap-1.5" :disabled="running[job.id]"
+                    @click="runNow(job)"
+                  >
+                    <Play class="h-3.5 w-3.5" /> {{ t('sync.runNow') }}
+                  </Button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
 
-    <div v-if="selected" class="runs">
-      <div class="page__header">
-        <h3 class="page__title">
-          {{ t('sync.runs') }} — {{ selected.name }}
-          <span class="muted">{{ selected.endpoint }}</span>
-        </h3>
-        <el-button :icon="Refresh" :loading="runsLoading" @click="loadRuns">
-          {{ t('sync.refresh') }}
-        </el-button>
-      </div>
-      <el-table :data="runs" v-loading="runsLoading" size="small">
-        <el-table-column :label="t('sync.status')" width="110">
-          <template #default="{ row }">
-            <el-tag :type="row.status === 'success' ? 'success' : 'danger'">
-              {{ row.status === 'success' ? t('sync.statusSuccess') : t('sync.statusError') }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="items_in" :label="t('sync.itemsIn')" width="110" />
-        <el-table-column prop="items_out" :label="t('sync.itemsOut')" width="110" />
-        <el-table-column :label="t('sync.error')" min-width="200">
-          <template #default="{ row }">
-            <span class="runs__error">{{ row.error }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('sync.time')" width="170">
-          <template #default="{ row }">
-            {{ formatTime(row.started_at) }}
-          </template>
-        </el-table-column>
-        <template #empty>
-          {{ t('sync.runsEmpty') }}
-        </template>
-      </el-table>
-    </div>
-    <el-empty v-else :description="t('sync.noSelection')" />
+    <Card v-if="selected" class="border-zinc-200 shadow-sm dark:border-zinc-800">
+      <CardContent class="p-0">
+        <div class="flex items-center justify-between px-4 py-3">
+          <p class="text-sm font-semibold">
+            {{ t('sync.runs') }} — {{ selected.name }}
+            <span class="ml-1 text-xs font-normal text-muted-foreground">{{ selected.endpoint }}</span>
+          </p>
+          <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('sync.refresh')" @click="loadRuns">
+            <RefreshCw :class="['h-3.5 w-3.5', runsLoading && 'animate-spin']" />
+          </Button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                <th class="px-3 py-2 font-medium">{{ t('sync.status') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('sync.itemsIn') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('sync.itemsOut') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('sync.error') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('sync.time') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="run in runs" :key="run.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                <td class="px-3 py-2">
+                  <Badge :class="run.status === 'success'
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
+                    : 'bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300'">
+                    {{ run.status === 'success' ? t('sync.statusSuccess') : t('sync.statusError') }}
+                  </Badge>
+                </td>
+                <td class="px-3 py-2">{{ run.items_in }}</td>
+                <td class="px-3 py-2">{{ run.items_out }}</td>
+                <td class="max-w-[280px] px-3 py-2 text-xs text-red-600 dark:text-red-400">
+                  <span class="break-all">{{ run.error || '—' }}</span>
+                </td>
+                <td class="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">{{ d(run.started_at, 'short') }}</td>
+              </tr>
+              <tr v-if="runs.length === 0">
+                <td colspan="5" class="px-3 py-6 text-center text-sm text-muted-foreground">{{ t('sync.runsEmpty') }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
   </div>
 </template>
-
-<style scoped>
-.runs {
-  margin-top: 24px;
-}
-
-.runs__error {
-  font-size: 12px;
-  color: #f56c6c;
-  word-break: break-all;
-}
-</style>

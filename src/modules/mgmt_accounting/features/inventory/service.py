@@ -261,7 +261,10 @@ def recalc_avg_cost(
 
 def allow_negative_stock(db: Session) -> bool:
     row = db.scalar(select(Setting).where(Setting.key == NEGATIVE_STOCK_SETTING))
-    return bool(row.value) if row is not None else False
+    if row is None:
+        return False
+    # значение строковое: 'true'/'1' — включено, остальное (в т.ч. 'false') — нет
+    return str(row.value).strip().lower() in ("true", "1", "yes")
 
 
 def _check_stock_enough(db: Session, item: m.Item, location: m.Location, qty: Decimal) -> None:

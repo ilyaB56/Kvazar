@@ -35,7 +35,16 @@ const router = createRouter({
           component: IntegrationsLayout,
           meta: { title: 'Интеграции', crumb: 'Подключения и синхронизации' },
           children: [
-            { path: '', redirect: '/integrations/connections' },
+            { path: '', redirect: '/integrations/overview' },
+            {
+              path: 'overview',
+              name: 'integrations-overview',
+              component: () => import('../views/IntegrationsCoreView.vue'),
+              meta: {
+                requiresAuth: true, module: 'integrations', level: 'ro',
+                title: 'Интеграции', crumb: 'Интеграционное ядро',
+              },
+            },
             {
               path: 'connections',
               name: 'connections',
@@ -71,7 +80,25 @@ const router = createRouter({
           path: 'settings',
           component: SettingsLayout,
           children: [
-            { path: '', redirect: '/settings/system' },
+            { path: '', redirect: '/settings/organization' },
+            {
+              path: 'organization',
+              name: 'organization',
+              component: () => import('../views/OrganizationView.vue'),
+              meta: { requiresAuth: true, title: 'Настройки', crumb: 'Организация' },
+            },
+            {
+              path: 'profile',
+              name: 'profile',
+              component: () => import('../views/ProfileView.vue'),
+              meta: { requiresAuth: true, title: 'Настройки', crumb: 'Профиль' },
+            },
+            {
+              path: 'security',
+              name: 'security',
+              component: () => import('../views/SecurityView.vue'),
+              meta: { requiresAuth: true, title: 'Настройки', crumb: 'Безопасность' },
+            },
             {
               path: 'system',
               name: 'system',

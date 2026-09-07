@@ -67,9 +67,7 @@ const navSections = computed(() => [
       auth.moduleLevel('ai') !== 'none'
         ? { to: '/assistant', label: t('nav.assistant'), icon: Bot }
         : null,
-      auth.isAdmin
-        ? { to: '/settings/system', label: t('nav.settings'), icon: Settings2 }
-        : null,
+      { to: '/settings/organization', label: t('nav.settings'), icon: Settings2 },
     ] as Array<NavItem | null>).filter((item): item is NavItem => item !== null),
   },
 ].filter((section) => section.items.length > 0))

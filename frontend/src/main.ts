@@ -1,10 +1,5 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import ElementPlus from 'element-plus'
-import 'element-plus/dist/index.css'
-// переходный период (этапы A–G): старые экраны на Element Plus должны иметь
-// тёмную пару — официальные css-перементы EP реагируют на наш .dark на <html>
-import 'element-plus/theme-chalk/dark/css-vars.css'
 import '@fontsource/geist-sans/400.css'
 import '@fontsource/geist-sans/500.css'
 import '@fontsource/geist-sans/700.css'
@@ -21,4 +16,4 @@ if (storedTheme === 'dark') {
   document.documentElement.classList.add('dark')
 }
 
-createApp(App).use(createPinia()).use(router).use(i18n).use(ElementPlus).mount('#app')
+createApp(App).use(createPinia()).use(router).use(i18n).mount('#app')

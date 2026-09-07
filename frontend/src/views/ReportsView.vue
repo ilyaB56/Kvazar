@@ -132,7 +132,17 @@ async function export1c() {
     const response = await fetch(`/api/v1/accounting/export/client-bank?${query}`, {
       headers: { Authorization: `Bearer ${auth.accessToken}` },
     })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (!response.ok) {
+      // 422 «нет проведённых транзакций за период» и т.п. — показываем detail
+      let message = `HTTP ${response.status}`
+      try {
+        const data: unknown = await response.json()
+        if (data && typeof data === 'object' && 'detail' in data) {
+          message = String((data as { detail: unknown }).detail)
+        }
+      } catch { /* тело не JSON */ }
+      throw new Error(message)
+    }
     const blob = await response.blob()
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')

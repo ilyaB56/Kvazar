@@ -1,50 +1,49 @@
 <script setup lang="ts">
+// Подключения и вебхуки (этап G — переприход со старого Element Plus экрана
+// на собственную ui-библиотеку; функциональность прежняя: реестр, проверка
+// связи, создание по config_schema, вебхуки с одноразовым токеном).
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Link, Plus } from '@element-plus/icons-vue'
+import { Copy, Link2, Plus } from 'lucide-vue-next'
 import { get, post } from '../api/client'
 import type { Connection, ConnectorType, TestResult, Webhook, WebhookCreated } from '../api/types'
+import {
+  Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
+  Select, Skeleton, Tabs, useToast,
+} from '../components/ui'
 
-const { t } = useI18n()
+const { t, d } = useI18n()
+const toast = useToast()
+
+const tab = ref('connections')
+const loading = ref(true)
 
 // ----- Подключения -----
 const connections = ref<Connection[]>([])
 const connectors = ref<ConnectorType[]>([])
 const connectorNames = computed(() =>
-  Object.fromEntries(connectors.value.map((c) => [c.code, c.display_name])),
-)
-
+  Object.fromEntries(connectors.value.map((c) => [c.code, c.display_name])))
 const testing = ref<Record<string, boolean>>({})
-const testResults = ref<Record<string, TestResult>>({})
 
 async function loadConnections() {
   connections.value = await get<Connection[]>('/integrations/connections')
 }
 
-async function loadConnectors() {
-  connectors.value = await get<ConnectorType[]>('/integrations/connectors')
-}
-
 async function testConnection(row: Connection) {
   testing.value[row.id] = true
   try {
-    testResults.value[row.id] = await post<TestResult>(`/integrations/connections/${row.id}/test`)
-    const result = testResults.value[row.id]
-    if (result.ok) {
-      ElMessage.success(t('connections.testOk'))
-    } else {
-      ElMessage.error(`${t('connections.testFailed')}: ${result.error}`)
-    }
+    const result = await post<TestResult>(`/integrations/connections/${row.id}/test`)
+    if (result.ok) toast.success(t('connections.testOk'))
+    else toast.error(`${t('connections.testFailed')}: ${result.error}`)
     await loadConnections()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('errors.unknown'))
+    toast.apiError(error)
   } finally {
     testing.value[row.id] = false
   }
 }
 
-// ----- Диалог создания: поля config по config_schema выбранного типа -----
+// ----- Диалог создания -----
 const dialogVisible = ref(false)
 const creating = ref(false)
 const form = reactive({
@@ -55,16 +54,7 @@ const form = reactive({
 })
 
 const selectedType = computed(() =>
-  connectors.value.find((c) => c.code === form.connectorCode),
-)
-
-function openCreateDialog() {
-  form.name = ''
-  form.connectorCode = ''
-  form.secret = ''
-  form.config = {}
-  dialogVisible.value = true
-}
+  connectors.value.find((c) => c.code === form.connectorCode))
 
 function onTypeChange() {
   form.config = {}
@@ -74,22 +64,24 @@ function onTypeChange() {
 }
 
 async function createConnection() {
-  if (!form.name || !form.connectorCode) {
-    ElMessage.warning(t('connections.fieldRequired'))
+  if (creating.value) return
+  if (!form.name.trim() || !form.connectorCode) {
+    toast.error(t('connections.fieldRequired'))
     return
   }
   creating.value = true
   try {
-    await post<Connection>('/integrations/connections', {
-      name: form.name,
+    await post('/integrations/connections', {
+      name: form.name.trim(),
       connector_code: form.connectorCode,
       credentials: form.secret ? { api_key: form.secret } : {},
       config: form.config,
     })
+    toast.success(t('connections.created'))
     dialogVisible.value = false
     await loadConnections()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('errors.unknown'))
+    toast.apiError(error)
   } finally {
     creating.value = false
   }
@@ -112,240 +104,243 @@ function fullUrl(hook: Webhook | WebhookCreated): string {
 async function copyToClipboard(value: string) {
   try {
     await navigator.clipboard.writeText(value)
-    ElMessage.success(t('connections.copied'))
+    toast.success(t('connections.copied'))
   } catch {
-    ElMessage.error(t('connections.copyFailed'))
+    toast.error(t('connections.copyFailed'))
   }
 }
 
 async function createWebhook() {
-  if (!webhookName.value) {
-    ElMessage.warning(t('connections.fieldRequired'))
+  if (creatingWebhook.value) return
+  if (!webhookName.value.trim()) {
+    toast.error(t('connections.fieldRequired'))
     return
   }
   creatingWebhook.value = true
   try {
     createdWebhook.value = await post<WebhookCreated>('/integrations/webhooks', {
-      name: webhookName.value,
+      name: webhookName.value.trim(),
     })
     webhookName.value = ''
     await loadWebhooks()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('errors.unknown'))
+    toast.apiError(error)
   } finally {
     creatingWebhook.value = false
   }
 }
 
-function showTokenHint() {
-  ElMessageBox.alert(t('connections.tokenHint'), t('connections.tokenHintTitle'), {
-    confirmButtonText: 'OK',
-    type: 'warning',
-  })
-}
-
 onMounted(async () => {
-  await Promise.all([loadConnections(), loadConnectors(), loadWebhooks()])
+  try {
+    await Promise.all([
+      loadConnections(),
+      get<ConnectorType[]>('/integrations/connectors').then((data) => { connectors.value = data }),
+      loadWebhooks(),
+    ])
+  } finally {
+    loading.value = false
+  }
 })
 </script>
 
 <template>
-  <div class="page">
-    <el-tabs>
-      <el-tab-pane :label="t('connections.tab')">
-        <div class="page__header">
-          <h2 class="page__title">{{ t('connections.title') }}</h2>
-          <el-button type="primary" :icon="Plus" @click="openCreateDialog">
-            {{ t('connections.create') }}
-          </el-button>
-        </div>
+  <div class="space-y-4">
+    <Tabs
+      :tabs="[
+        { key: 'connections', label: t('connections.tab') },
+        { key: 'webhooks', label: t('connections.webhooks') },
+      ]"
+      :model-value="tab"
+      @update:model-value="tab = $event"
+    />
 
-        <el-table :data="connections">
-          <el-table-column prop="name" :label="t('connections.name')" min-width="180" />
-          <el-table-column :label="t('connections.type')" min-width="160">
-            <template #default="{ row }">
-              {{ connectorNames[row.connector_code] ?? row.connector_code }}
-            </template>
-          </el-table-column>
-          <el-table-column :label="t('connections.status')" width="120">
-            <template #default="{ row }">
-              <el-tag v-if="row.last_check_ok === true" type="success">
-                {{ t('connections.statusOk') }}
-              </el-tag>
-              <el-tag v-else-if="row.last_check_ok === false" type="danger">
-                {{ t('connections.statusError') }}
-              </el-tag>
-              <span v-else>{{ t('connections.statusUnknown') }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column :label="t('connections.active')" width="90">
-            <template #default="{ row }">
-              {{ row.is_active ? t('connections.yes') : t('connections.no') }}
-            </template>
-          </el-table-column>
-          <el-table-column width="200">
-            <template #default="{ row }">
-              <el-button
-                size="small"
-                :loading="testing[row.id]"
-                @click="testConnection(row)"
-              >
-                {{ testing[row.id] ? t('connections.testing') : t('connections.test') }}
-              </el-button>
-            </template>
-          </el-table-column>
-          <template #empty>
-            {{ t('connections.empty') }}
-          </template>
-        </el-table>
-      </el-tab-pane>
-
-      <el-tab-pane :label="t('connections.webhooks')">
-        <div class="page__header">
-          <h2 class="page__title">{{ t('connections.webhooks') }}</h2>
-          <div class="webhook-create">
-            <el-input
-              v-model="webhookName"
-              :placeholder="t('connections.webhookName')"
-              style="width: 240px"
-              @keyup.enter="createWebhook"
-            />
-            <el-button type="primary" :loading="creatingWebhook" @click="createWebhook">
-              {{ t('connections.createWebhook') }}
-            </el-button>
+    <!-- Подключения -->
+    <div v-if="tab === 'connections'" class="space-y-4">
+      <div class="flex items-center justify-between">
+        <p class="text-base font-semibold">{{ t('connections.title') }}</p>
+        <Button variant="emerald" size="sm" class="gap-1.5" @click="dialogVisible = true">
+          <Plus class="h-4 w-4" /> {{ t('connections.create') }}
+        </Button>
+      </div>
+      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+        <CardContent class="p-0">
+          <div v-if="loading" class="space-y-2 p-4">
+            <Skeleton class="h-10 w-full" />
+            <Skeleton class="h-10 w-full" />
           </div>
-        </div>
+          <div v-else-if="connections.length === 0" class="p-6">
+            <EmptyState :title="t('ui.emptyTitle')" :description="t('connections.empty')" />
+          </div>
+          <div v-else class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                  <th class="px-3 py-2 font-medium">{{ t('connections.name') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('connections.type') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('connections.status') }}</th>
+                  <th class="hidden px-3 py-2 font-medium sm:table-cell">{{ t('connections.active') }}</th>
+                  <th class="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in connections" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                  <td class="px-3 py-2 font-medium">{{ row.name }}</td>
+                  <td class="px-3 py-2 text-muted-foreground">{{ connectorNames[row.connector_code] ?? row.connector_code }}</td>
+                  <td class="px-3 py-2">
+                    <Badge v-if="row.last_check_ok === true" class="bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
+                      {{ t('connections.statusOk') }}
+                    </Badge>
+                    <Badge v-else-if="row.last_check_ok === false" class="bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300">
+                      {{ t('connections.statusError') }}
+                    </Badge>
+                    <span v-else class="text-muted-foreground">{{ t('connections.statusUnknown') }}</span>
+                  </td>
+                  <td class="hidden px-3 py-2 text-muted-foreground sm:table-cell">
+                    {{ row.is_active ? t('connections.yes') : t('connections.no') }}
+                  </td>
+                  <td class="px-3 py-2 text-right">
+                    <Button
+                      variant="outline" size="sm" :disabled="testing[row.id]"
+                      @click="testConnection(row)"
+                    >
+                      {{ testing[row.id] ? t('connections.testing') : t('connections.test') }}
+                    </Button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
 
-        <el-table :data="webhooks">
-          <el-table-column prop="name" :label="t('connections.webhookName')" min-width="160" />
-          <el-table-column :label="t('connections.url')" min-width="320">
-            <template #default="{ row }">
-              <span class="webhook-url">{{ fullUrl(row) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column width="320">
-            <template #default="{ row }">
-              <el-button size="small" :icon="CopyDocument" @click="copyToClipboard(fullUrl(row))">
-                {{ t('connections.copyUrl') }}
-              </el-button>
-              <el-button size="small" :icon="Link" @click="showTokenHint">
-                {{ t('connections.tokenOnce') }}
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-tab-pane>
-    </el-tabs>
+    <!-- Вебхуки -->
+    <div v-else class="space-y-4">
+      <p class="text-base font-semibold">{{ t('connections.webhooks') }}</p>
+      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+        <CardContent class="flex flex-col gap-2 p-4 sm:flex-row">
+          <Input
+            v-model="webhookName" :placeholder="t('connections.webhookName')"
+            class="flex-1" @keyup.enter="createWebhook"
+          />
+          <Button variant="emerald" size="sm" :disabled="creatingWebhook" @click="createWebhook">
+            {{ t('connections.createWebhook') }}
+          </Button>
+        </CardContent>
+      </Card>
+      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+        <CardContent class="p-0">
+          <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
+          <div v-else-if="webhooks.length === 0" class="p-6">
+            <EmptyState :title="t('ui.emptyTitle')" :description="t('connections.empty')" />
+          </div>
+          <div v-else class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                  <th class="px-3 py-2 font-medium">{{ t('connections.webhookName') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('connections.url') }}</th>
+                  <th class="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in webhooks" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                  <td class="px-3 py-2 font-medium">{{ row.name }}</td>
+                  <td class="max-w-[340px] px-3 py-2 font-mono text-xs text-muted-foreground">{{ fullUrl(row) }}</td>
+                  <td class="px-3 py-2 text-right">
+                    <div class="flex justify-end gap-1">
+                      <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('connections.copyUrl')" @click="copyToClipboard(fullUrl(row))">
+                        <Copy class="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('connections.tokenOnce')" @click="toast.success(t('connections.tokenHintTitle'), t('connections.tokenHint'))">
+                        <Link2 class="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
 
     <!-- Диалог создания подключения -->
-    <el-dialog v-model="dialogVisible" :title="t('connections.dialogTitle')" width="560px">
-      <el-form label-position="top">
-        <el-form-item :label="t('connections.name')" required>
-          <el-input v-model="form.name" />
-        </el-form-item>
-        <el-form-item :label="t('connections.selectType')" required>
-          <el-select
+    <Dialog v-model:open="dialogVisible" :title="t('connections.dialogTitle')" width="560px">
+      <form class="space-y-4" @submit.prevent="createConnection">
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('connections.name') }}</Label>
+          <Input v-model="form.name" />
+        </div>
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('connections.selectType') }}</Label>
+          <Select
             v-model="form.connectorCode"
-            :placeholder="t('connections.selectTypePlaceholder')"
-            style="width: 100%"
-            @change="onTypeChange"
-          >
-            <el-option
-              v-for="connector in connectors"
-              :key="connector.code"
-              :value="connector.code"
-              :label="connector.display_name"
-            />
-          </el-select>
-        </el-form-item>
-
-        <!-- Поля config рендеруются по config_schema выбранного типа -->
-        <el-form-item
-          v-for="(schema, field) in selectedType?.config_schema ?? {}"
-          :key="field"
-          :label="field"
-          :required="schema.required"
-        >
-          <el-select v-if="schema.type === 'enum'" v-model="form.config[field]" style="width: 100%">
-            <el-option v-for="value in schema.values ?? []" :key="value" :value="value" :label="value" />
-          </el-select>
-          <el-input-number
-            v-else-if="schema.type === 'int'"
-            v-model="form.config[field]"
-            style="width: 100%"
+            :options="connectors.map((c) => ({ value: c.code, label: c.display_name }))"
+            @update:model-value="onTypeChange"
           />
-          <el-input v-else v-model="form.config[field]" />
-        </el-form-item>
-
-        <el-form-item v-if="form.connectorCode" :label="t('connections.secret')">
-          <el-input
-            v-model="form.secret"
-            type="password"
-            show-password
-            :placeholder="t('connections.secretPlaceholder')"
+        </div>
+        <!-- поля config по config_schema выбранного типа -->
+        <div v-for="(schema, field) in selectedType?.config_schema ?? {}" :key="field" class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ field }}</Label>
+          <Select
+            v-if="schema.type === 'enum'" :model-value="String(form.config[field])"
+            :options="(schema.values ?? []).map((value: string) => ({ value, label: value }))"
+            @update:model-value="form.config[field] = $event"
           />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="dialogVisible = false">{{ t('connections.cancel') }}</el-button>
-        <el-button type="primary" :loading="creating" @click="createConnection">
-          {{ t('connections.save') }}
-        </el-button>
-      </template>
-    </el-dialog>
+          <Input
+            v-else-if="schema.type === 'int'" :model-value="String(form.config[field])" type="number"
+            @update:model-value="form.config[field] = Number($event || 0)"
+          />
+          <Input
+            v-else :model-value="String(form.config[field])"
+            @update:model-value="form.config[field] = $event"
+          />
+        </div>
+        <div v-if="form.connectorCode" class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('connections.secret') }}</Label>
+          <Input v-model="form.secret" type="password" :placeholder="t('connections.secretPlaceholder')" />
+        </div>
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" size="sm" @click="dialogVisible = false">{{ t('connections.cancel') }}</Button>
+          <Button variant="emerald" type="submit" size="sm" :disabled="creating">
+            {{ t('connections.save') }}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
 
-    <!-- Токен показывается ровно один раз, сразу после создания -->
-    <el-dialog
-      :model-value="createdWebhook !== null"
-      :title="t('connections.tokenDialogTitle')"
-      width="560px"
-      @close="createdWebhook = null"
+    <!-- Токен вебхука — ровно один раз -->
+    <Dialog
+      :open="createdWebhook !== null" :title="t('connections.tokenDialogTitle')"
+      @update:open="(v: boolean) => { if (!v) createdWebhook = null }"
     >
-      <template v-if="createdWebhook">
-        <p>{{ t('connections.url') }}:</p>
-        <div class="token-box">
-          <code>{{ fullUrl(createdWebhook) }}</code>
-          <el-button :icon="CopyDocument" size="small" @click="copyToClipboard(fullUrl(createdWebhook))" />
+      <div v-if="createdWebhook" class="space-y-3">
+        <div>
+          <p class="text-xs text-muted-foreground">{{ t('connections.url') }}</p>
+          <div class="mt-1 flex items-center gap-2 rounded-lg bg-zinc-100 p-2 dark:bg-zinc-800">
+            <code class="flex-1 break-all text-xs">{{ fullUrl(createdWebhook) }}</code>
+            <Button variant="outline" size="sm" @click="copyToClipboard(fullUrl(createdWebhook))">
+              <Copy class="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
-        <p>{{ t('connections.tokenLabel') }}:</p>
-        <div class="token-box">
-          <code>{{ createdWebhook.secret_token }}</code>
-          <el-button
-            :icon="CopyDocument"
-            size="small"
-            @click="copyToClipboard(createdWebhook.secret_token)"
-          />
+        <div>
+          <p class="text-xs text-muted-foreground">{{ t('connections.tokenLabel') }}</p>
+          <div class="mt-1 flex items-center gap-2 rounded-lg bg-zinc-100 p-2 dark:bg-zinc-800">
+            <code class="flex-1 break-all text-xs">{{ createdWebhook.secret_token }}</code>
+            <Button variant="outline" size="sm" @click="copyToClipboard(createdWebhook.secret_token)">
+              <Copy class="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
-        <el-alert :title="t('connections.tokenWarning')" type="warning" show-icon :closable="false" />
-      </template>
-    </el-dialog>
+        <p class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+          {{ t('connections.tokenWarning') }}
+        </p>
+        <div class="flex justify-end">
+          <Button variant="outline" size="sm" @click="createdWebhook = null">{{ t('security.done') }}</Button>
+        </div>
+      </div>
+    </Dialog>
   </div>
 </template>
-
-<style scoped>
-.webhook-create {
-  display: flex;
-  gap: 8px;
-}
-
-.webhook-url {
-  font-size: 12px;
-  color: #606266;
-  word-break: break-all;
-}
-
-.token-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.token-box code {
-  flex: 1;
-  padding: 6px 8px;
-  background: #f5f7fa;
-  border-radius: 4px;
-  word-break: break-all;
-}
-</style>

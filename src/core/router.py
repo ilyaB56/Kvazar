@@ -266,6 +266,33 @@ def list_companies(user: CurrentUser, db: Session = Depends(get_db)):
     return db.scalars(select(Company)).all()
 
 
+class CompanyPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=255)
+    inn: str | None = Field(default=None, max_length=12)
+
+    model_config = {
+        "json_schema_extra": {"example": {"name": "ООО «ТехноПром»", "inn": "7707083893"}}
+    }
+
+
+@router.patch("/companies/{company_id}", response_model=CompanyIn)
+def patch_company(company_id: uuid.UUID, body: CompanyPatch, admin: AdminUser,
+                  db: Session = Depends(get_db)):
+    company = db.get(Company, company_id)
+    if company is None:
+        raise HTTPException(404, "Company not found")
+    if body.name is not None:
+        company.name = body.name
+    if body.inn is not None:
+        company.inn = body.inn
+    db.add(AuditEvent(user_id=admin.id, action="company.updated",
+                      entity_type="company", entity_id=str(company_id),
+                      payload=body.model_dump(exclude_none=True)))
+    db.commit()
+    db.refresh(company)
+    return company
+
+
 @router.post("/companies", status_code=201)
 def create_company(body: CompanyIn, user: WriteUser, db: Session = Depends(get_db)):
     company = Company(name=body.name, inn=body.inn)

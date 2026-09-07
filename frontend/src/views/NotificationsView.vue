@@ -1,11 +1,17 @@
 <script setup lang="ts">
+// Правила уведомлений (этап G — переприход на ui-библиотеку): список,
+// тест-отправка, удаление, создание с шаблоном.
 import { onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
-import { Bell, Delete, Position } from '@element-plus/icons-vue'
-import { get, post, del } from '../api/client'
+import { Plus, Send, Trash2 } from 'lucide-vue-next'
+import { del, get, post } from '../api/client'
+import {
+  Button, Card, CardContent, Dialog, EmptyState, Input, Label,
+  Select, Skeleton, useToast,
+} from '../components/ui'
 
 const { t } = useI18n()
+const toast = useToast()
 
 interface NotificationRule {
   id: string
@@ -22,10 +28,14 @@ const EVENTS = [
   'integration.sync.failed',
   'system.updated',
   'system.rollback',
+  'acc.purchase.received',
+  'acc.sales.order.confirmed',
+  'acc.sales.shipped',
+  'acc.production.order.posted',
 ]
 
 const rules = ref<NotificationRule[]>([])
-const loading = ref(false)
+const loading = ref(true)
 const dialogVisible = ref(false)
 const creating = ref(false)
 const testing = ref<Record<string, boolean>>({})
@@ -55,17 +65,19 @@ function openDialog() {
 }
 
 async function createRule() {
+  if (creating.value) return
   if (!form.name || !form.chat_id) {
-    ElMessage.warning(t('connections.fieldRequired'))
+    toast.error(t('connections.fieldRequired'))
     return
   }
   creating.value = true
   try {
     await post('/integrations/notification-rules', { ...form })
+    toast.success(t('notify.created'))
     dialogVisible.value = false
     await load()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('errors.unknown'))
+    toast.apiError(error)
   } finally {
     creating.value = false
   }
@@ -75,79 +87,111 @@ async function testRule(row: NotificationRule) {
   testing.value[row.id] = true
   try {
     const result = await post<{ ok: boolean }>(`/integrations/notification-rules/${row.id}/test`)
-    if (result.ok) {
-      ElMessage.success(t('notify.testSent'))
-    } else {
-      ElMessage.error(t('notify.testFailed'))
-    }
+    if (result.ok) toast.success(t('notify.testSent'))
+    else toast.error(t('notify.testFailed'))
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('errors.unknown'))
+    toast.apiError(error)
   } finally {
     testing.value[row.id] = false
   }
 }
 
 async function removeRule(row: NotificationRule) {
-  await del(`/integrations/notification-rules/${row.id}`)
-  await load()
+  try {
+    await del(`/integrations/notification-rules/${row.id}`)
+    toast.success(t('notify.removed'))
+    await load()
+  } catch (error) {
+    toast.apiError(error)
+  }
 }
 
 onMounted(load)
 </script>
 
 <template>
-  <div class="page">
-    <div class="page__header">
-      <h2 class="page__title">{{ t('notify.title') }}</h2>
-      <el-button type="primary" :icon="Bell" @click="openDialog">
-        {{ t('notify.create') }}
-      </el-button>
+  <div class="space-y-4">
+    <div class="flex items-center justify-between">
+      <p class="text-base font-semibold">{{ t('notify.rulesTitle') }}</p>
+      <Button variant="emerald" size="sm" class="gap-1.5" @click="openDialog">
+        <Plus class="h-4 w-4" /> {{ t('notify.create') }}
+      </Button>
     </div>
 
-    <el-table :data="rules" v-loading="loading">
-      <el-table-column prop="name" :label="t('notify.name')" min-width="140" />
-      <el-table-column prop="event_name" :label="t('notify.event')" min-width="200" />
-      <el-table-column prop="chat_id" :label="t('notify.chatId')" width="120" />
-      <el-table-column prop="template" :label="t('notify.template')" min-width="220" show-overflow-tooltip />
-      <el-table-column :label="t('notify.active')" width="80">
-        <template #default="{ row }">
-          {{ row.is_active ? t('connections.yes') : t('connections.no') }}
-        </template>
-      </el-table-column>
-      <el-table-column width="200">
-        <template #default="{ row }">
-          <el-button size="small" :icon="Position" :loading="testing[row.id]" @click="testRule(row)">
-            {{ t('notify.test') }}
-          </el-button>
-          <el-button size="small" :icon="Delete" @click="removeRule(row)" />
-        </template>
-      </el-table-column>
-    </el-table>
+    <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+      <CardContent class="p-0">
+        <div v-if="loading" class="space-y-2 p-4">
+          <Skeleton class="h-10 w-full" />
+          <Skeleton class="h-10 w-full" />
+        </div>
+        <div v-else-if="rules.length === 0" class="p-6">
+          <EmptyState :title="t('ui.emptyTitle')" :description="t('notify.emptyRules')" />
+        </div>
+        <div v-else class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                <th class="px-3 py-2 font-medium">{{ t('notify.name') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('notify.event') }}</th>
+                <th class="hidden px-3 py-2 font-medium sm:table-cell">{{ t('notify.chatId') }}</th>
+                <th class="hidden px-3 py-2 font-medium lg:table-cell">{{ t('notify.template') }}</th>
+                <th class="px-3 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in rules" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                <td class="px-3 py-2 font-medium">{{ row.name }}</td>
+                <td class="px-3 py-2 font-mono text-xs text-muted-foreground">{{ row.event_name }}</td>
+                <td class="hidden px-3 py-2 text-muted-foreground sm:table-cell">{{ row.chat_id }}</td>
+                <td class="hidden max-w-[260px] truncate px-3 py-2 text-xs text-muted-foreground lg:table-cell">
+                  {{ row.template }}
+                </td>
+                <td class="px-3 py-2">
+                  <div class="flex justify-end gap-1">
+                    <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('notify.test')" @click="testRule(row)">
+                      <Send class="h-3.5 w-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('notify.remove')" @click="removeRule(row)">
+                      <Trash2 class="h-3.5 w-3.5 text-red-500" />
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
 
-    <el-dialog v-model="dialogVisible" :title="t('notify.create')" width="560px">
-      <el-form label-position="top">
-        <el-form-item :label="t('notify.name')" required>
-          <el-input v-model="form.name" />
-        </el-form-item>
-        <el-form-item :label="t('notify.event')" required>
-          <el-select v-model="form.event_name" style="width: 100%">
-            <el-option v-for="event in EVENTS" :key="event" :value="event" :label="event" />
-          </el-select>
-        </el-form-item>
-        <el-form-item :label="t('notify.chatId')" required>
-          <el-input v-model="form.chat_id" placeholder="-1001234567890" />
-        </el-form-item>
-        <el-form-item :label="t('notify.template')">
-          <el-input v-model="form.template" type="textarea" :rows="3" />
-          <div class="muted">{{ t('notify.templateHint') }}</div>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="dialogVisible = false">{{ t('connections.cancel') }}</el-button>
-        <el-button type="primary" :loading="creating" @click="createRule">
-          {{ t('connections.save') }}
-        </el-button>
-      </template>
-    </el-dialog>
+    <Dialog v-model:open="dialogVisible" :title="t('notify.create')" width="560px">
+      <form class="space-y-4" @submit.prevent="createRule">
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('notify.name') }}</Label>
+          <Input v-model="form.name" />
+        </div>
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('notify.event') }}</Label>
+          <Select v-model="form.event_name" :options="EVENTS.map((event) => ({ value: event, label: event }))" />
+        </div>
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('notify.chatId') }}</Label>
+          <Input v-model="form.chat_id" placeholder="-1001234567890" />
+        </div>
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('notify.template') }}</Label>
+          <textarea
+            v-model="form.template" rows="3"
+            class="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm shadow-sm"
+          />
+          <p class="text-xs text-muted-foreground">{{ t('notify.templateHint') }}</p>
+        </div>
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" size="sm" @click="dialogVisible = false">{{ t('connections.cancel') }}</Button>
+          <Button variant="emerald" type="submit" size="sm" :disabled="creating">
+            {{ t('connections.save') }}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
   </div>
 </template>
