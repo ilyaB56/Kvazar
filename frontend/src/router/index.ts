@@ -124,11 +124,45 @@ const router = createRouter({
         },
         {
           path: 'crm',
-          name: 'crm',
-          component: () => import('../views/CrmView.vue'),
+          component: () => import('../layouts/CrmLayout.vue'),
+          children: [
+            { path: '', redirect: '/crm/deals' },
+            {
+              path: 'deals',
+              name: 'crm',
+              component: () => import('../views/CrmView.vue'),
+              meta: {
+                requiresAuth: true, module: 'crm', level: 'ro',
+                title: 'Продажи', crumb: 'Сделки и коммуникации',
+              },
+            },
+            {
+              path: 'orders',
+              name: 'crm-orders',
+              component: () => import('../views/SalesOrdersView.vue'),
+              meta: {
+                requiresAuth: true, module: 'accounting', level: 'ro',
+                title: 'Продажи', crumb: 'Заказы клиентов',
+              },
+            },
+          ],
+        },
+        {
+          path: 'inventory',
+          name: 'inventory',
+          component: () => import('../views/InventoryView.vue'),
           meta: {
-            requiresAuth: true, module: 'crm', level: 'ro',
-            title: 'Продажи', crumb: 'Сделки и коммуникации',
+            requiresAuth: true, module: 'accounting', level: 'ro',
+            title: 'Склад', crumb: 'Номенклатура и остатки',
+          },
+        },
+        {
+          path: 'purchasing',
+          name: 'purchasing',
+          component: () => import('../views/PurchasingView.vue'),
+          meta: {
+            requiresAuth: true, module: 'accounting', level: 'ro',
+            title: 'Закупки', crumb: 'Заказы и приёмки',
           },
         },
         {

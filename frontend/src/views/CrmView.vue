@@ -8,6 +8,7 @@
 // ресурсов (POST /accounting/sales/orders c crm_deal_id).
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import {
   CheckCircle2, ChevronDown, Circle, ListChecks, MessageSquare, Plus,
   Printer, ShoppingCart, Trophy,
@@ -23,6 +24,7 @@ import { useAuthStore } from '../stores/auth'
 import { formatMoney2, isPositiveDecimalString } from '../utils/money'
 
 const { t, d } = useI18n()
+const router = useRouter()
 const auth = useAuthStore()
 const toast = useToast()
 
@@ -270,10 +272,11 @@ function historyLine(diff: Record<string, { old: unknown; new: unknown }>): stri
     .join('; ')
 }
 
-// «Создать заказ» из выигранной сделки — заготовка (этап I): показываем
-// эндпоинт, полный диалог появится вместе с экраном продаж ресурсов
+// «Создать заказ» из выигранной сделки (этап I): префилл контрагента —
+// через crm_deal_id на экране документов продаж
 function orderStub() {
-  toast.success(t('crm.orderStubTitle'), t('crm.orderStubDesc'))
+  const cp = card.value?.counterparty_id ?? ''
+  void router.push(`/crm/orders?deal=${card.value?.id ?? ''}${cp ? `&counterparty=${cp}` : ''}`)
 }
 
 // ---------- Печать ----------
