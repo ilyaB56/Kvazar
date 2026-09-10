@@ -181,6 +181,8 @@ export default {
       auto_applied: 'применено автоматически',
       failed: 'ошибка',
     },
+    download: 'Скачать',
+    downloadSource: 'Скачать документ',
     uploaded: 'Документ загружен',
     approved: 'Предложение принято',
     rejected: 'Предложение отклонено',

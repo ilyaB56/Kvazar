@@ -130,7 +130,17 @@ def chat_reply(*, session_id: uuid.UUID | None, message: str, user_id: uuid.UUID
             raise PermissionError("session belongs to another user")
 
         history = get_history(db, session.id)
-        sources = search(message, limit=RAG_TOP_K)
+        raw_sources = search(message, limit=RAG_TOP_K)
+        # дедупликация чанков: один документ мог попасть несколькими кусками
+        # — оставляем ближайший на (document_id, текст)
+        seen: set[tuple[str, str]] = set()
+        sources = []
+        for row in raw_sources:
+            key = (str(row["document_id"]), row["text"])
+            if key in seen:
+                continue
+            seen.add(key)
+            sources.append(row)
 
         messages = [{"role": "system", "content": system_prompt()}]
         for row in history:

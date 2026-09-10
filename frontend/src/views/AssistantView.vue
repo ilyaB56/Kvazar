@@ -4,7 +4,7 @@
 // подтвердить/отклонить и автоприменением. Функциональность прежняя.
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bot, Check, FileText, Plus, Send, Trash2, Upload, X } from 'lucide-vue-next'
+import { Bot, Check, Download, FileText, Plus, Send, Trash2, Upload, X } from 'lucide-vue-next'
 import { del, get, post, put } from '../api/client'
 import {
   Badge, Button, Card, CardContent, EmptyState, Input, Skeleton, Switch,
@@ -105,6 +105,26 @@ async function loadDocuments() {
     documents.value = await get<Document[]>('/ai/documents')
   } catch {
     documents.value = []
+  }
+}
+
+async function downloadSource(documentId: string) {
+  try {
+    const response = await fetch(`/api/v1/ai/documents/${documentId}/download`, {
+      headers: { Authorization: `Bearer ${auth.accessToken}` },
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'document.txt'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    toast.apiError(error)
   }
 }
 
@@ -270,11 +290,28 @@ onMounted(() => {
                   ? 'bg-emerald-600 text-white'
                   : 'bg-zinc-100 dark:bg-zinc-800'"
               >{{ message.content }}</div>
-              <div v-if="message.meta?.sources?.length" class="mt-1 max-w-[75%] space-y-0.5">
-                <p class="text-[11px] text-muted-foreground">{{ t('ai.sources') }}:</p>
-                <p v-for="(source, sIndex) in message.meta.sources" :key="sIndex" class="flex items-center gap-1 text-[11px] text-muted-foreground">
-                  <FileText class="h-3 w-3" /> {{ source.document_name }}
-                </p>
+              <div v-if="message.meta?.sources?.length" class="mt-1.5 max-w-[75%] space-y-1">
+                <p class="text-[11px] font-medium text-muted-foreground">{{ t('ai.sources') }}:</p>
+                <div
+                  v-for="(source, sIndex) in message.meta.sources" :key="sIndex"
+                  class="rounded-lg border border-zinc-200 bg-zinc-50/60 px-2.5 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/60"
+                >
+                  <p class="line-clamp-2 text-[11px] leading-snug text-muted-foreground">«{{ source.text.slice(0, 220) }}{{ source.text.length > 220 ? '…' : '' }}»</p>
+                  <div class="mt-1 flex items-center justify-between gap-2">
+                    <span class="flex min-w-0 items-center gap-1 text-[11px] font-medium">
+                      <FileText class="h-3 w-3 shrink-0 text-violet-500" />
+                      <span class="truncate">{{ source.document_name }}</span>
+                    </span>
+                    <button
+                      v-if="canWrite" type="button"
+                      class="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/40"
+                      :title="t('ai.downloadSource')"
+                      @click="downloadSource(source.document_id)"
+                    >
+                      <Download class="h-3 w-3" /> {{ t('ai.download') }}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
             <div v-if="!messages.length" class="flex flex-1 items-center justify-center py-16">

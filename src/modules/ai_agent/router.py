@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -53,6 +53,27 @@ async def upload_document(file: UploadFile = File(...), user: User = Depends(req
 def list_documents(user: User = Depends(require_module("ai", "ro")), db: Session = Depends(get_db)):
     return db.scalars(select(m.Document).where(m.Document.is_deleted.is_(False))
                       .order_by(m.Document.created_at.desc())).all()
+
+
+@router.get("/documents/{document_id}/download")
+def download_document(document_id: uuid.UUID, user: User = Depends(require_module("ai")),
+                      db: Session = Depends(get_db)):
+    """Скачать документ: исходник не хранится (ADR-006), отдаём текст,
+    пересобранный из чанков в порядке chunk_index, как .txt."""
+    document = db.get(m.Document, document_id)
+    if document is None or document.is_deleted:
+        raise HTTPException(404, "Document not found")
+    rows = db.scalars(select(m.Chunk).where(m.Chunk.document_id == document_id)
+                      .order_by(m.Chunk.chunk_index)).all()
+    if not rows:
+        raise HTTPException(404, "Document has no indexed text")
+    safe_name = document.name.rsplit(".", 1)[0].replace("/", "_") or "document"
+    text = "\n\n".join(row.text for row in rows)
+    return Response(
+        content=text,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.txt"'},
+    )
 
 
 @router.delete("/documents/{document_id}")
