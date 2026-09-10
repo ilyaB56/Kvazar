@@ -8,7 +8,7 @@ import { Ban, Check, PackageCheck, Plus, Wallet } from 'lucide-vue-next'
 import { get, post } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  Select, Skeleton, Tabs, useToast,
+  Select, SearchSelect, Skeleton, Tabs, useToast,
 } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 import { formatMoney2, isPositiveDecimalString } from '../utils/money'
@@ -428,7 +428,7 @@ async function loadBalance() {
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1.5">
             <Label class="text-xs font-medium">{{ t('pur.colSupplier') }}</Label>
-            <Select v-model="orderForm.counterpartyId" :options="counterparties.map((c) => ({ value: c.id, label: c.name }))" />
+            <SearchSelect v-model="orderForm.counterpartyId" :options="counterparties.map((c) => ({ value: c.id, label: c.name }))" :search-placeholder="t('ui.searchPlaceholder')" />
           </div>
           <div class="space-y-1.5">
             <Label class="text-xs font-medium">{{ t('finance.colCurrency') }}</Label>
@@ -441,7 +441,7 @@ async function loadBalance() {
         <p class="text-xs font-medium text-muted-foreground">{{ t('pur.lines') }}</p>
         <div v-for="(line, index) in orderForm.lines" :key="index" class="flex items-end gap-2">
           <div class="flex-1 space-y-1">
-            <Select v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
+            <SearchSelect v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
           </div>
           <div class="w-24 space-y-1"><Input v-model="line.qty" :placeholder="t('inv.phQty')" inputmode="decimal" /></div>
           <div class="w-28 space-y-1"><Input v-model="line.price" :placeholder="t('inv.phPrice')" inputmode="decimal" /></div>
@@ -468,7 +468,7 @@ async function loadBalance() {
         </p>
         <div class="space-y-1.5">
           <Label class="text-xs font-medium">{{ t('finance.account') }}</Label>
-          <Select v-model="payForm.accountId" :options="accounts.map((a) => ({ value: a.id, label: `${a.name} · ${a.currency}` }))" />
+          <SearchSelect v-model="payForm.accountId" :options="accounts.map((a) => ({ value: a.id, label: `${a.name} · ${a.currency}` }))" :search-placeholder="t('ui.searchPlaceholder')" />
         </div>
         <div class="space-y-1.5">
           <Label class="text-xs font-medium">{{ t('pur.payAmount') }}</Label>
@@ -487,10 +487,10 @@ async function loadBalance() {
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1.5">
             <Label class="text-xs font-medium">{{ t('pur.colOrder') }}</Label>
-            <Select v-model="receiptForm.orderId" :options="[
+            <SearchSelect v-model="receiptForm.orderId" :options="[
               { value: '', label: '—' },
-              ...orders.filter((o) => o.status !== 'cancelled').slice(0, 100).map((o) => ({ value: o.id, label: `${o.number ?? o.id.slice(0, 8)} · ${cpName(o.counterparty_id)}` })),
-            ]" />
+              ...orders.filter((o) => o.status !== 'cancelled').slice(0, 200).map((o) => ({ value: o.id, label: `${o.number ?? o.id.slice(0, 8)} · ${cpName(o.counterparty_id)}` })),
+            ]" :search-placeholder="t('ui.searchPlaceholder')" />
           </div>
           <div class="space-y-1.5">
             <Label class="text-xs font-medium">{{ t('pur.colDoc') }}</Label>
@@ -501,7 +501,7 @@ async function loadBalance() {
         <div v-for="(line, index) in receiptForm.lines" :key="index" class="space-y-1.5 rounded-lg border border-zinc-200 p-2.5 dark:border-zinc-800">
           <div class="flex items-end gap-2">
             <div class="flex-1 space-y-1">
-              <Select v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
+              <SearchSelect v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
             </div>
             <div class="w-24 space-y-1"><Input v-model="line.qty" :placeholder="t('inv.phQty')" inputmode="decimal" /></div>
             <div class="w-32 space-y-1"><Input v-model="line.unitCost" :placeholder="t('inv.phCost')" inputmode="decimal" /></div>
@@ -509,7 +509,7 @@ async function loadBalance() {
           </div>
           <div class="flex items-end gap-2">
             <div class="w-56 space-y-1">
-              <Select v-model="line.locationId" :options="activeLocations.map((l) => ({ value: l.id, label: l.name }))" />
+              <SearchSelect v-model="line.locationId" :options="activeLocations.map((l) => ({ value: l.id, label: l.name }))" />
             </div>
             <div v-if="items.find((i) => i.id === line.itemId)?.tracking === 'serial'" class="flex-1 space-y-1">
               <textarea

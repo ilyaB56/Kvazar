@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, BeforeValidator, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from src.core.auth import CurrentUser, WriteUser
@@ -185,12 +185,16 @@ def list_items(
     db: Session = Depends(get_db),
     kind: str | None = None,
     is_active: bool | None = None,
+    q: str | None = None,
 ):
+    # q — поиск по артикулу/имени (GIN pg_trgm, миграция 0021)
     query = select(m.Item).order_by(m.Item.sku)
     if kind is not None:
         query = query.where(m.Item.kind == kind)
     if is_active is not None:
         query = query.where(m.Item.is_active == is_active)
+    if q:
+        query = query.where(or_(m.Item.sku.ilike(f"%{q}%"), m.Item.name.ilike(f"%{q}%")))
     return db.scalars(query).all()
 
 

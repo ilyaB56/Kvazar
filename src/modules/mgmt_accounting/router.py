@@ -205,8 +205,12 @@ class CashflowOut(BaseModel):
 # ---------- Справочники ----------
 
 @router.get("/accounts", response_model=list[AccountOut])
-def list_accounts(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db)):
-    return db.scalars(select(m.Account).order_by(m.Account.name)).all()
+def list_accounts(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db),
+                  q: str | None = None):
+    query = select(m.Account).order_by(m.Account.name)
+    if q:
+        query = query.where(m.Account.name.ilike(f"%{q}%"))  # GIN pg_trgm
+    return db.scalars(query).all()
 
 
 @router.post("/accounts", response_model=AccountOut, status_code=201)
@@ -234,8 +238,12 @@ def patch_account(
 
 
 @router.get("/categories", response_model=list[CategoryOut])
-def list_categories(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db)):
-    return db.scalars(select(m.Category).order_by(m.Category.name)).all()
+def list_categories(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db),
+                    q: str | None = None):
+    query = select(m.Category).order_by(m.Category.name)
+    if q:
+        query = query.where(m.Category.name.ilike(f"%{q}%"))
+    return db.scalars(query).all()
 
 
 @router.post("/categories", response_model=CategoryOut, status_code=201)
@@ -250,8 +258,12 @@ def create_category(body: CategoryIn, user: User = Depends(require_module("accou
 
 
 @router.get("/counterparties", response_model=list[CounterpartyOut])
-def list_counterparties(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db)):
-    return db.scalars(select(m.Counterparty).order_by(m.Counterparty.name)).all()
+def list_counterparties(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db),
+                        q: str | None = None):
+    query = select(m.Counterparty).order_by(m.Counterparty.name)
+    if q:
+        query = query.where(m.Counterparty.name.ilike(f"%{q}%"))
+    return db.scalars(query).all()
 
 
 @router.post("/counterparties", response_model=CounterpartyOut, status_code=201)

@@ -28,6 +28,8 @@ const toast = useToast()
 
 const canWrite = computed(() => auth.moduleLevel('accounting') === 'rw')
 
+// локальные строки поиска справочников (гейт 1.1a); q уходит на сервер
+const refSearch = reactive({ accounts: '', categories: '', counterparties: '', rates: '' })
 const TABS = ['transactions', 'accounts', 'categories', 'counterparties', 'rates', 'periods'] as const
 type TabKey = typeof TABS[number]
 const tab = ref<TabKey>((route.query.tab as TabKey) in TABS || TABS.includes(route.query.tab as TabKey) ? (route.query.tab as TabKey) : 'transactions')
@@ -105,6 +107,22 @@ let filterTimer: number | undefined
 watch(filters, () => {
   window.clearTimeout(filterTimer)
   filterTimer = window.setTimeout(() => { void loadTxns().catch(() => toast.error(t('errors.unknown'))) }, 300)
+})
+
+let refTimer: number | undefined
+watch(refSearch, () => {
+  window.clearTimeout(refTimer)
+  refTimer = window.setTimeout(() => {
+    const q = (key: 'accounts' | 'categories' | 'counterparties') => {
+      const value = refSearch[key].trim()
+      return value ? `?q=${encodeURIComponent(value)}` : ''
+    }
+    void Promise.all([
+      get<Account[]>(`/accounting/accounts${q('accounts')}`).then((d) => { accounts.value = d }).catch(() => {}),
+      get<Category[]>(`/accounting/categories${q('categories')}`).then((d) => { categories.value = d }).catch(() => {}),
+      get<Counterparty[]>(`/accounting/counterparties${q('counterparties')}`).then((d) => { counterparties.value = d }).catch(() => {}),
+    ])
+  }, 300)
 })
 
 // ---------- Отображение ----------
@@ -503,6 +521,7 @@ const tabsList = computed(() => [
       <CardContent class="p-0">
         <div class="flex items-center justify-between px-4 py-3">
           <p class="text-sm font-semibold">{{ t('finance.tabs.accounts') }}</p>
+          <Input v-model="refSearch.accounts" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
           <Button v-if="canWrite" variant="outline" size="sm" class="gap-1.5" @click="refDialog = 'account'">
             <Plus class="h-3.5 w-3.5" /> {{ t('finance.newAccount') }}
           </Button>
@@ -538,6 +557,7 @@ const tabsList = computed(() => [
       <CardContent class="p-0">
         <div class="flex items-center justify-between px-4 py-3">
           <p class="text-sm font-semibold">{{ t('finance.tabs.categories') }}</p>
+          <Input v-model="refSearch.categories" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
           <Button v-if="canWrite" variant="outline" size="sm" class="gap-1.5" @click="refDialog = 'category'">
             <Plus class="h-3.5 w-3.5" /> {{ t('finance.newCategory') }}
           </Button>
@@ -568,6 +588,7 @@ const tabsList = computed(() => [
       <CardContent class="p-0">
         <div class="flex items-center justify-between px-4 py-3">
           <p class="text-sm font-semibold">{{ t('finance.tabs.counterparties') }}</p>
+          <Input v-model="refSearch.counterparties" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
           <Button v-if="canWrite" variant="outline" size="sm" class="gap-1.5" @click="refDialog = 'counterparty'">
             <Plus class="h-3.5 w-3.5" /> {{ t('finance.newCounterparty') }}
           </Button>
@@ -630,7 +651,7 @@ const tabsList = computed(() => [
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(r, i) in rates.slice(0, 60)" :key="`${r.date}-${r.currency}-${i}`" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                <tr v-for="(r, i) in rates.filter((row) => !refSearch.rates.trim() || row.currency.toLowerCase().includes(refSearch.rates.trim().toLowerCase())).slice(0, 60)" :key="`${r.date}-${r.currency}-${i}`" class="border-t border-zinc-100 dark:border-zinc-800/70">
                   <td class="whitespace-nowrap px-3 py-2">{{ r.date }}</td>
                   <td class="px-3 py-2">{{ r.currency }}</td>
                   <td class="px-3 py-2 text-right font-semibold">{{ formatRate(r.rate) }}</td>

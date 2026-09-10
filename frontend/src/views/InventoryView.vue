@@ -4,7 +4,7 @@
 // движений, перемещение, инвентаризация (полный факт-список; для серийных —
 // список кодов), сборка — тех.карты и заказы. Кнопки проведения — только
 // при accounting: rw.
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ArrowLeftRight, Boxes, ClipboardCheck, Cog, Package, Play, Plus,
@@ -12,7 +12,7 @@ import {
 import { get, post } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  Select, Skeleton, Tabs, useToast,
+  Select, SearchSelect, Skeleton, Tabs, useToast,
 } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 import { formatMoney2, isPositiveDecimalString } from '../utils/money'
@@ -61,13 +61,17 @@ const itemSearch = ref('')
 const balanceLocation = ref('')
 const movesLocation = ref('')
 
-const filteredItems = computed(() => {
-  const q = itemSearch.value.trim().toLowerCase()
-  const src = q
-    ? items.value.filter((i) => i.name.toLowerCase().includes(q) || i.sku.toLowerCase().includes(q))
-    : items.value
-  return src.slice(0, 100)
+// поиск уходит на сервер (ILIKE + GIN pg_trgm по sku/имени, миграция 0021)
+let itemSearchTimer: number | undefined
+watch(itemSearch, () => {
+  window.clearTimeout(itemSearchTimer)
+  itemSearchTimer = window.setTimeout(async () => {
+    const q = itemSearch.value.trim()
+    const suffix = q ? `?q=${encodeURIComponent(q)}` : ''
+    items.value = await get<Item[]>(`/accounting/items${suffix}`)
+  }, 300)
 })
+const filteredItems = computed(() => items.value.slice(0, 100))
 const filteredBalances = computed(() => {
   const src = balanceLocation.value
     ? balances.value.filter((b) => b.location_id === balanceLocation.value)
@@ -570,16 +574,16 @@ function statusCls(status: string): string {
       <form class="space-y-4" @submit.prevent="saveTransfer">
         <div class="space-y-1.5">
           <Label class="text-xs font-medium">{{ t('inv.colItem') }}</Label>
-          <Select v-model="transferForm.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
+          <SearchSelect v-model="transferForm.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" :search-placeholder="t('ui.searchPlaceholder')" />
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1.5">
             <Label class="text-xs font-medium">{{ t('inv.fromLocation') }}</Label>
-            <Select v-model="transferForm.from" :options="activeLocations.map((l) => ({ value: l.id, label: l.name }))" />
+            <SearchSelect v-model="transferForm.from" :options="activeLocations.map((l) => ({ value: l.id, label: l.name }))" />
           </div>
           <div class="space-y-1.5">
             <Label class="text-xs font-medium">{{ t('inv.toLocation') }}</Label>
-            <Select v-model="transferForm.to" :options="activeLocations.map((l) => ({ value: l.id, label: l.name }))" />
+            <SearchSelect v-model="transferForm.to" :options="activeLocations.map((l) => ({ value: l.id, label: l.name }))" />
           </div>
         </div>
         <div class="grid grid-cols-2 gap-3">
@@ -598,12 +602,12 @@ function statusCls(status: string): string {
       <form class="space-y-4" @submit.prevent="saveAdjustment">
         <div class="space-y-1.5">
           <Label class="text-xs font-medium">{{ t('inv.colLocation') }}</Label>
-          <Select v-model="adjustLocation" :options="activeLocations.map((l) => ({ value: l.id, label: l.name }))" />
+          <SearchSelect v-model="adjustLocation" :options="activeLocations.map((l) => ({ value: l.id, label: l.name }))" />
         </div>
         <p class="text-xs text-muted-foreground">{{ t('inv.adjustmentHint') }}</p>
         <div v-for="(line, index) in adjustLines" :key="index" class="flex items-end gap-2">
           <div class="flex-1 space-y-1">
-            <Select v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
+            <SearchSelect v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
           </div>
           <div v-if="items.find((i) => i.id === line.itemId)?.tracking === 'serial'" class="flex-1 space-y-1">
             <textarea
@@ -633,14 +637,14 @@ function statusCls(status: string): string {
           <div class="space-y-1.5"><Label class="text-xs font-medium">{{ t('inv.colName') }}</Label><Input v-model="cardForm.name" /></div>
           <div class="space-y-1.5">
             <Label class="text-xs font-medium">{{ t('inv.colProduct') }}</Label>
-            <Select v-model="cardForm.productItemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
+            <SearchSelect v-model="cardForm.productItemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
           </div>
         </div>
         <div class="w-32 space-y-1.5"><Label class="text-xs font-medium">{{ t('inv.qtyOut') }}</Label><Input v-model="cardForm.qtyOut" inputmode="decimal" /></div>
         <p class="text-xs font-medium text-muted-foreground">{{ t('inv.components') }}</p>
         <div v-for="(component, index) in cardForm.components" :key="index" class="flex items-end gap-2">
           <div class="flex-1 space-y-1">
-            <Select v-model="component.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
+            <SearchSelect v-model="component.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
           </div>
           <div class="w-28 space-y-1"><Input v-model="component.qty" inputmode="decimal" /></div>
           <Button variant="ghost" size="icon" class="h-9 w-9" @click="cardForm.components.splice(index, 1)">✕</Button>

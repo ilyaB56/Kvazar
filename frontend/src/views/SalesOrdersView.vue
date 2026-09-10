@@ -10,7 +10,7 @@ import { Ban, Check, Plus, Truck, Wallet } from 'lucide-vue-next'
 import { get, post } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  Select, Skeleton, useToast,
+  Select, SearchSelect, Skeleton, useToast,
 } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 import { formatMoney2, isPositiveDecimalString } from '../utils/money'
@@ -436,10 +436,10 @@ function historyLine(diff: Record<string, { old: unknown; new: unknown }>): stri
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1.5">
             <Label class="text-xs font-medium">{{ t('sal.colCustomer') }}</Label>
-            <Select v-model="createForm.counterpartyId" :options="[
+            <SearchSelect v-model="createForm.counterpartyId" :options="[
               { value: '', label: createForm.dealId ? t('sal.fromDeal') : '—' },
               ...counterparties.map((c) => ({ value: c.id, label: c.name })),
-            ]" />
+            ]" :search-placeholder="t('ui.searchPlaceholder')" />
           </div>
           <div class="space-y-1.5">
             <Label class="text-xs font-medium">{{ t('inv.colNote') }}</Label>
@@ -450,7 +450,7 @@ function historyLine(diff: Record<string, { old: unknown; new: unknown }>): stri
         <p class="text-xs font-medium text-muted-foreground">{{ t('pur.lines') }}</p>
         <div v-for="(line, index) in createForm.lines" :key="index" class="flex items-end gap-2">
           <div class="flex-1 space-y-1">
-            <Select v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
+            <SearchSelect v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
           </div>
           <div class="w-24 space-y-1"><Input v-model="line.qty" :placeholder="t('inv.phQty')" inputmode="decimal" /></div>
           <div class="w-28 space-y-1"><Input v-model="line.price" :placeholder="t('inv.phPrice')" inputmode="decimal" /></div>
@@ -474,7 +474,7 @@ function historyLine(diff: Record<string, { old: unknown; new: unknown }>): stri
         </p>
         <div class="space-y-1.5">
           <Label class="text-xs font-medium">{{ t('finance.account') }}</Label>
-          <Select v-model="payForm.accountId" :options="accounts.map((a) => ({ value: a.id, label: `${a.name} · ${a.currency}` }))" />
+          <SearchSelect v-model="payForm.accountId" :options="accounts.map((a) => ({ value: a.id, label: `${a.name} · ${a.currency}` }))" :search-placeholder="t('ui.searchPlaceholder')" />
         </div>
         <div class="space-y-1.5">
           <Label class="text-xs font-medium">{{ t('pur.payAmount') }}</Label>
@@ -499,7 +499,7 @@ function historyLine(diff: Record<string, { old: unknown; new: unknown }>): stri
           </div>
           <div class="flex items-end gap-2">
             <div class="w-56 space-y-1">
-              <Select v-model="line.locationId" :options="activeLocations.map((l) => ({ value: l.id, label: l.name }))" />
+              <SearchSelect v-model="line.locationId" :options="activeLocations.map((l) => ({ value: l.id, label: l.name }))" />
             </div>
             <div v-if="items.find((i) => i.id === line.itemId)?.tracking === 'serial'" class="flex-1 space-y-1">
               <textarea

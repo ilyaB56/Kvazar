@@ -17,6 +17,21 @@ const toast = useToast()
 
 const tab = ref('connections')
 const loading = ref(true)
+// локальный поиск по справочникам (гейт 1.1a)
+const connSearch = ref('')
+const hookSearch = ref('')
+const filteredConnections = computed(() => {
+  const q = connSearch.value.trim().toLowerCase()
+  return q
+    ? connections.value.filter((c) => c.name.toLowerCase().includes(q) || c.connector_code.toLowerCase().includes(q))
+    : connections.value
+})
+const filteredWebhooks = computed(() => {
+  const q = hookSearch.value.trim().toLowerCase()
+  return q
+    ? webhooks.value.filter((w) => w.name.toLowerCase().includes(q) || fullUrl(w).toLowerCase().includes(q))
+    : webhooks.value
+})
 
 // ----- Подключения -----
 const connections = ref<Connection[]>([])
@@ -158,6 +173,7 @@ onMounted(async () => {
     <div v-if="tab === 'connections'" class="space-y-4">
       <div class="flex items-center justify-between">
         <p class="text-base font-semibold">{{ t('connections.title') }}</p>
+        <Input v-model="connSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
         <Button variant="emerald" size="sm" class="gap-1.5" @click="dialogVisible = true">
           <Plus class="h-4 w-4" /> {{ t('connections.create') }}
         </Button>
@@ -183,7 +199,7 @@ onMounted(async () => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in connections" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                <tr v-for="row in filteredConnections" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
                   <td class="px-3 py-2 font-medium">{{ row.name }}</td>
                   <td class="px-3 py-2 text-muted-foreground">{{ connectorNames[row.connector_code] ?? row.connector_code }}</td>
                   <td class="px-3 py-2">
@@ -216,7 +232,10 @@ onMounted(async () => {
 
     <!-- Вебхуки -->
     <div v-else class="space-y-4">
-      <p class="text-base font-semibold">{{ t('connections.webhooks') }}</p>
+      <div class="flex items-center justify-between">
+        <p class="text-base font-semibold">{{ t('connections.webhooks') }}</p>
+        <Input v-model="hookSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
+      </div>
       <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
         <CardContent class="flex flex-col gap-2 p-4 sm:flex-row">
           <Input
@@ -244,7 +263,7 @@ onMounted(async () => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in webhooks" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                <tr v-for="row in filteredWebhooks" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
                   <td class="px-3 py-2 font-medium">{{ row.name }}</td>
                   <td class="max-w-[340px] px-3 py-2 font-mono text-xs text-muted-foreground">{{ fullUrl(row) }}</td>
                   <td class="px-3 py-2 text-right">

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Безопасность (этап G): смена пароля (инвалидирует все токены — security-p0),
 // служебные API-токены (/admin/api-tokens, CRUD), политика паролей.
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { KeyRound, Plus, ShieldCheck, Trash2 } from 'lucide-vue-next'
 import { del, get, post } from '../api/client'
@@ -28,6 +28,12 @@ interface ApiToken {
   created_at: string
 }
 const tokens = ref<ApiToken[] | null>(null)
+const tokenSearch = ref('')
+const filteredTokens = computed(() => {
+  if (!tokens.value) return []
+  const q = tokenSearch.value.trim().toLowerCase()
+  return q ? tokens.value.filter((t2) => t2.name.toLowerCase().includes(q)) : tokens.value
+})
 const tokenOpen = ref(false)
 const tokenCreating = ref(false)
 const tokenForm = reactive({ name: '', role: 'readonly' })
@@ -107,6 +113,7 @@ async function copySecret(value: string) {
           <p class="flex items-center gap-2 text-sm font-semibold">
             <ShieldCheck class="h-4 w-4 text-emerald-600" /> {{ t('security.tokensTitle') }}
           </p>
+          <Input v-if="tokens.length" v-model="tokenSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[200px]" />
           <Button variant="outline" size="sm" class="gap-1.5" @click="tokenOpen = true">
             <Plus class="h-3.5 w-3.5" /> {{ t('security.newToken') }}
           </Button>

@@ -16,6 +16,11 @@ const canWrite = computed(() => auth.moduleLevel('integrations') === 'rw')
 
 const loading = ref(true)
 const jobs = ref<SyncJob[]>([])
+const jobSearch = ref('')
+const filteredJobs = computed(() => {
+  const q = jobSearch.value.trim().toLowerCase()
+  return q ? jobs.value.filter((j) => j.name.toLowerCase().includes(q) || (j.endpoint || '').toLowerCase().includes(q)) : jobs.value
+})
 const selected = ref<SyncJob | null>(null)
 const runs = ref<SyncRun[]>([])
 const runsLoading = ref(false)
@@ -90,7 +95,10 @@ onBeforeUnmount(stopAutoRefresh)
 
 <template>
   <div class="space-y-4">
-    <p class="text-base font-semibold">{{ t('sync.title') }}</p>
+    <div class="flex items-center justify-between gap-3">
+        <p class="text-base font-semibold">{{ t('sync.title') }}</p>
+        <Input v-model="jobSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
+      </div>
 
     <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
