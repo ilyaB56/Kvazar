@@ -21,19 +21,19 @@ const router = createRouter({
           path: 'dashboard',
           name: 'dashboard',
           component: () => import('../views/DashboardView.vue'),
-          meta: { requiresAuth: true, title: 'Дашборд', crumb: 'Сводка контура' },
+          meta: { requiresAuth: true, titleKey: 'route.dashboard', crumbKey: 'route.dashboardCrumb' },
         },
         {
           path: 'reports',
           name: 'reports',
           component: () => import('../views/ReportsView.vue'),
-          meta: { requiresAuth: true, title: 'Отчёты', crumb: 'Аналитика' },
+          meta: { requiresAuth: true, titleKey: 'route.reports', crumbKey: 'route.reportsCrumb' },
         },
         // Система → Интеграции (подразделы, §5)
         {
           path: 'integrations',
           component: IntegrationsLayout,
-          meta: { title: 'Интеграции', crumb: 'Подключения и синхронизации' },
+          meta: { titleKey: 'route.integrations', crumbKey: 'route.integrationsCrumb' },
           children: [
             { path: '', redirect: '/integrations/overview' },
             {
@@ -42,7 +42,7 @@ const router = createRouter({
               component: () => import('../views/IntegrationsCoreView.vue'),
               meta: {
                 requiresAuth: true, module: 'integrations', level: 'ro',
-                title: 'Интеграции', crumb: 'Интеграционное ядро',
+                titleKey: 'route.integrations', crumbKey: 'route.integrationsCoreCrumb',
               },
             },
             {
@@ -51,7 +51,7 @@ const router = createRouter({
               component: ConnectionsView,
               meta: {
                 requiresAuth: true, module: 'integrations', level: 'ro',
-                title: 'Интеграции', crumb: 'Подключения',
+                titleKey: 'route.integrations', crumbKey: 'route.integrationsConnCrumb',
               },
             },
             {
@@ -60,7 +60,7 @@ const router = createRouter({
               component: SyncView,
               meta: {
                 requiresAuth: true, module: 'integrations', level: 'ro',
-                title: 'Интеграции', crumb: 'Синхронизации',
+                titleKey: 'route.integrations', crumbKey: 'route.integrationsSyncCrumb',
               },
             },
             {
@@ -70,7 +70,7 @@ const router = createRouter({
               meta: {
                 requiresAuth: true, requiresAdmin: true,
                 module: 'integrations', level: 'ro',
-                title: 'Интеграции', crumb: 'Уведомления',
+                titleKey: 'route.integrations', crumbKey: 'route.integrationsNotifCrumb',
               },
             },
           ],
@@ -85,31 +85,31 @@ const router = createRouter({
               path: 'organization',
               name: 'organization',
               component: () => import('../views/OrganizationView.vue'),
-              meta: { requiresAuth: true, title: 'Настройки', crumb: 'Организация' },
+              meta: { requiresAuth: true, titleKey: 'route.settings', crumbKey: 'route.settingsOrgCrumb' },
             },
             {
               path: 'profile',
               name: 'profile',
               component: () => import('../views/ProfileView.vue'),
-              meta: { requiresAuth: true, title: 'Настройки', crumb: 'Профиль' },
+              meta: { requiresAuth: true, titleKey: 'route.settings', crumbKey: 'route.settingsProfileCrumb' },
             },
             {
               path: 'security',
               name: 'security',
               component: () => import('../views/SecurityView.vue'),
-              meta: { requiresAuth: true, title: 'Настройки', crumb: 'Безопасность' },
+              meta: { requiresAuth: true, titleKey: 'route.settings', crumbKey: 'route.settingsSecurityCrumb' },
             },
             {
               path: 'system',
               name: 'system',
               component: () => import('../views/SystemView.vue'),
-              meta: { requiresAuth: true, requiresAdmin: true, title: 'Настройки', crumb: 'Система' },
+              meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'route.settings', crumbKey: 'route.settingsSystemCrumb' },
             },
             {
               path: 'permissions',
               name: 'permissions',
               component: () => import('../views/PermissionsView.vue'),
-              meta: { requiresAuth: true, requiresAdmin: true, title: 'Настройки', crumb: 'Доступы и роли' },
+              meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'route.settings', crumbKey: 'route.settingsPermsCrumb' },
             },
           ],
         },
@@ -119,7 +119,7 @@ const router = createRouter({
           component: () => import('../views/FinanceView.vue'),
           meta: {
             requiresAuth: true, module: 'accounting', level: 'ro',
-            title: 'Финансы', crumb: 'Счета и платежи',
+            titleKey: 'route.finance', crumbKey: 'route.financeCrumb',
           },
         },
         {
@@ -133,7 +133,7 @@ const router = createRouter({
               component: () => import('../views/CrmView.vue'),
               meta: {
                 requiresAuth: true, module: 'crm', level: 'ro',
-                title: 'Продажи', crumb: 'Сделки и коммуникации',
+                titleKey: 'route.crm', crumbKey: 'route.crmCrumb',
               },
             },
             {
@@ -142,7 +142,7 @@ const router = createRouter({
               component: () => import('../views/SalesOrdersView.vue'),
               meta: {
                 requiresAuth: true, module: 'accounting', level: 'ro',
-                title: 'Продажи', crumb: 'Заказы клиентов',
+                titleKey: 'route.crm', crumbKey: 'route.crmOrdersCrumb',
               },
             },
           ],
@@ -153,7 +153,7 @@ const router = createRouter({
           component: () => import('../views/InventoryView.vue'),
           meta: {
             requiresAuth: true, module: 'accounting', level: 'ro',
-            title: 'Склад', crumb: 'Номенклатура и остатки',
+            titleKey: 'route.inventory', crumbKey: 'route.inventoryCrumb',
           },
         },
         {
@@ -162,7 +162,7 @@ const router = createRouter({
           component: () => import('../views/PurchasingView.vue'),
           meta: {
             requiresAuth: true, module: 'accounting', level: 'ro',
-            title: 'Закупки', crumb: 'Заказы и приёмки',
+            titleKey: 'route.purchasing', crumbKey: 'route.purchasingCrumb',
           },
         },
         {
@@ -170,7 +170,7 @@ const router = createRouter({
           name: 'assistant',
           component: () => import('../views/AssistantView.vue'),
           // доступ — по правам ai (§6.3): rw у user по сиду, readonly — ro
-          meta: { requiresAuth: true, module: 'ai', level: 'ro', title: 'ИИ-ассистент', crumb: 'Диалоги и предложения' },
+          meta: { requiresAuth: true, module: 'ai', level: 'ro', titleKey: 'route.assistant', crumbKey: 'route.assistantCrumb' },
         },
       ],
     },
@@ -220,8 +220,9 @@ router.beforeEach(async (to) => {
     return { path: auth.firstAvailableRoute() }
   }
   // заголовок раздела шапки — по meta.title; i18n.global — guard вне setup-контекста
-  document.title = to.meta.title
-    ? `${to.meta.title} · ${i18n.global.t('brand.name')}`
+  const titleKey = to.meta.titleKey as string | undefined
+  document.title = titleKey
+    ? `${i18n.global.t(titleKey)} · ${i18n.global.t('brand.name')}`
     : String(i18n.global.t('brand.name'))
 })
 

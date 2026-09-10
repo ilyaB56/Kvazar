@@ -177,9 +177,9 @@ async function copySecret(value: string) {
             </div>
           </div>
           <div class="flex justify-end gap-2">
-            <Button variant="outline" size="sm" @click="tokenOpen = false">{{ t('permissions.cancel') }}</Button>
+            <Button variant="outline" size="sm" @click="tokenOpen = false">{{ t('ui.cancel') }}</Button>
             <Button variant="emerald" type="submit" size="sm" :disabled="tokenCreating || !tokenForm.name.trim()">
-              {{ t('security.createToken') }}
+              {{ t('ui.save') }}
             </Button>
           </div>
         </form>

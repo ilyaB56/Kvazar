@@ -443,16 +443,16 @@ async function loadBalance() {
           <div class="flex-1 space-y-1">
             <Select v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
           </div>
-          <div class="w-24 space-y-1"><Input v-model="line.qty" placeholder="qty" inputmode="decimal" /></div>
-          <div class="w-28 space-y-1"><Input v-model="line.price" placeholder="цена" inputmode="decimal" /></div>
+          <div class="w-24 space-y-1"><Input v-model="line.qty" :placeholder="t('inv.phQty')" inputmode="decimal" /></div>
+          <div class="w-28 space-y-1"><Input v-model="line.price" :placeholder="t('inv.phPrice')" inputmode="decimal" /></div>
           <Button variant="ghost" size="icon" class="h-9 w-9" @click="orderForm.lines.splice(index, 1)">✕</Button>
         </div>
         <Button variant="outline" size="sm" class="gap-1.5" @click="orderForm.lines.push({ itemId: '', qty: '', price: '' })">
           <Plus class="h-3.5 w-3.5" /> {{ t('inv.addLine') }}
         </Button>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="orderOpen = false">{{ t('permissions.cancel') }}</Button>
-          <Button variant="emerald" type="submit" size="sm" :disabled="orderSaving">{{ t('permissions.apply') }}</Button>
+          <Button variant="outline" size="sm" @click="orderOpen = false">{{ t('ui.cancel') }}</Button>
+          <Button variant="emerald" type="submit" size="sm" :disabled="orderSaving">{{ t('ui.save') }}</Button>
         </div>
       </form>
     </Dialog>
@@ -475,7 +475,7 @@ async function loadBalance() {
           <Input v-model="payForm.amount" inputmode="decimal" />
         </div>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="payTarget = null">{{ t('permissions.cancel') }}</Button>
+          <Button variant="outline" size="sm" @click="payTarget = null">{{ t('ui.cancel') }}</Button>
           <Button variant="emerald" type="submit" size="sm">{{ t('pur.pay') }}</Button>
         </div>
       </form>
@@ -503,8 +503,8 @@ async function loadBalance() {
             <div class="flex-1 space-y-1">
               <Select v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
             </div>
-            <div class="w-24 space-y-1"><Input v-model="line.qty" placeholder="qty" inputmode="decimal" /></div>
-            <div class="w-32 space-y-1"><Input v-model="line.unitCost" placeholder="себест." inputmode="decimal" /></div>
+            <div class="w-24 space-y-1"><Input v-model="line.qty" :placeholder="t('inv.phQty')" inputmode="decimal" /></div>
+            <div class="w-32 space-y-1"><Input v-model="line.unitCost" :placeholder="t('inv.phCost')" inputmode="decimal" /></div>
             <Button variant="ghost" size="icon" class="h-9 w-9" @click="receiptForm.lines.splice(index, 1)">✕</Button>
           </div>
           <div class="flex items-end gap-2">
@@ -523,8 +523,8 @@ async function loadBalance() {
           <Plus class="h-3.5 w-3.5" /> {{ t('inv.addLine') }}
         </Button>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="receiptOpen = false">{{ t('permissions.cancel') }}</Button>
-          <Button variant="emerald" type="submit" size="sm" :disabled="receiptSaving">{{ t('permissions.apply') }}</Button>
+          <Button variant="outline" size="sm" @click="receiptOpen = false">{{ t('ui.cancel') }}</Button>
+          <Button variant="emerald" type="submit" size="sm" :disabled="receiptSaving">{{ t('ui.save') }}</Button>
         </div>
       </form>
     </Dialog>

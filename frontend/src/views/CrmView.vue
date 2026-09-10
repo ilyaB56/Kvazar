@@ -435,7 +435,7 @@ const commKinds: Record<string, string> = {
           </div>
         </div>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="createOpen = false">{{ t('permissions.cancel') }}</Button>
+          <Button variant="outline" size="sm" @click="createOpen = false">{{ t('ui.cancel') }}</Button>
           <Button
             variant="emerald" type="submit" size="sm"
             :disabled="creating || !createForm.title.trim() || !isPositiveDecimalString(createForm.amount)"

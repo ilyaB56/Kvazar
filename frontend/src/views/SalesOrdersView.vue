@@ -452,16 +452,16 @@ function historyLine(diff: Record<string, { old: unknown; new: unknown }>): stri
           <div class="flex-1 space-y-1">
             <Select v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
           </div>
-          <div class="w-24 space-y-1"><Input v-model="line.qty" placeholder="qty" inputmode="decimal" /></div>
-          <div class="w-28 space-y-1"><Input v-model="line.price" placeholder="цена" inputmode="decimal" /></div>
+          <div class="w-24 space-y-1"><Input v-model="line.qty" :placeholder="t('inv.phQty')" inputmode="decimal" /></div>
+          <div class="w-28 space-y-1"><Input v-model="line.price" :placeholder="t('inv.phPrice')" inputmode="decimal" /></div>
           <Button variant="ghost" size="icon" class="h-9 w-9" @click="createForm.lines.splice(index, 1)">✕</Button>
         </div>
         <Button variant="outline" size="sm" class="gap-1.5" @click="createForm.lines.push({ itemId: '', qty: '', price: '' })">
           <Plus class="h-3.5 w-3.5" /> {{ t('inv.addLine') }}
         </Button>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="createOpen = false">{{ t('permissions.cancel') }}</Button>
-          <Button variant="emerald" type="submit" size="sm" :disabled="creating">{{ t('permissions.apply') }}</Button>
+          <Button variant="outline" size="sm" @click="createOpen = false">{{ t('ui.cancel') }}</Button>
+          <Button variant="emerald" type="submit" size="sm" :disabled="creating">{{ t('ui.save') }}</Button>
         </div>
       </form>
     </Dialog>
@@ -481,7 +481,7 @@ function historyLine(diff: Record<string, { old: unknown; new: unknown }>): stri
           <Input v-model="payForm.amount" inputmode="decimal" />
         </div>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="payOpen = false">{{ t('permissions.cancel') }}</Button>
+          <Button variant="outline" size="sm" @click="payOpen = false">{{ t('ui.cancel') }}</Button>
           <Button variant="emerald" type="submit" size="sm">{{ t('sal.pay') }}</Button>
         </div>
       </form>
@@ -510,8 +510,8 @@ function historyLine(diff: Record<string, { old: unknown; new: unknown }>): stri
           </div>
         </div>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="shipOpen = false">{{ t('permissions.cancel') }}</Button>
-          <Button variant="emerald" type="submit" size="sm" :disabled="shipSaving">{{ t('permissions.apply') }}</Button>
+          <Button variant="outline" size="sm" @click="shipOpen = false">{{ t('ui.cancel') }}</Button>
+          <Button variant="emerald" type="submit" size="sm" :disabled="shipSaving">{{ t('ui.save') }}</Button>
         </div>
       </form>
     </Dialog>

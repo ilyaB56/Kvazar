@@ -770,7 +770,7 @@ const tabsList = computed(() => [
         </label>
 
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="txnOpen = false">{{ t('permissions.cancel') }}</Button>
+          <Button variant="outline" size="sm" @click="txnOpen = false">{{ t('ui.cancel') }}</Button>
           <Button variant="emerald" type="submit" size="sm" :disabled="txnSaving">{{ t('finance.save') }}</Button>
         </div>
       </form>
@@ -790,7 +790,7 @@ const tabsList = computed(() => [
           <Input v-model="stornoReason" :placeholder="t('finance.stornoReasonPlaceholder')" />
         </div>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="stornoTarget = null">{{ t('permissions.cancel') }}</Button>
+          <Button variant="outline" size="sm" @click="stornoTarget = null">{{ t('ui.cancel') }}</Button>
           <Button variant="destructive" type="submit" size="sm" :disabled="stornoWorking">{{ t('finance.stornoConfirm') }}</Button>
         </div>
       </form>
@@ -808,7 +808,7 @@ const tabsList = computed(() => [
           <Select v-model="accountForm.currency" :options="currencyOptions" />
         </div>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="refDialog = null">{{ t('permissions.cancel') }}</Button>
+          <Button variant="outline" size="sm" @click="refDialog = null">{{ t('ui.cancel') }}</Button>
           <Button variant="emerald" type="submit" size="sm" :disabled="refSaving || !accountForm.name.trim()">
             {{ t('finance.save') }}
           </Button>
@@ -830,7 +830,7 @@ const tabsList = computed(() => [
           ]" />
         </div>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="refDialog = null">{{ t('permissions.cancel') }}</Button>
+          <Button variant="outline" size="sm" @click="refDialog = null">{{ t('ui.cancel') }}</Button>
           <Button variant="emerald" type="submit" size="sm" :disabled="refSaving || !categoryForm.name.trim()">
             {{ t('finance.save') }}
           </Button>
@@ -849,7 +849,7 @@ const tabsList = computed(() => [
           <Input v-model="counterpartyForm.inn" placeholder="7707083893" />
         </div>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="refDialog = null">{{ t('permissions.cancel') }}</Button>
+          <Button variant="outline" size="sm" @click="refDialog = null">{{ t('ui.cancel') }}</Button>
           <Button variant="emerald" type="submit" size="sm" :disabled="refSaving || !counterpartyForm.name.trim()">
             {{ t('finance.save') }}
           </Button>

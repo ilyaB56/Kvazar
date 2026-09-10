@@ -331,7 +331,7 @@ function statusCls(status: string): string {
             <table class="w-full text-sm">
               <thead>
                 <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                  <th class="px-3 py-2 font-medium">SKU</th>
+                  <th class="px-3 py-2 font-medium">{{ t('inv.colSku') }}</th>
                   <th class="px-3 py-2 font-medium">{{ t('inv.colName') }}</th>
                   <th class="px-3 py-2 font-medium">{{ t('inv.colKind') }}</th>
                   <th class="hidden px-3 py-2 font-medium sm:table-cell">{{ t('inv.colUnit') }}</th>
@@ -391,7 +391,7 @@ function statusCls(status: string): string {
             <table class="w-full text-sm">
               <thead>
                 <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                  <th class="px-3 py-2 font-medium">SKU</th>
+                  <th class="px-3 py-2 font-medium">{{ t('inv.colSku') }}</th>
                   <th class="px-3 py-2 font-medium">{{ t('inv.colName') }}</th>
                   <th class="px-3 py-2 font-medium">{{ t('inv.colLocation') }}</th>
                   <th class="px-3 py-2 text-right font-medium">{{ t('inv.colQty') }}</th>
@@ -534,7 +534,7 @@ function statusCls(status: string): string {
     <Dialog v-model:open="itemOpen" :title="t('inv.newItem')" width="560px">
       <form class="space-y-4" @submit.prevent="saveItem">
         <div class="grid grid-cols-2 gap-3">
-          <div class="space-y-1.5"><Label class="text-xs font-medium">SKU</Label><Input v-model="itemForm.sku" /></div>
+          <div class="space-y-1.5"><Label class="text-xs font-medium">{{ t('inv.colSku') }}</Label><Input v-model="itemForm.sku" :placeholder="t('inv.phSku')" /></div>
           <div class="space-y-1.5"><Label class="text-xs font-medium">{{ t('inv.colName') }}</Label><Input v-model="itemForm.name" /></div>
         </div>
         <div class="grid grid-cols-2 gap-3">
@@ -559,8 +559,8 @@ function statusCls(status: string): string {
           <div class="space-y-1.5"><Label class="text-xs font-medium">{{ t('inv.colLowStock') }}</Label><Input v-model="itemForm.lowStock" placeholder="10" inputmode="decimal" /></div>
         </div>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="itemOpen = false">{{ t('permissions.cancel') }}</Button>
-          <Button variant="emerald" type="submit" size="sm" :disabled="itemSaving || !itemForm.sku.trim() || !itemForm.name.trim()">{{ t('permissions.apply') }}</Button>
+          <Button variant="outline" size="sm" @click="itemOpen = false">{{ t('ui.cancel') }}</Button>
+          <Button variant="emerald" type="submit" size="sm" :disabled="itemSaving || !itemForm.sku.trim() || !itemForm.name.trim()">{{ t('ui.save') }}</Button>
         </div>
       </form>
     </Dialog>
@@ -587,7 +587,7 @@ function statusCls(status: string): string {
           <div class="space-y-1.5"><Label class="text-xs font-medium">{{ t('inv.colNote') }}</Label><Input v-model="transferForm.note" /></div>
         </div>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="transferOpen = false">{{ t('permissions.cancel') }}</Button>
+          <Button variant="outline" size="sm" @click="transferOpen = false">{{ t('ui.cancel') }}</Button>
           <Button variant="emerald" type="submit" size="sm" :disabled="transferSaving">{{ t('inv.transfer') }}</Button>
         </div>
       </form>
@@ -612,7 +612,7 @@ function statusCls(status: string): string {
             />
           </div>
           <div v-else class="w-28 space-y-1">
-            <Input v-model="line.qtyFact" placeholder="факт" inputmode="decimal" />
+            <Input v-model="line.qtyFact" :placeholder="t('inv.phFact')" inputmode="decimal" />
           </div>
           <Button variant="ghost" size="icon" class="h-9 w-9" @click="removeAdjustLine(index)">✕</Button>
         </div>
@@ -620,8 +620,8 @@ function statusCls(status: string): string {
           <Plus class="h-3.5 w-3.5" /> {{ t('inv.addLine') }}
         </Button>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="adjustOpen = false">{{ t('permissions.cancel') }}</Button>
-          <Button variant="emerald" type="submit" size="sm" :disabled="adjustSaving || !adjustLocation">{{ t('permissions.apply') }}</Button>
+          <Button variant="outline" size="sm" @click="adjustOpen = false">{{ t('ui.cancel') }}</Button>
+          <Button variant="emerald" type="submit" size="sm" :disabled="adjustSaving || !adjustLocation">{{ t('ui.save') }}</Button>
         </div>
       </form>
     </Dialog>
@@ -647,8 +647,8 @@ function statusCls(status: string): string {
         </div>
         <Button variant="outline" size="sm" class="gap-1.5" @click="addComponent"><Plus class="h-3.5 w-3.5" /> {{ t('inv.addComponent') }}</Button>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="cardOpen = false">{{ t('permissions.cancel') }}</Button>
-          <Button variant="emerald" type="submit" size="sm" :disabled="cardSaving">{{ t('permissions.apply') }}</Button>
+          <Button variant="outline" size="sm" @click="cardOpen = false">{{ t('ui.cancel') }}</Button>
+          <Button variant="emerald" type="submit" size="sm" :disabled="cardSaving">{{ t('ui.save') }}</Button>
         </div>
       </form>
     </Dialog>
@@ -666,8 +666,8 @@ function statusCls(status: string): string {
         </div>
         <p class="text-xs text-muted-foreground">{{ t('inv.productionHint') }}</p>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" @click="prodOpen = false">{{ t('permissions.cancel') }}</Button>
-          <Button variant="emerald" type="submit" size="sm" :disabled="prodSaving">{{ t('permissions.apply') }}</Button>
+          <Button variant="outline" size="sm" @click="prodOpen = false">{{ t('ui.cancel') }}</Button>
+          <Button variant="emerald" type="submit" size="sm" :disabled="prodSaving">{{ t('ui.save') }}</Button>
         </div>
       </form>
     </Dialog>

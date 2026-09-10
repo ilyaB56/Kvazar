@@ -84,9 +84,9 @@ onMounted(load)
             <Input v-model="form.inn" placeholder="7707083893" />
           </div>
           <div class="flex gap-2">
-            <Button variant="outline" size="sm" @click="editing = false">{{ t('permissions.cancel') }}</Button>
+            <Button variant="outline" size="sm" @click="editing = false">{{ t('ui.cancel') }}</Button>
             <Button variant="emerald" type="submit" size="sm" :disabled="saving || form.name.trim().length < 2">
-              {{ t('permissions.apply') }}
+              {{ t('ui.save') }}
             </Button>
           </div>
         </form>

@@ -78,8 +78,9 @@ const navSections = computed(() => [
   },
 ].filter((section) => section.items.length > 0))
 
-const pageTitle = computed(() => (route.meta.title as string) ?? '')
-const pageCrumb = computed(() => (route.meta.crumb as string) ?? '')
+// заголовок/крошка — по meta.titleKey/crumbKey (i18n, этап 1.1)
+const pageTitle = computed(() => route.meta.titleKey ? t(route.meta.titleKey as string) : '')
+const pageCrumb = computed(() => route.meta.crumbKey ? t(route.meta.crumbKey as string) : '')
 
 function isActive(to: string): boolean {
   return route.path === to || route.path.startsWith(`${to}/`)
