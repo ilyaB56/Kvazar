@@ -1085,6 +1085,23 @@ status, data = call("POST", "/api/v1/auth/login",
                     {"email": "nobody@erp.local", "password": "whatever1"})
 check("sec: после окна снова 401 (не 429)", status == 401, str(status))
 
+# ---------- Финальная зачистка: закрытые периоды → open ----------
+# pytest и сам smoke закрывают периоды; падение между close и reopen
+# оставляло закрытый период в живой БД — следующие прогоны падали каскадом.
+# Гарантия: в конце каждого прогона все closed периоды переоткрыты.
+try:
+    status, periods = call("GET", f"{ACC}/periods", token=token)
+    closed = [p for p in periods if p.get("status") == "closed"] if status == 200 else []
+    for per in closed:
+        call("POST", f"{ACC}/periods/{per['year']}/{per['month']}/reopen",
+             {"reason": "smoke: финальная зачистка периодов"}, token=token)
+    check("cleanup: закрытых периодов не осталось",
+          all(p.get("status") != "closed"
+              for p in call("GET", f"{ACC}/periods", token=token)[1]),
+          f"reopened={len(closed)}")
+except Exception as exc:  # noqa: BLE001 — зачистка не должна ломать итог
+    check("cleanup: закрытых периодов не осталось", False, str(exc)[:120])
+
 print()
 print("ИТОГ:", "ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ" if not FAILED else f"ПРОВАЛЕНО: {FAILED}")
 sys.exit(1 if FAILED else 0)
