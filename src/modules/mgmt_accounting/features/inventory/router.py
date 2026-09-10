@@ -18,6 +18,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from src.core.auth import CurrentUser, WriteUser, require_module
+from src.core.models import User
 from src.db import get_db
 from src.modules.mgmt_accounting.features.inventory import models as m
 from src.modules.mgmt_accounting.features.inventory import service

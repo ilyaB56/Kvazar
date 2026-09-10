@@ -284,7 +284,7 @@ def void_serial(db: Session, *, code: str, user_id: uuid.UUID, note: str = "") -
         )
     )
     if serial is None:
-        raise AccountingError(404, f"serial_not_found_or_not_in_stock")
+        raise AccountingError(404, "serial_not_found_or_not_in_stock")
     item = db.get(m.Item, serial.item_id)
     location = db.get(m.Location, serial.location_id)
     scrap = db.scalar(select(m.Location).where(
