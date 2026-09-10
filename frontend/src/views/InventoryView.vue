@@ -86,6 +86,77 @@ const filteredMoves = computed(() => {
 })
 const totalValue = computed(() =>
   filteredBalances.value.reduce((sum, b) => sum + Number(b.value), 0))
+
+// ---------- 1.3: уровень остатка по порогу low_stock ----------
+// itemById для порога (остатки не несут threshold)
+const itemById = computed(() => new Map(items.value.map((i) => [i.id, i])))
+type StockLevel = 'ok' | 'low' | 'crit'
+function stockLevel(balance: Balance): StockLevel {
+  const threshold = Number(itemById.value.get(balance.item_id)?.low_stock_threshold ?? 0)
+  const qty = Number(balance.qty)
+  if (threshold <= 0) return 'ok'
+  if (qty <= 0 || qty * 2 <= threshold) return 'crit'
+  if (qty <= threshold) return 'low'
+  return 'ok'
+}
+const levelBadge = computed<Record<StockLevel, { label: string; cls: string }>>(() => ({
+  ok: {
+    label: t('inv.levelOk'),
+    cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300',
+  },
+  low: {
+    label: t('inv.levelLow'),
+    cls: 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300',
+  },
+  crit: {
+    label: t('inv.levelCrit'),
+    cls: 'bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300',
+  },
+}))
+
+// дефицит: позиции (агрегировано по item), где суммарный остаток ниже порога
+const deficitItems = computed(() => {
+  const totals = new Map<string, number>()
+  for (const b of balances.value) {
+    totals.set(b.item_id, (totals.get(b.item_id) ?? 0) + Number(b.qty))
+  }
+  let count = 0
+  for (const [id, qty] of totals) {
+    const threshold = Number(itemById.value.get(id)?.low_stock_threshold ?? 0)
+    if (threshold > 0 && qty <= threshold) count += 1
+  }
+  return count
+})
+
+// ---------- карточка товара (клик по строке номенклатуры) ----------
+const detailItem = ref<Item | null>(null)
+const detailBalances = computed(() =>
+  detailItem.value ? balances.value.filter((b) => b.item_id === detailItem.value?.id) : [])
+const detailMoves = computed(() =>
+  detailItem.value ? moves.value.filter((m) => m.item_id === detailItem.value?.id).slice(0, 10) : [])
+
+function openItemCard(item: Item) {
+  detailItem.value = item
+}
+
+// Д13 UI: испортить код прямо из карточки товара
+const voidCode = ref('')
+const voidWorking = ref(false)
+async function voidSerial() {
+  if (voidWorking.value || !voidCode.value.trim()) return
+  voidWorking.value = true
+  try {
+    await post('/accounting/serials/void', { code: voidCode.value.trim() })
+    toast.success(t('inv.codeVoided'))
+    voidCode.value = ''
+    detailItem.value = null
+    await loadAll()
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    voidWorking.value = false
+  }
+}
 const itemName = (id: string) => items.value.find((i) => i.id === id)?.name ?? '…'
 const locationName = (id: string | null) =>
   id ? (locations.value.find((l) => l.id === id)?.name ?? '…') : '—'
@@ -345,7 +416,11 @@ function statusCls(status: string): string {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="item in filteredItems" :key="item.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                <tr
+                  v-for="item in filteredItems" :key="item.id"
+                  class="cursor-pointer border-t border-zinc-100 transition-colors hover:bg-zinc-50/60 dark:border-zinc-800/70 dark:hover:bg-zinc-800/40"
+                  @click="openItemCard(item)"
+                >
                   <td class="px-3 py-2 font-mono text-xs text-emerald-700 dark:text-emerald-400">{{ item.sku }}</td>
                   <td class="px-3 py-2 font-medium">{{ item.name }}</td>
                   <td class="px-3 py-2"><Badge :class="kindCls(item.kind)">{{ t(`inv.kind.${item.kind}`) }}</Badge></td>
@@ -378,6 +453,11 @@ function statusCls(status: string): string {
         <span class="text-sm text-muted-foreground">
           {{ t('inv.totalValue') }}: <span class="font-semibold text-foreground">{{ formatMoney2(totalValue.toFixed(2)) }}</span>
         </span>
+        <Badge
+          v-if="deficitItems > 0"
+          class="bg-red-500 text-[11px] text-white"
+          :title="t('inv.deficitHint')"
+        >{{ t('inv.deficitCount', { n: deficitItems }) }}</Badge>
         <div v-if="canWrite" class="ml-auto flex gap-2">
           <Button variant="outline" size="sm" class="gap-1.5" @click="transferOpen = true">
             <ArrowLeftRight class="h-3.5 w-3.5" /> {{ t('inv.transfer') }}
@@ -401,6 +481,7 @@ function statusCls(status: string): string {
                   <th class="px-3 py-2 text-right font-medium">{{ t('inv.colQty') }}</th>
                   <th class="hidden px-3 py-2 text-right font-medium sm:table-cell">{{ t('inv.colAvgCost') }}</th>
                   <th class="px-3 py-2 text-right font-medium">{{ t('inv.colValue') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('inv.colLevel') }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -414,6 +495,7 @@ function statusCls(status: string): string {
                   <td class="px-3 py-2 text-right font-semibold tabular-nums">{{ Number(b.qty).toLocaleString('ru-RU') }}</td>
                   <td class="hidden px-3 py-2 text-right text-muted-foreground sm:table-cell">{{ formatMoney2(b.avg_cost) }}</td>
                   <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums">{{ formatMoney2(b.value) }}</td>
+                  <td class="px-3 py-2"><Badge :class="levelBadge[stockLevel(b)].cls">{{ levelBadge[stockLevel(b)].label }}</Badge></td>
                 </tr>
               </tbody>
             </table>
@@ -533,6 +615,63 @@ function statusCls(status: string): string {
         </CardContent>
       </Card>
     </div>
+
+    <!-- Карточка товара (1.3): остатки по локациям, движения, порча кода -->
+    <Dialog
+      :open="detailItem !== null" :title="detailItem?.name ?? ''" width="640px"
+      @update:open="(v: boolean) => { if (!v) detailItem = null }"
+    >
+      <div v-if="detailItem" class="space-y-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <Badge :class="kindCls(detailItem.kind)">{{ t(`inv.kind.${detailItem.kind}`) }}</Badge>
+          <Badge variant="outline" class="font-mono text-[11px]">{{ detailItem.sku }}</Badge>
+          <span v-if="detailItem.tracking === 'serial'" class="text-xs text-muted-foreground">{{ t('inv.serial') }}</span>
+          <span class="ml-auto text-sm font-semibold">{{ formatMoney2(detailItem.avg_cost) }}</span>
+        </div>
+
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{{ t('inv.tabBalances') }}</p>
+          <table class="mt-1.5 w-full text-sm">
+            <tbody>
+              <tr v-for="b in detailBalances" :key="b.location_id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                <td class="py-1.5">{{ b.location_name }}</td>
+                <td class="py-1.5 text-right font-semibold tabular-nums">{{ Number(b.qty).toLocaleString('ru-RU') }}</td>
+                <td class="py-1.5 text-right"><Badge :class="levelBadge[stockLevel(b)].cls">{{ levelBadge[stockLevel(b)].label }}</Badge></td>
+              </tr>
+              <tr v-if="detailBalances.length === 0">
+                <td colspan="3" class="py-3 text-center text-muted-foreground">{{ t('ui.emptyDescription') }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-if="detailMoves.length">
+          <p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{{ t('inv.tabMoves') }}</p>
+          <ul class="mt-1.5 space-y-1 text-xs text-muted-foreground">
+            <li v-for="m in detailMoves" :key="m.id" class="flex justify-between gap-2">
+              <span class="truncate">{{ m.moved_at }} · {{ locationName(m.from_location_id) }} → {{ locationName(m.to_location_id) }}</span>
+              <span class="shrink-0 font-semibold">{{ Number(m.qty).toLocaleString('ru-RU') }}</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Д13: испортить код (цифровые серийные) -->
+        <form
+          v-if="canWrite && detailItem.tracking === 'serial'"
+          class="flex items-end gap-2 rounded-xl border border-red-200 bg-red-50/50 p-3 dark:border-red-900/60 dark:bg-red-950/20"
+          @submit.prevent="voidSerial"
+        >
+          <div class="flex-1 space-y-1">
+            <Label class="text-xs font-medium text-red-700 dark:text-red-400">{{ t('inv.voidCode') }}</Label>
+            <Input v-model="voidCode" placeholder="LICENSE-…" />
+            <p class="text-[11px] text-muted-foreground">{{ t('inv.voidHint') }}</p>
+          </div>
+          <Button variant="destructive" type="submit" size="sm" :disabled="voidWorking || voidCode.trim().length < 3">
+            {{ t('inv.voidAction') }}
+          </Button>
+        </form>
+      </div>
+    </Dialog>
 
     <!-- Диалог: номенклатура -->
     <Dialog v-model:open="itemOpen" :title="t('inv.newItem')" width="560px">
