@@ -23,7 +23,7 @@ from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import text, func, or_, select
 from sqlalchemy.orm import Session
 
 from src.core import crypto, events
@@ -135,10 +135,17 @@ def get_location(db: Session, location_id: uuid.UUID) -> m.Location:
 
 
 def _check_kind_compat(item: m.Item, *locations: m.Location) -> None:
-    """§3.2: физический товар — physical-локации, цифровой — digital (422)."""
+    """§3.2: физический товар — physical-локации, цифровой — digital (422).
+
+    Транзитные локации (Поставщик/Клиент/Производство/Брак) — вне правила:
+    это поток, а не место хранения (П9, гейт 1.2: цифровой код уходит в
+    транзит «Брак» командой порчи).
+    """
     if item.kind == "service":
         raise AccountingError(422, "service_items_have_no_stock")
     for location in locations:
+        if location.is_transit:
+            continue
         if location.kind != item.kind:
             raise AccountingError(
                 422,
@@ -267,6 +274,47 @@ def allow_negative_stock(db: Session) -> bool:
     return str(row.value).strip().lower() in ("true", "1", "yes")
 
 
+def void_serial(db: Session, *, code: str, user_id: uuid.UUID, note: str = "") -> m.StockMove:
+    """Д13: испортить код цифрового товара — движение «локация → Брак»
+    (транзит) + status=void; код больше не выдаётся и не возвращается."""
+    serial = db.scalar(
+        select(m.ItemSerial).where(
+            m.ItemSerial.code_hash == _serial_hash(code.strip()),
+            m.ItemSerial.status == "in_stock",
+        )
+    )
+    if serial is None:
+        raise AccountingError(404, f"serial_not_found_or_not_in_stock")
+    item = db.get(m.Item, serial.item_id)
+    location = db.get(m.Location, serial.location_id)
+    scrap = db.scalar(select(m.Location).where(
+        m.Location.name == "Брак", m.Location.is_transit))
+    if item is None or location is None or scrap is None:
+        raise AccountingError(422, "item_or_location_not_found")
+    lock_stock(db, (item.id, location.id))
+    move = _apply_issue(
+        db, item=item, from_location=location, qty=Decimal(1),
+        user_id=user_id, to_location=scrap, counterparty_id=None,
+        source_type="serial_void", source_id=serial.id, moved_at=date.today(),
+        note=note or f"Порча кода {code.strip()[:4]}…",
+        serial_codes=[code.strip()], void_serials=True,
+    )
+    return move
+
+
+def lock_stock(db: Session, *pairs: tuple[uuid.UUID, uuid.UUID]) -> None:
+    """Д6: сериализация проведения документов по парам item×location.
+
+    Остатки — агрегат по движениям (нет строки баланса для FOR UPDATE),
+    поэтому транзакционный advisory-lock: конкурентные post отгрузок/
+    приёмок по одному item×location выстраиваются в очередь, второй
+    видит уже списанный остаток и получает insufficient_stock.
+    """
+    for item_id, location_id in pairs:
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                   {"k": f"stock:{item_id}:{location_id}"})
+
+
 def _check_stock_enough(db: Session, item: m.Item, location: m.Location, qty: Decimal) -> None:
     if allow_negative_stock(db):
         return
@@ -278,6 +326,14 @@ def _check_stock_enough(db: Session, item: m.Item, location: m.Location, qty: De
 
 def _serial_hash(code: str) -> str:
     return hashlib.sha256(code.strip().encode()).hexdigest()
+
+
+def serial_cost(db: Session, serial: m.ItemSerial) -> Decimal | None:
+    """Себестоимость конкретного кода: unit_cost движения его прихода."""
+    if serial.received_move_id is None:
+        return None
+    move = db.get(m.StockMove, serial.received_move_id)
+    return move.unit_cost if move else None
 
 
 def serial_code(row: m.ItemSerial) -> str:
@@ -469,13 +525,20 @@ def _apply_issue(
     """Расход со склада в транзит: контроль остатка, списание по avg_cost (§4)."""
     _check_stock_enough(db, item, from_location, qty)
     serials: list[m.ItemSerial] = []
+    issue_cost = item.avg_cost
     if item.tracking == "serial":
         serials = [_find_serial(db, item=item, code=code, location=from_location)
                    for code in serial_codes or []]
+        # П10 (решение основателя): себестоимость выдачи цифровых — по
+        # unit_cost прихода конкретных выданных кодов, не средняя по товару
+        costs = [serial_cost(db, serial) for serial in serials]
+        costs = [c for c in costs if c is not None]
+        if costs:
+            issue_cost = (sum(costs) / Decimal(len(costs))).quantize(Decimal("1e-4"))
     move = m.StockMove(
         item_id=item.id,
         qty=qty,
-        unit_cost=item.avg_cost,
+        unit_cost=issue_cost,
         from_location_id=from_location.id,
         to_location_id=to_location.id,
         counterparty_id=counterparty_id,

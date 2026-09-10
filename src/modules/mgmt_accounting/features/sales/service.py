@@ -324,6 +324,15 @@ def post_shipment(db: Session, shipment: m.Shipment) -> m.Shipment:
     if not lines:
         raise AccountingError(422, "shipment_lines_required")
 
+    # Д6: сериализация конкурентных проведений по item×location
+    for line in lines:
+        line_item = inv_service.get_item(db, line.item_id)
+        line_location = (
+            inv_service.get_location(db, line.location_id)
+            if line.location_id else _default_location(db, line_item)
+        )
+        inv_service.lock_stock(db, (line_item.id, line_location.id))
+
     revenue_base = Decimal(0)
     for line in lines:
         item = inv_service.get_item(db, line.item_id)
@@ -346,6 +355,9 @@ def post_shipment(db: Session, shipment: m.Shipment) -> m.Shipment:
                     inv_service.serial_code(serial)
                     for serial in _fifo_serials(db, item, location, line.qty)
                 ]
+                # Д7: FIFO-выдача фиксируется в строке в момент проведения —
+                # повторный просмотр/API показывает те же коды
+                line.serial_codes = codes
             elif len(codes) != line.qty:
                 raise AccountingError(
                     422, f"serial_qty_mismatch: qty={line.qty} but {len(codes)} codes"

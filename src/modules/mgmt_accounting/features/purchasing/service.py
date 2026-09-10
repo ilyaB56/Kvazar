@@ -294,6 +294,15 @@ def post_receipt(db: Session, receipt: m.Receipt) -> m.Receipt:
     if not lines:
         raise AccountingError(422, "receipt_lines_required")
 
+    # Д6: сериализация конкурентных проведений по item×location
+    for line in lines:
+        pre_item = inv_service.get_item(db, line.item_id)
+        pre_location = (
+            inv_service.get_location(db, line.location_id)
+            if line.location_id else _default_location(db, pre_item)
+        )
+        inv_service.lock_stock(db, (pre_item.id, pre_location.id))
+
     amount_base = Decimal(0)
     for line in lines:
         item = inv_service.get_item(db, line.item_id)

@@ -17,7 +17,7 @@ from pydantic import BaseModel, BeforeValidator, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from src.core.auth import CurrentUser, WriteUser
+from src.core.auth import CurrentUser, WriteUser, require_module
 from src.db import get_db
 from src.modules.mgmt_accounting.features.inventory import models as m
 from src.modules.mgmt_accounting.features.inventory import service
@@ -261,6 +261,26 @@ def create_location(body: LocationIn, user: WriteUser, db: Session = Depends(get
 
 
 # ---------- Склад ----------
+
+class SerialVoidIn(BaseModel):
+    code: str = Field(min_length=3, max_length=255)
+    note: str = Field(default="", max_length=200)
+
+    model_config = {"json_schema_extra": {"example": {
+        "code": "LICENSE-2026-001", "note": "ключ скомпрометирован",
+    }}}
+
+
+@router.post("/serials/void", response_model=MoveOut, status_code=201)
+def void_serial(body: SerialVoidIn, user: User = Depends(require_module("accounting")),
+                db: Session = Depends(get_db)):
+    """Д13: испортить цифровой код — движение в транзит «Брак» + void."""
+    with svc():
+        move = service.void_serial(db, code=body.code, user_id=user.id, note=body.note)
+    db.commit()
+    db.refresh(move)
+    return service.move_payload(move)
+
 
 @router.get("/stock/balances", response_model=list[BalanceOut])
 def stock_balances(
