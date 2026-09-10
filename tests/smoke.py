@@ -12,7 +12,7 @@ import time
 import urllib.parse
 import urllib.error
 import urllib.request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000"
@@ -611,7 +611,10 @@ check("crm B: crm.activity.created в outbox",
 status, pipe = call("GET", f"{CRM}/report/pipeline", token=token)
 check("crm C: pipeline-отчёт",
       status == 200 and "stages" in pipe and "weighted" in pipe["totals"], str(pipe)[:120])
-status, pipe_won = call("GET", f"{CRM}/report/pipeline?date_from={today}&date_to={today}", token=token)
+# UTC-календарь: won_at в БД хранится в UTC, локальная полночь хоста
+# (date.today) после ~18:00 UTC уже «завтра» и отсекает сегодняшние победы
+utc_today = datetime.now(timezone.utc).date().isoformat()
+status, pipe_won = call("GET", f"{CRM}/report/pipeline?date_from={utc_today}&date_to={utc_today}", token=token)
 check("crm C: выиграно за период", status == 200 and pipe_won["won"]["count"] >= 1,
       str(pipe_won.get("won")))
 

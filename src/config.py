@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     ai_max_tool_steps: int = 5
     enable_external_llm: bool = False  # ADR-006: включение — отдельным решением
 
+    # P1 security-plan п.7 (sales-automation §9.2): allowlist доменов
+    # исходящих запросов коннекторов. Строгий режим (прод) — домен вне
+    # списка запрещён; журнал каждого обращения — connectors/egress.py
+    connector_allowlist: str = "yookassa.net,securepay.tinkoff.ru,api.telegram.org,localhost,127.0.0.1,host.docker.internal"
+    connector_allowlist_strict: bool = False  # прод: True
+
     # Ключ для шифрования секретов подключений (Fernet). В проде — из секрет-хранилища.
     secrets_key: str = "change-me-fernet-key"
 

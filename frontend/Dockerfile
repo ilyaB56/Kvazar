@@ -7,6 +7,7 @@ RUN npm run build
 
 FROM nginx:1.27-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx-webhooks-zone.conf /etc/nginx/conf.d/webhooks-zone.conf
 COPY nginx-tls.conf /etc/nginx/nginx-tls.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 # WEB_TLS=1 — включить TLS-вариант конфига (сертификаты в /etc/nginx/certs)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -37,8 +37,39 @@ class WebhookEndpoint(Base):
     name: Mapped[str] = mapped_column(String(255))
     secret_token: Mapped[str] = mapped_column(String(128))
     target_module: Mapped[str] = mapped_column(String(100), default="external")
+    # привязка к connection провайдера (sales-automation §4.1): приёмник
+    # авторизует вебхук коннектором (verify_webhook / verify_by_fetch),
+    # X-ERP-Token для таких endpoint'ов не требуется
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{S}.connections.id", ondelete="SET NULL"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WebhookEvent(Base):
+    """Журнал входящих вебхуков + идемпотентность (§4.2): дубли по
+    (connection_id, external_key) отмечаются duplicate без обработки;
+    invalid — подлинность не подтвердилась (тело храним для разбора)."""
+
+    __table_args__ = (
+        UniqueConstraint("connection_id", "external_key", name="uq_webhook_events_conn_external"),
+        UniqueConstraint("endpoint_id", "external_key", name="uq_webhook_events_endpoint_external"),
+        {"schema": S},
+    )
+    __tablename__ = "webhook_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    endpoint_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{S}.webhook_endpoints.id", ondelete="CASCADE"), index=True)
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{S}.connections.id", ondelete="SET NULL"))
+    external_key: Mapped[str] = mapped_column(String(200))
+    event_type: Mapped[str] = mapped_column(String(100), default="")
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String(12), default="new")  # new|processed|duplicate|invalid|error
+    error: Mapped[str] = mapped_column(Text, default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class FieldMapping(Base):

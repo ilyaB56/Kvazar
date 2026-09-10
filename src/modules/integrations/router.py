@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import secrets
+import hashlib
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -44,6 +46,8 @@ class ConnectionOut(BaseModel):
 class WebhookIn(BaseModel):
     name: str
     target_module: str = "external"
+    # провайдерский режим: коннектор авторизует вебхук (§4.1)
+    connection_id: uuid.UUID | None = None
 
 
 class WebhookOut(BaseModel):
@@ -51,6 +55,7 @@ class WebhookOut(BaseModel):
     name: str
     target_module: str
     url_path: str
+    connection_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
 
@@ -147,10 +152,15 @@ def list_webhooks(user: User = Depends(require_module("integrations", "ro")), db
 
 @router.post("/webhooks", status_code=201)
 def create_webhook(body: WebhookIn, user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
+    if body.connection_id is not None:
+        connection = db.get(m.Connection, body.connection_id)
+        if connection is None:
+            raise HTTPException(422, "Unknown connection")
     endpoint = m.WebhookEndpoint(
         name=body.name,
         secret_token=secrets.token_urlsafe(32),
         target_module=body.target_module,
+        connection_id=body.connection_id,
     )
     db.add(endpoint)
     db.commit()
@@ -162,6 +172,46 @@ def create_webhook(body: WebhookIn, user: User = Depends(require_module("integra
     }
 
 
+def _webhook_event_type(payload: dict) -> str:
+    """Тип события нотификации: payment.succeeded / cancellation.succeeded …
+    (единая схема объект.тип; generic-приёмники могут нести своё поле)."""
+    return str(payload.get("event") or payload.get("type") or "unknown")
+
+
+def _record_webhook_event(
+    db: Session, *, endpoint: m.WebhookEndpoint, connection_id: uuid.UUID | None,
+    external_key: str, event_type: str, payload: dict, status: str, error: str = "",
+) -> m.WebhookEvent | None:
+    """Журнал + идемпотентность (§4.2): дубль по (connection, external_key)
+    → статус duplicate у существующей записи, новая не создаётся."""
+    from datetime import UTC, datetime
+
+    existing = db.scalar(select(m.WebhookEvent).where(
+        m.WebhookEvent.connection_id == connection_id
+        if connection_id else m.WebhookEvent.connection_id.is_(None),
+        m.WebhookEvent.external_key == external_key,
+    ))
+    if existing is not None:
+        if existing.status != "duplicate":
+            existing.status = "duplicate"
+            db.commit()
+        return None
+    row = m.WebhookEvent(
+        endpoint_id=endpoint.id,
+        connection_id=connection_id,
+        external_key=external_key,
+        event_type=event_type,
+        payload=payload,
+        status=status,
+        error=error,
+    )
+    if status == "processed":
+        row.processed_at = datetime.now(UTC)
+    db.add(row)
+    db.commit()
+    return row
+
+
 @router.post("/hooks/{endpoint_id}", status_code=202)
 async def receive_hook(
     endpoint_id: uuid.UUID,
@@ -169,23 +219,93 @@ async def receive_hook(
     db: Session = Depends(get_db),
     x_erp_token: str | None = Header(default=None),
 ):
-    """Публичный приёмник webhook'ов от внешних систем.
+    """Публичный приёмник webhook'ов (sales-automation §3.2, ADR-002).
 
-    Авторизация: заголовок X-ERP-Token (или HMAC X-Signature при наличии
-    подключённого connection с webhook_secret). Внутрь системы событие
-    попадает через шину: webhook.received.{target_module}.
+    Два режима (§4.1):
+    - endpoint с connection_id: авторизация коннектором провайдера —
+      verify_webhook (подпись) и/или verify_by_fetch (повторный запрос
+      статуса платежа; ЮKassa нотификации не подписывает); X-ERP-Token
+      не требуется; дубли гасятся журналом webhook_events;
+    - без connection_id: прежний режим X-ERP-Token (generic).
     """
     endpoint = db.get(m.WebhookEndpoint, endpoint_id)
     if endpoint is None or not endpoint.is_active:
         raise HTTPException(404, "Unknown endpoint")
-    if not x_erp_token or not secrets.compare_digest(x_erp_token, endpoint.secret_token):
-        raise HTTPException(401, "Invalid token")
 
-    body = await request.json()
-    events.publish(db, f"webhook.received.{endpoint.target_module}", body)
+    raw_body = await request.body()
+    try:
+        payload = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(422, "Invalid JSON body")
+    event_type = _webhook_event_type(payload)
+
+    if endpoint.connection_id is None:
+        # generic-режим: токен обязателен, журнал тоже ведём
+        if not x_erp_token or not secrets.compare_digest(x_erp_token, endpoint.secret_token):
+            raise HTTPException(401, "Invalid token")
+        row = _record_webhook_event(
+            db, endpoint=endpoint, connection_id=None,
+            external_key=f"token:{hashlib.sha256(raw_body).hexdigest()[:40]}",
+            event_type=event_type, payload=payload, status="new",
+        )
+        if row is None:
+            return {"accepted": True, "duplicate": True}
+        events.publish(db, f"webhook.received.{endpoint.target_module}", payload)
+        row.status = "processed"
+        db.commit()
+        events.dispatch_outbox(db)
+        return {"accepted": True}
+
+    # режим провайдера: коннектор решает, верить ли телу (§3.4)
+    connection = db.get(m.Connection, endpoint.connection_id)
+    if connection is None or not connection.is_active:
+        raise HTTPException(409, "Endpoint connection is inactive")
+    from .crypto import decrypt_dict
+    connector = connector_registry.build(
+        connection.connector_code, connection.config, decrypt_dict(connection.credentials_enc),
+    )
+    payment_id = ""
+    if hasattr(connector, "payment_id"):
+        payment_id = connector.payment_id(payload)
+    external_key = (
+        connector.external_key(event_type, payload)
+        if hasattr(connector, "external_key") else f"{payment_id}:{event_type}"
+    )
+    if not external_key or external_key.strip(" :") == "":
+        raise HTTPException(422, "Payload has no payment id")
+
+    # проверка подлинности: подпись (если провайдер подписывает) и/или
+    # повторный запрос статуса (verify_by_fetch обязателен для неподписанных)
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    signed = connector.verify_webhook(headers, raw_body)
+    fetched = connector.verify_by_fetch(payment_id) if payment_id else None
+    verified = signed or (fetched is not None and fetched.ok)
+    if not verified:
+        error = (fetched.error if fetched else "") or "verification_failed"
+        _record_webhook_event(
+            db, endpoint=endpoint, connection_id=connection.id,
+            external_key=external_key, event_type=event_type,
+            payload=payload, status="invalid", error=error,
+        )
+        raise HTTPException(401, f"Webhook verification failed: {error}")
+
+    row = _record_webhook_event(
+        db, endpoint=endpoint, connection_id=connection.id,
+        external_key=external_key, event_type=event_type,
+        payload=payload, status="new",
+    )
+    if row is None:
+        return {"accepted": True, "duplicate": True}
+    events.publish(db, "integration.webhook.verified", {
+        "webhook_event_id": str(row.id),
+        "connection_id": str(connection.id),
+        "event": event_type,
+        "payment_id": payment_id,
+    })
+    row.status = "processed"
     db.commit()
     events.dispatch_outbox(db)
-    return {"accepted": True}
+    return {"accepted": True, "webhook_event_id": str(row.id)}
 
 
 # ---------- Mappings ----------
