@@ -253,6 +253,11 @@ def create_shipment(db: Session, *, user_id: uuid.UUID, data: dict) -> m.Shipmen
             raise AccountingError(
                 422, f"serial_qty_mismatch: qty={qty} but {len(codes)} codes for {item.sku}"
             )
+        # коды-активы не храним: сразу резолвим в ссылки на item_serials
+        serial_ids: list[str] | None = None
+        if item.tracking == "serial" and codes:
+            serial_ids = [str(inv_service.find_serial_id(db, item=item, code=code))
+                          for code in codes]
         if qty <= 0:
             raise AccountingError(422, "qty must be positive")
         left = remaining.get(item.id, Decimal(0))
@@ -267,7 +272,7 @@ def create_shipment(db: Session, *, user_id: uuid.UUID, data: dict) -> m.Shipmen
             location_id=line.get("location_id"),
             qty=qty,
             unit_price=price_by_item.get(item.id),
-            serial_codes=codes or None,
+            serial_ids=serial_ids,
         ))
     db.flush()
     return shipment
@@ -279,6 +284,24 @@ def _default_location(db: Session, item: inv.Item) -> inv.Location:
     if location is None:
         raise AccountingError(422, f"Default location not found: {name}")
     return location
+
+
+def _serials_by_ids(db: Session, item: inv.Item, ids: list) -> list[inv.ItemSerial]:
+    """Явный выбор серийников строки отгрузки по ссылкам: должны существовать,
+    принадлежать товару и быть in_stock (защита от выдачи чужого/проданного)."""
+    serials = db.scalars(select(inv.ItemSerial).where(
+        inv.ItemSerial.id.in_([uuid.UUID(str(i)) for i in ids]))).all()
+    by_id = {str(serial.id): serial for serial in serials}
+    resolved: list[inv.ItemSerial] = []
+    for raw in ids:
+        serial = by_id.get(str(raw))
+        if serial is None or serial.item_id != item.id:
+            raise AccountingError(422, f"serial_not_found: {str(raw)[:8]}… for {item.sku}")
+        if serial.status != "in_stock":
+            raise AccountingError(
+                422, f"serial_not_available: {serial.code_hash[:8]}… is {serial.status}")
+        resolved.append(serial)
+    return resolved
 
 
 def _fifo_serials(
@@ -348,17 +371,18 @@ def post_shipment(db: Session, shipment: m.Shipment) -> m.Shipment:
             raise AccountingError(422, f"over_shipment: {item.sku} ordered left {left}")
         remaining[item.id] = left - line.qty
 
-        codes: list[str] = list(line.serial_codes or [])
+        codes: list[str] = []
         if item.tracking == "serial":
-            if not codes:
-                codes = [
-                    inv_service.serial_code(serial)
-                    for serial in _fifo_serials(db, item, location, line.qty)
-                ]
-                # Д7: FIFO-выдача фиксируется в строке в момент проведения —
-                # повторный просмотр/API показывает те же коды
-                line.serial_codes = codes
-            elif len(codes) != line.qty:
+            serials: list[inv.ItemSerial]
+            if line.serial_ids:
+                serials = _serials_by_ids(db, item, line.serial_ids)
+            else:
+                serials = _fifo_serials(db, item, location, line.qty)
+                # Д7: FIFO-выдача фиксируется в строке (ссылками) в момент
+                # проведения — повторный API показывает те же серийники
+                line.serial_ids = [str(serial.id) for serial in serials]
+            codes = [inv_service.serial_code(serial) for serial in serials]
+            if len(codes) != line.qty:
                 raise AccountingError(
                     422, f"serial_qty_mismatch: qty={line.qty} but {len(codes)} codes"
                 )

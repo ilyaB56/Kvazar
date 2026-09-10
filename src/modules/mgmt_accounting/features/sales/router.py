@@ -17,11 +17,13 @@ from pydantic import BaseModel, BeforeValidator, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.core.auth import CurrentUser, WriteUser
+from src.core.auth import CurrentUser, WriteUser, module_level
 from src.db import get_db
 from src.modules.mgmt_accounting.features.sales import models as m
 from src.modules.mgmt_accounting.features.sales import service
 from src.modules.mgmt_accounting.router import TransactionOut
+from src.modules.mgmt_accounting.features.inventory import models as inv
+from src.modules.mgmt_accounting.features.inventory import service as inv_service
 from src.modules.mgmt_accounting.service import AccountingError
 
 router = APIRouter(tags=["sales"])
@@ -117,7 +119,11 @@ class ShipmentLineOut(BaseModel):
     qty: MoneyStr
     unit_price: MoneyStr | None
     amount_base: MoneyStr | None
-    serial_codes: list[str] | None
+    serial_ids: list[str] | None
+    # коды-активы: расшифровка только rw (require_module accounting rw);
+    # readonly видит отпечатки (первые 8 hex code_hash) — факт без актива
+    serial_codes: list[str] | None = None
+    serial_fingerprints: list[str] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -236,13 +242,28 @@ def pay_order(order_id: uuid.UUID, body: PayIn, user: WriteUser, db: Session = D
 
 # ---------- Отгрузки ----------
 
-def _shipment_with_lines(db: Session, shipment: m.Shipment) -> ShipmentOut:
+def _shipment_with_lines(db: Session, shipment: m.Shipment,
+                         reveal_codes: bool = True) -> ShipmentOut:
+    """Строки отгрузки: rw получает расшифрованные коды, ro — отпечатки."""
     lines = db.scalars(
         select(m.ShipmentLine).where(m.ShipmentLine.shipment_id == shipment.id)
     ).all()
-    return ShipmentOut.model_validate(shipment).model_copy(
-        update={"lines": [ShipmentLineOut.model_validate(line) for line in lines]}
-    )
+    out_lines: list[ShipmentLineOut] = []
+    for line in lines:
+        out = ShipmentLineOut.model_validate(line)
+        out.serial_codes = None
+        out.serial_fingerprints = None
+        if line.serial_ids:
+            serials = db.scalars(select(inv.ItemSerial).where(
+                inv.ItemSerial.id.in_([uuid.UUID(str(i)) for i in line.serial_ids]))).all()
+            by_id = {str(serial.id): serial for serial in serials}
+            ordered = [by_id[str(i)] for i in line.serial_ids if str(i) in by_id]
+            if reveal_codes:
+                out.serial_codes = [inv_service.serial_code(serial) for serial in ordered]
+            else:
+                out.serial_fingerprints = [serial.code_hash[:8] for serial in ordered]
+        out_lines.append(out)
+    return ShipmentOut.model_validate(shipment).model_copy(update={"lines": out_lines})
 
 
 def _get_shipment(db: Session, shipment_id: uuid.UUID) -> m.Shipment:
@@ -259,12 +280,13 @@ def list_shipments(
     status: str | None = None,
     sales_order_id: uuid.UUID | None = None,
 ):
+    reveal = module_level(db, user.role, "accounting") == "rw"
     query = select(m.Shipment).order_by(m.Shipment.created_at.desc())
     if status is not None:
         query = query.where(m.Shipment.status == status)
     if sales_order_id is not None:
         query = query.where(m.Shipment.sales_order_id == sales_order_id)
-    return [_shipment_with_lines(db, shipment) for shipment in db.scalars(query).all()]
+    return [_shipment_with_lines(db, shipment, reveal) for shipment in db.scalars(query).all()]
 
 
 @router.post("/shipments", response_model=ShipmentOut, status_code=201)
@@ -278,7 +300,8 @@ def create_shipment(body: ShipmentIn, user: WriteUser, db: Session = Depends(get
 
 @router.get("/shipments/{shipment_id}", response_model=ShipmentOut)
 def get_shipment(shipment_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
-    return _shipment_with_lines(db, _get_shipment(db, shipment_id))
+    reveal = module_level(db, user.role, "accounting") == "rw"
+    return _shipment_with_lines(db, _get_shipment(db, shipment_id), reveal)
 
 
 @router.post("/shipments/{shipment_id}/post", response_model=ShipmentOut)

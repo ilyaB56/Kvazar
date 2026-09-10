@@ -99,8 +99,9 @@ class Shipment(Base):
 
 
 class ShipmentLine(Base):
-    """Строка отгрузки: serial_codes — явный список кодов к выдаче;
-    пусто → FIFO-автовыбор старейших серийников при проведении (§3.4).
+    """Строка отгрузки: serial_ids — ссылки на выдаваемые item_serials
+    (явный выбор при создании или FIFO-автозаполнение при проведении);
+    открытые коды в БД не хранятся — расшифровка только rw в ответах API.
     unit_price (валюта заказа) и amount_base (выручка) заполняются из
     строки заказа при создании/проведении."""
 
@@ -116,4 +117,7 @@ class ShipmentLine(Base):
     qty: Mapped[Decimal] = mapped_column(Numeric(20, 4))
     unit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))  # валюта заказа
     amount_base: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))  # выручка при post
+    # ссылки на item_serials (UUID) — коды-активы не хранятся открыто;
+    # serial_codes (legacy) после миграции 0022 не заполняется
+    serial_ids: Mapped[list | None] = mapped_column(JSONB)
     serial_codes: Mapped[list | None] = mapped_column(JSONB)

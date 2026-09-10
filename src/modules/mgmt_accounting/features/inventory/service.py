@@ -328,6 +328,13 @@ def _serial_hash(code: str) -> str:
     return hashlib.sha256(code.strip().encode()).hexdigest()
 
 
+def find_serial_id(db: Session, *, item: m.Item, code: str) -> uuid.UUID:
+    """Код → id in_stock серийника (для явного выбора при создании отгрузки):
+    код — идентификатор актива, ссылка на строке вместо открытого кода."""
+    serial = _find_serial(db, item=item, code=code)
+    return serial.id
+
+
 def serial_cost(db: Session, serial: m.ItemSerial) -> Decimal | None:
     """Себестоимость конкретного кода: unit_cost движения его прихода."""
     if serial.received_move_id is None:
