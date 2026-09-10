@@ -71,6 +71,8 @@ export default {
     readonly: 'Только чтение',
   },
   shell: {
+    changeSeedPassword: 'Вы вошли с паролем по умолчанию — смените его (Настройки → Безопасность)',
+
     openMenu: 'Открыть меню',
     userMenu: 'Меню пользователя',
     changePassword: 'Сменить пароль',

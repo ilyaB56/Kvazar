@@ -6,6 +6,8 @@ import hashlib
 import uuid
 from datetime import UTC, datetime
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
@@ -73,6 +75,7 @@ class UserOut(BaseModel):
     full_name: str
     role: str
     is_active: bool
+    must_change_password: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -198,8 +201,16 @@ def change_password(body: ChangePasswordIn, user: HumanUser, db: Session = Depen
 
 
 @router.get("/auth/me", response_model=UserOut)
-def me(user: HumanUser):
-    return user
+def me(user: HumanUser, db: Annotated[Session, Depends(get_db)] = None):
+    # гейт 1.4: seed-админ, ни разу не менявший пароль (нет password.changed
+    # в журнале), получает must_change_password — UI показывает предупреждение
+    changed = db.scalar(select(AuditEvent.id).where(
+        AuditEvent.entity_type == "user", AuditEvent.entity_id == str(user.id),
+        AuditEvent.action == "password.changed",
+    ).limit(1))
+    payload = UserOut.model_validate(user)
+    payload.must_change_password = changed is None and user.email == "admin@example.com"
+    return payload
 
 
 # ---------- Users (admin) ----------

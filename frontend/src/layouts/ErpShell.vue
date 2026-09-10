@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Menu, Sun, Moon, LogOut, KeyRound, ChevronsUpDown, Plug, Bot, Settings2, LayoutDashboard, Wallet, TrendingUp,
+  Menu, Sun, Moon, LogOut, KeyRound, ChevronsUpDown, ShieldAlert, Plug, Bot, Settings2, LayoutDashboard, Wallet, TrendingUp,
   BarChart3, Package, Truck,
 } from 'lucide-vue-next'
 import { get, post } from '../api/client'
@@ -231,6 +231,17 @@ async function logout() {
           <Moon v-else class="h-4 w-4" />
         </Button>
         <NotificationCenter />
+      <!-- гейт 1.4: seed-админ ещё не сменил пароль -->
+      <div
+        v-if="auth.user?.must_change_password"
+        class="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+      >
+        <ShieldAlert class="h-3.5 w-3.5 shrink-0" />
+        {{ t('shell.changeSeedPassword') }}
+        <button type="button" class="ml-auto font-semibold underline" @click="passwordOpen = true">
+          {{ t('password.submit') }}
+        </button>
+      </div>
         <DropdownMenu align="end">
           <template #trigger>
             <span class="flex items-center gap-2 rounded-full border border-zinc-200 bg-card py-1 pl-1 pr-2.5 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800" :aria-label="t('shell.userMenu')">

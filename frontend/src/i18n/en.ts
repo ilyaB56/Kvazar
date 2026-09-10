@@ -71,6 +71,8 @@ export default {
     readonly: 'Read-only',
   },
   shell: {
+    changeSeedPassword: 'You are signed in with the default password — change it (Settings → Security)',
+
     openMenu: 'Open menu',
     userMenu: 'User menu',
     changePassword: 'Change password',

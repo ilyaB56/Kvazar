@@ -13,6 +13,7 @@ export interface User {
   full_name: string
   role: string
   is_active: boolean
+  must_change_password?: boolean
 }
 
 // ----- Интеграционная платформа -----
