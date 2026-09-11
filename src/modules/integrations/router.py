@@ -218,11 +218,20 @@ def _flow_recipe_and_api(db: Session, connection) -> tuple:
     """Рецепт с trigger_event=integration.payment.received + клиент API
     учёта. Токен — credentials.api_key connection типа http_rest, чей
     base_url указывает на наш API (showcase-chain: служебная учётка)."""
-    recipe = db.scalar(select(m.Recipe).where(
+    # рецепт этого провайдера: action.connection_id == connection.id;
+    # рецептов с разных эквайринг-подключений может быть несколько
+    candidates = db.scalars(select(m.Recipe).where(
         m.Recipe.is_published.is_(True),
         m.Recipe.definition["trigger_event"].as_string()
         == "integration.payment.received",
-    ))
+    )).all()
+    recipe = next((r for r in candidates
+                   if (r.definition or {}).get("action", {}).get("connection_id")
+                   == str(connection.id)), None)
+    if recipe is None:
+        recipe = next((r for r in candidates
+                       if not (r.definition or {}).get("action", {}).get("connection_id")),
+                      None)
     if recipe is None:
         return None, None
     definition = recipe.definition or {}
@@ -529,7 +538,8 @@ def retry_payment(payment_id: uuid.UUID,
     payment = db.get(m.OnlinePayment, payment_id)
     if payment is None:
         raise HTTPException(404, "Payment not found")
-    if payment.status == "processed":
+    # §8: delivery_failed — учёт done, retry повторяет только notify
+    if payment.status == "processed" and payment.error_reason != "delivery_failed":
         raise HTTPException(409, "Payment is already processed")
     connection = db.get(m.Connection, payment.connection_id)
     recipe, api = _flow_recipe_and_api(db, connection)

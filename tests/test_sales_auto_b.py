@@ -123,8 +123,8 @@ def stage(client, admin_headers, yookassa_mock):
         "sku": f"B-DIGI-{RUN}", "name": f"b код {RUN}", "kind": "digital",
         "unit_code": "лицензия", "tracking": "serial",
     }, headers=admin_headers).json()
-    loc = next(l for l in client.get(f"{ACC}/locations", headers=admin_headers).json()
-               if l["name"] == "Цифровой склад")
+    loc = next(row for row in client.get(f"{ACC}/locations", headers=admin_headers).json()
+               if row["name"] == "Цифровой склад")
     receipt = client.post(f"{ACC}/receipts", json={
         "counterparty_id": client.post(f"{ACC}/counterparties", json={
             "name": f"b-поставщик-{RUN}"}, headers=admin_headers).json()["id"],
@@ -217,7 +217,7 @@ def test_b1_webhook_to_order_and_transaction(client, admin_headers, stage, yooka
 
     order = client.get(f"{ACC}/sales-orders/{payment['sales_order_id']}",
                        headers=admin_headers).json()
-    assert order["status"] == "confirmed"
+    assert order["status"] == "shipped"  # этап C: флоу доходит до ship
     assert order["number"].startswith("ЗК-")
     assert Decimal(order["amount_base"]) == Decimal("1000.00")
 
@@ -304,7 +304,7 @@ def test_b3_item_not_mapped_then_retry(client, admin_headers, stage, yookassa_mo
     assert payment["sales_order_id"]
     order = client.get(f"{ACC}/sales-orders/{payment['sales_order_id']}",
                        headers=admin_headers).json()
-    assert order["status"] == "confirmed"
+    assert order["status"] == "shipped"  # этап C: флоу доходит до ship
 
     # вторая транзакция не появилась (retry дошёл до pay один раз)
     txns_after_retry = client.get(f"{ACC}/transactions", params={

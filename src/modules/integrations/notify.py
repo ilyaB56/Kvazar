@@ -27,6 +27,7 @@ NOTIFY_EVENTS = (
     # онлайн-продажи (sales-automation §6)
     "integration.payment.processed",
     "integration.payment.failed",
+    "acc.shipment.delivered",
     "system.updated",
     "system.rollback",
     # витрина CRM (mini-crm-spec, этап A)

@@ -6,3 +6,4 @@ from src.modules.integrations.connectors import acquiring as _acquiring  # noqa:
 from src.modules.integrations.connectors import cbr as _cbr  # noqa: F401
 from src.modules.integrations.connectors import llm as _llm  # noqa: F401
 from src.modules.integrations.connectors import telegram as _telegram  # noqa: F401
+from src.modules.integrations.connectors import smtp as _smtp  # noqa: F401

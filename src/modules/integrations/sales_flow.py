@@ -93,6 +93,31 @@ class AccountingApi:
             "account_id": account_id, "amount": amount,
         })
 
+    def create_shipment(self, order_id: str, lines: list[dict]) -> dict:
+        return self._call("POST", "/api/v1/accounting/shipments", {
+            "sales_order_id": order_id, "lines": lines,
+        })
+
+    def post_shipment(self, shipment_id: str) -> dict:
+        return self._call("POST", f"/api/v1/accounting/shipments/{shipment_id}/post", {})
+
+    def deliver_shipment(self, shipment_id: str, channel: str) -> dict:
+        return self._call(
+            "POST", f"/api/v1/accounting/shipments/{shipment_id}/deliver",
+            {"channel_note": channel})
+
+    def shipment_codes(self, shipment_id: str) -> list[dict]:
+        """Коды выданной отгрузки для шага notify (повторяемый): rw-токен
+        видит расшифрованные serial_codes — расшифровка на лету по
+        serial_ids (§12.5), открытые коды нигде не хранятся."""
+        data = self._call("GET", f"/api/v1/accounting/shipments/{shipment_id}")
+        out = []
+        for line in data.get("lines", []):
+            if line.get("serial_codes"):
+                out.append({"item_id": line["item_id"],
+                            "codes": line["serial_codes"]})
+        return out
+
     def create_transaction(self, counterparty_id: str, account_id: str,
                            amount: str, currency: str, description: str) -> dict:
         # транзакция без source-заказа (§12.3): деньги не ждут товара
@@ -205,7 +230,10 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
     def fail(reason: str, detail: str):
         run.status = "manual"
         run.error = f"{reason}: {detail}"[:500]
-        payment.status = "manual"
+        run.context = ctx  # retry продолжит с достигнутого шага
+        # §8: при delivery_failed учёт уже завершён — платёж processed
+        # (manual только у флоу, retry повторит notify)
+        payment.status = "processed" if reason == "delivery_failed" else "manual"
         payment.error_step = run.step
         payment.error_reason = reason
         events.publish(db, "integration.payment.failed", {
@@ -220,6 +248,7 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
             cp_id = str(api.find_or_create(payment.buyer or {}, fallback_name))
             ctx["counterparty_id"] = cp_id
             run.step = "counterparty"
+            run.context = ctx
             db.flush()
         lines = _resolve_lines(db, payment)
 
@@ -233,6 +262,7 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
                 )
                 ctx["transaction_id"] = txn.get("id")
                 payment.transaction_id = uuid.UUID(txn["id"]) if txn.get("id") else None
+                run.context = ctx
             run.step = "pay"
             _finish(db, run, payment, ctx)
             return run
@@ -245,6 +275,7 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
             ctx["order_id"] = order["id"]
             ctx["order_number"] = order.get("number")
             run.step = "order"
+            run.context = ctx
             db.flush()
         payment.sales_order_id = uuid.UUID(ctx["order_id"])
 
@@ -254,6 +285,7 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
             ctx["confirmed"] = True
             ctx["order_number"] = confirmed.get("number") or ctx.get("order_number")
             run.step = "confirm"
+            run.context = ctx
             db.flush()
 
         # ---- pay ----
@@ -262,11 +294,50 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
             ctx["transaction_id"] = txn.get("id")
             payment.transaction_id = uuid.UUID(txn["id"]) if txn.get("id") else None
             run.step = "pay"
+            run.context = ctx
             db.flush()
 
         # price_mismatch ПОСЛЕ pay (§8): деньги учтены, стоп — отгрузка;
         # шаги уже созданы — manual помешает этапу C продолжить автоматически
         _check_prices(db, lines, tolerance)
+
+        digital_only = all(
+            _item_kind(db, line["item_id"]) == "digital" for line in lines
+        ) if lines else False
+        delivery_channel = config.get("delivery_channel", "none")
+
+        # ---- ship (только товарные строки; §8 insufficient_stock → manual).
+        # Создание и проведение — раздельные маркеры: падение на post
+        # оставляет draft-отгрузку, retry доводит её, не создавая новую
+        if lines and "shipment_id" not in ctx:
+            shipment = api.create_shipment(str(ctx["order_id"]), [
+                {"item_id": str(line["item_id"]), "qty": str(line["qty"])}
+                for line in lines
+            ])
+            ctx["shipment_id"] = shipment["id"]
+            run.context = ctx
+            db.flush()
+        if lines and "shipment_posted" not in ctx:
+            posted = api.post_shipment(str(ctx["shipment_id"]))
+            ctx["shipment_number"] = posted.get("number")
+            ctx["shipment_posted"] = True
+            run.step = "ship"
+            run.context = ctx
+            db.flush()
+        payment.shipment_id = uuid.UUID(ctx["shipment_id"]) if ctx.get("shipment_id") else None
+
+        # ---- deliver: разовая выдача кодов (аудит в учёте) ----
+        if digital_only and delivery_channel != "none" and "delivered" not in ctx:
+            api.deliver_shipment(str(ctx["shipment_id"]), delivery_channel)
+            ctx["delivered"] = True
+            run.step = "deliver"
+            run.context = ctx
+            db.flush()
+
+        # ---- notify: повторяемый — коды читаются по serial_ids на лету ----
+        if digital_only and delivery_channel != "none":
+            _notify(db, api=api, payment=payment, ctx=ctx,
+                    channel=delivery_channel, recipe_config=config)
 
         _finish(db, run, payment, ctx)
         return run
@@ -278,7 +349,6 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
 
 def _finish(db, run: m.FlowRun, payment: m.OnlinePayment, ctx: dict):
     run.status = "done"
-    run.step = "pay"  # этап B завершается оплатой; C добавит ship/deliver/notify
     run.finished_at = datetime.now(UTC)
     run.context = ctx
     payment.status = "processed"
@@ -292,6 +362,99 @@ def _finish(db, run: m.FlowRun, payment: m.OnlinePayment, ctx: dict):
     })
     db.commit()
     events.dispatch_outbox(db)
+
+
+
+
+def _item_kind(db, item_id) -> str | None:
+    from src.modules.mgmt_accounting.features.inventory import models as inv_m
+
+    item = db.get(inv_m.Item, uuid.UUID(str(item_id)))
+    return item.kind if item else None
+
+
+def _render_message(payment, codes: list[dict]) -> tuple[str, str]:
+    """Письмо покупателю: тема + текст с кодами (коды покидают систему
+    только этим письмом — §3.1.6)."""
+    lines_text = "\n".join(
+        f"• {block.get('sku', '')}: {', '.join(block['codes'])}"
+        for block in codes
+    ) or "(без товарных позиций)"
+    subject = f"Ваш заказ {payment.provider}:{payment.provider_payment_id} — коды доступа"
+    body = (
+        "Здравствуйте!\n\n"
+        "Спасибо за оплату. Ваши коды доступа:\n\n"
+        f"{lines_text}\n\n"
+        "Коды одноразовые — сохраните это письмо.\n"
+        f"Заказ: {payment.provider} {payment.provider_payment_id}\n"
+    )
+    return subject, body
+
+
+def _notify(db, *, api: AccountingApi, payment, ctx: dict,
+            channel: str, recipe_config: dict) -> None:
+    """Доставка кодов покупателю по каналу рецепта. Повторяемый шаг:
+    коды перечитываются по serial_ids (расшифровка на лету rw-токеном).
+    Ошибка доставки — delivery_failed (§8): учёт уже done, retry
+    повторит только notify."""
+    buyer = payment.buyer or {}
+    email = str(buyer.get("email", "")).strip()
+    codes = api.shipment_codes(str(ctx["shipment_id"])) if ctx.get("shipment_id") else []
+    subject, body = _render_message(payment, codes)
+
+    errors: list[str] = []
+    if channel in ("email", "both") and email:
+        smtp_cfg = recipe_config.get("smtp_connection_id")
+        result = _send_email(db, smtp_cfg, to=email, subject=subject, text=body)
+        if not result:
+            errors.append("email_failed")
+    if channel in ("telegram", "both"):
+        # канал v1: chat_id из конфига (покупатель не даёт боту свой chat);
+        # коды уходят сообщением бота
+        tg_cfg_chat = str(recipe_config.get("telegram_chat_id", "")).strip()
+        if tg_cfg_chat:
+            sent = _send_telegram(db, chat_id=tg_cfg_chat,
+                                  text=f"{subject}\n\n{body}")
+            if not sent:
+                errors.append("telegram_failed")
+    if errors:
+        raise FlowError("delivery_failed", "; ".join(errors))
+
+
+def _send_email(db, smtp_connection_id, *, to: str, subject: str, text: str) -> bool:
+    from .crypto import decrypt_dict
+
+    conn = db.get(m.Connection, uuid.UUID(str(smtp_connection_id)))         if smtp_connection_id else db.scalar(select(m.Connection).where(
+            m.Connection.connector_code == "smtp", m.Connection.is_active.is_(True)))
+    if conn is None:
+        logger.warning("notify: smtp connection not configured")
+        return False
+    from .connectors.builtin import registry as connector_registry
+    connector = connector_registry.build(
+        conn.connector_code, conn.config, decrypt_dict(conn.credentials_enc))
+    result = connector.push(params={"to": to, "subject": subject, "text": text})
+    if not result.ok:
+        logger.warning("notify email failed: %s", result.error[:200])
+    return result.ok
+
+
+def _send_telegram(db, *, chat_id: str, text: str) -> bool:
+    from .crypto import decrypt_dict
+
+    conn = db.scalar(select(m.Connection).where(
+        m.Connection.connector_code == "telegram", m.Connection.is_active.is_(True)))
+    if conn is None:
+        logger.warning("notify: telegram connection not configured")
+        return False
+    from .connectors.builtin import registry as connector_registry
+    connector = connector_registry.build(
+        conn.connector_code, conn.config, decrypt_dict(conn.credentials_enc))
+    result = connector.push(endpoint="sendMessage", params={
+        "chat_id": chat_id, "text": text[:4000],
+    })
+    if not result.ok:
+        logger.warning("notify telegram failed: %s", result.error[:200])
+    return result.ok
 
 
 def normalize_payment(db, *, connection, connector, event: m.WebhookEvent) -> m.OnlinePayment | None:

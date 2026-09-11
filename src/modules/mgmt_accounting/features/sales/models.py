@@ -96,6 +96,9 @@ class Shipment(Base):
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{CORE_SCHEMA}.users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # разовая выдача кодов (sales-automation §5.2): повторный deliver — 409
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_via: Mapped[str] = mapped_column(String(12), default="")  # email|telegram|both|manual
 
 
 class ShipmentLine(Base):

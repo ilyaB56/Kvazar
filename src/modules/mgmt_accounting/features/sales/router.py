@@ -17,14 +17,17 @@ from pydantic import BaseModel, BeforeValidator, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from src.core import events
 from src.core.auth import CurrentUser, WriteUser, module_level
+from src.core.models import AuditEvent
+from src.core.versioning import record_version
 from src.db import get_db
 from src.modules.mgmt_accounting.features.sales import models as m
 from src.modules.mgmt_accounting.features.sales import service
+from src.modules.mgmt_accounting.service import AccountingError
 from src.modules.mgmt_accounting.router import TransactionOut
 from src.modules.mgmt_accounting.features.inventory import models as inv
 from src.modules.mgmt_accounting.features.inventory import service as inv_service
-from src.modules.mgmt_accounting.service import AccountingError
 
 router = APIRouter(tags=["sales"])
 
@@ -312,6 +315,75 @@ def post_shipment(shipment_id: uuid.UUID, user: WriteUser, db: Session = Depends
     db.commit()
     db.refresh(shipment)
     return _shipment_with_lines(db, shipment)
+
+
+class DeliverIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {"channel_note": "email"}}}
+
+    channel_note: str = Field(default="", max_length=60)
+
+
+@router.post("/shipments/{shipment_id}/deliver")
+def deliver_shipment(shipment_id: uuid.UUID, body: DeliverIn | None = None,
+                     user: WriteUser = None, db: Session = Depends(get_db)):
+    """Разовая выдача расшифрованных кодов отгрузки (sales-automation §5.2).
+
+    Возвращает serials один раз; помечает delivered_at/delivered_via, пишет
+    record_versions/аудит и событие acc.shipment.delivered (без кодов).
+    Повторный вызов — 409 с фактом доставки. Права: rw (служебный токен
+    роли user — rw)."""
+    from datetime import UTC, datetime
+
+    shipment = db.get(m.Shipment, shipment_id)
+    if shipment is None:
+        raise HTTPException(404, "Shipment not found")
+    if shipment.status != "posted":
+        raise HTTPException(422, "Only posted shipments can be delivered")
+    if shipment.is_stornoed:
+        raise HTTPException(422, "Shipment is stornoed")
+    if shipment.delivered_at is not None:
+        raise HTTPException(
+            409,
+            f"Shipment {shipment.number} already delivered "
+            f"at {shipment.delivered_at.isoformat()} via {shipment.delivered_via or '—'}",
+        )
+
+    channel = (body.channel_note if body and body.channel_note else "manual").strip().lower()
+    serials_out: list[dict] = []
+    lines = db.scalars(select(m.ShipmentLine).where(
+        m.ShipmentLine.shipment_id == shipment.id)).all()
+    for line in lines:
+        item = db.get(inv.Item, line.item_id)
+        if item is None or item.tracking != "serial" or not line.serial_ids:
+            continue
+        rows = db.scalars(select(inv.ItemSerial).where(
+            inv.ItemSerial.id.in_([uuid.UUID(str(i)) for i in line.serial_ids]))).all()
+        serials_out.append({
+            "item_id": str(line.item_id),
+            "sku": item.sku,
+            "codes": [inv_service.serial_code(row) for row in rows],
+        })
+
+    shipment.delivered_at = datetime.now(UTC)
+    shipment.delivered_via = channel[:12]
+    db.add(AuditEvent(
+        user_id=user.id if user else None,
+        action="shipment.delivered", entity_type="shipment",
+        entity_id=str(shipment.id),
+        payload={"channel": channel, "serial_count": sum(len(x["codes"]) for x in serials_out)},
+    ))
+    record_version(db, "acc.sales.shipment", str(shipment.id),
+                   user.id if user else None,
+                   {"delivered": {"new": True, "channel": channel}})
+    events.publish(db, "acc.shipment.delivered", {
+        "shipment_id": str(shipment.id),
+        "sales_order_id": str(shipment.sales_order_id),
+        "channel": channel,
+    })
+    db.commit()
+    events.dispatch_outbox(db)
+    return {"delivered_at": shipment.delivered_at.isoformat(),
+            "channel": channel, "serials": serials_out}
 
 
 @router.post("/shipments/{shipment_id}/unpost", response_model=ShipmentOut)
