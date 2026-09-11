@@ -108,6 +108,23 @@ def guarded_post(connector_code: str, url: str, *, headers: dict | None = None,
         raise
 
 
+def guarded_request(connector_code: str, method: str, url: str, *,
+                    headers: dict | None = None, json_body: dict | None = None,
+                    timeout: int = 15) -> httpx.Response:
+    """Произвольный HTTP-метод с allowlist и журналом (для оркестраторов
+    модуля integrations — самим оркестраторам импортировать httpx нельзя,
+    ADR-001)."""
+    check_egress(url)
+    try:
+        response = httpx.request(method, url, headers=headers, json=json_body,
+                                 timeout=timeout)
+        log_egress(connector=connector_code, url=url, status=response.status_code)
+        return response
+    except httpx.HTTPError as exc:
+        log_egress(connector=connector_code, url=url, status="error", error=str(exc))
+        raise
+
+
 def guarded_result(connector_code: str, url: str, call) -> ConnectorResult:
     """Обёртка результата с журналом исключений сети."""
     try:

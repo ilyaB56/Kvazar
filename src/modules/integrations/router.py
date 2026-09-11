@@ -8,12 +8,12 @@ import json
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.core import events
-from src.core.auth import require_module
+from src.core.auth import module_level, require_module
 from src.core.models import User
 from src.db import get_db
 from src.modules.integrations import models as m
@@ -192,7 +192,9 @@ def _record_webhook_event(
         m.WebhookEvent.external_key == external_key,
     ))
     if existing is not None:
-        if existing.status != "duplicate":
+        # фикс из реестра: invalid остаётся invalid (инцидент для разбора),
+        # во duplicate помечаем только уже обработанные/ошибочные записи
+        if existing.status in ("new", "processed", "error"):
             existing.status = "duplicate"
             db.commit()
         return None
@@ -212,27 +214,64 @@ def _record_webhook_event(
     return row
 
 
-@router.post("/hooks/{endpoint_id}", status_code=202)
-async def receive_hook(
-    endpoint_id: uuid.UUID,
-    request: Request,
-    db: Session = Depends(get_db),
-    x_erp_token: str | None = Header(default=None),
-):
-    """Публичный приёмник webhook'ов (sales-automation §3.2, ADR-002).
+def _flow_recipe_and_api(db: Session, connection) -> tuple:
+    """Рецепт с trigger_event=integration.payment.received + клиент API
+    учёта. Токен — credentials.api_key connection типа http_rest, чей
+    base_url указывает на наш API (showcase-chain: служебная учётка)."""
+    recipe = db.scalar(select(m.Recipe).where(
+        m.Recipe.is_published.is_(True),
+        m.Recipe.definition["trigger_event"].as_string()
+        == "integration.payment.received",
+    ))
+    if recipe is None:
+        return None, None
+    definition = recipe.definition or {}
+    # api_connection_id — служебный http_rest-коннектор с X-API-Token;
+    # action.connection_id — провайдер платежа (не для вызовов API!)
+    token_conn_id = definition.get("api_connection_id")
+    if token_conn_id:
+        token_conn = db.get(m.Connection, uuid.UUID(str(token_conn_id)))
+    else:
+        token_conn = db.scalar(select(m.Connection).where(
+            m.Connection.connector_code == "http_rest", m.Connection.is_active.is_(True)))
+    if token_conn is None:
+        return recipe, None
+    from .crypto import decrypt_dict
+    from .sales_flow import AccountingApi
 
-    Два режима (§4.1):
-    - endpoint с connection_id: авторизация коннектором провайдера —
-      verify_webhook (подпись) и/или verify_by_fetch (повторный запрос
-      статуса платежа; ЮKassa нотификации не подписывает); X-ERP-Token
-      не требуется; дубли гасятся журналом webhook_events;
-    - без connection_id: прежний режим X-ERP-Token (generic).
-    """
+    creds = decrypt_dict(token_conn.credentials_enc)
+    config = token_conn.config or {}
+    base = config.get("base_url", "").rstrip("/")
+    if base.endswith("/api/v1"):
+        base = base[: -len("/api/v1")]
+    api = AccountingApi(base, creds.get("api_key", ""))
+    return recipe, api
+
+
+def get_db_session():
+    """Сессия вне Depends (threadpool-обработка вебхука)."""
+    from src.db import SessionLocal
+
+    return SessionLocal()
+
+
+def _process_hook(endpoint_id: uuid.UUID, raw_body: bytes, headers: dict,
+                  x_erp_token: str | None) -> dict:
+    """Синхронная обработка вебхука (выполняется в threadpool — внутри
+    httpx-вызовы в собственный API, из async-контекста это дедлок)."""
+    db = get_db_session()
+    try:
+        return _process_hook_db(db, endpoint_id, raw_body, headers, x_erp_token)
+    finally:
+        db.close()
+
+
+def _process_hook_db(db: Session, endpoint_id: uuid.UUID, raw_body: bytes,
+                     headers: dict, x_erp_token: str | None) -> dict:
     endpoint = db.get(m.WebhookEndpoint, endpoint_id)
     if endpoint is None or not endpoint.is_active:
         raise HTTPException(404, "Unknown endpoint")
 
-    raw_body = await request.body()
     try:
         payload = json.loads(raw_body)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -276,7 +315,6 @@ async def receive_hook(
 
     # проверка подлинности: подпись (если провайдер подписывает) и/или
     # повторный запрос статуса (verify_by_fetch обязателен для неподписанных)
-    headers = {k.lower(): v for k, v in request.headers.items()}
     signed = connector.verify_webhook(headers, raw_body)
     fetched = connector.verify_by_fetch(payment_id) if payment_id else None
     verified = signed or (fetched is not None and fetched.ok)
@@ -305,7 +343,41 @@ async def receive_hook(
     row.status = "processed"
     db.commit()
     events.dispatch_outbox(db)
-    return {"accepted": True, "webhook_event_id": str(row.id)}
+    # этап B: нотификация об оплате → нормализация + sales_flow
+    payment_out = {"payment_id": None, "flow": None}
+    if event_type.startswith("payment.") and hasattr(connector, "normalize"):
+        from . import sales_flow as flow_mod
+        payment = flow_mod.normalize_payment(db, connection=connection,
+                                             connector=connector, event=row)
+        if payment is not None:
+            payment_out["payment_id"] = str(payment.id)
+            recipe, api = _flow_recipe_and_api(db, connection)
+            if recipe is not None and api is not None:
+                run = flow_mod.run_sales_flow(db, payment=payment, recipe=recipe, api=api)
+                payment_out["flow"] = {"status": run.status, "step": run.step,
+                                       "error": run.error[:200]}
+    return {"accepted": True, "webhook_event_id": str(row.id), **payment_out}
+
+
+@router.post("/hooks/{endpoint_id}", status_code=202)
+async def receive_hook(
+    endpoint_id: uuid.UUID,
+    request: Request,
+    x_erp_token: str | None = Header(default=None),
+):
+    """Публичный приёмник webhook'ов (sales-automation §3.2, ADR-002).
+
+    Два режима (§4.1): endpoint с connection_id — авторизация коннектором
+    провайдера (verify_webhook/verify_by_fetch), без — X-ERP-Token.
+    Обработка идёт в threadpool: внутри httpx-вызовы в собственный API.
+    """
+    import asyncio
+
+    raw_body = await request.body()
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    return await asyncio.to_thread(
+        _process_hook, endpoint_id, raw_body, headers, x_erp_token)
+
 
 
 # ---------- Mappings ----------
@@ -368,6 +440,200 @@ def list_runs(sync_job_id: uuid.UUID, user: User = Depends(require_module("integ
         .limit(50)
     ).all()
     return runs
+
+
+
+# ---------- Онлайн-платежи (sales-automation §5.1, этап B) ----------
+
+class PaymentOut(BaseModel):
+    id: uuid.UUID
+    connection_id: uuid.UUID
+    provider: str
+    provider_payment_id: str
+    status: str
+    amount: str
+    currency: str
+    # ПДн: без integrations rw buyer маскируется (§4.3)
+    buyer: dict = {}
+    lines: list = []
+    sales_order_id: uuid.UUID | None = None
+    transaction_id: uuid.UUID | None = None
+    shipment_id: uuid.UUID | None = None
+    error_step: str = ""
+    error_reason: str = ""
+    created_at: object = None
+
+    model_config = {"from_attributes": True}
+
+
+def _mask_buyer(buyer: dict) -> dict:
+    def mask(value: str) -> str:
+        if "@" in value:
+            head, _, tail = value.partition("@")
+            return f"{head[:2]}…@{tail}" if len(head) > 2 else "…@" + tail
+        return value[:3] + "…" if len(value) > 3 else "…"
+    return {k: mask(str(v)) if v else "" for k, v in (buyer or {}).items()}
+
+
+def _payment_out(payment: m.OnlinePayment, rw: bool) -> PaymentOut:
+    # amount — Decimal в БД, API отдаёт строкой (ADR-003)
+    out = PaymentOut(
+        id=payment.id, connection_id=payment.connection_id,
+        provider=payment.provider, provider_payment_id=payment.provider_payment_id,
+        status=payment.status, amount=str(payment.amount), currency=payment.currency,
+        buyer=_mask_buyer(payment.buyer or {}) if not rw else dict(payment.buyer or {}),
+        lines=list(payment.lines or []),
+        sales_order_id=payment.sales_order_id, transaction_id=payment.transaction_id,
+        shipment_id=payment.shipment_id, error_step=payment.error_step,
+        error_reason=payment.error_reason, created_at=payment.created_at,
+    )
+    return out
+
+
+@router.get("/payments", response_model=list[PaymentOut])
+def list_payments(user: User = Depends(require_module("integrations", "ro")),
+                  db: Session = Depends(get_db),
+                  status: str | None = None, provider: str | None = None):
+    rw = module_level(db, user.role, "integrations") == "rw"
+    query = select(m.OnlinePayment).order_by(m.OnlinePayment.created_at.desc())
+    if status is not None:
+        query = query.where(m.OnlinePayment.status == status)
+    if provider is not None:
+        query = query.where(m.OnlinePayment.provider == provider)
+    return [_payment_out(p, rw) for p in db.scalars(query.limit(200)).all()]
+
+
+@router.get("/payments/{payment_id}", response_model=PaymentOut)
+def get_payment(payment_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")),
+                db: Session = Depends(get_db)):
+    payment = db.get(m.OnlinePayment, payment_id)
+    if payment is None:
+        raise HTTPException(404, "Payment not found")
+    rw = module_level(db, user.role, "integrations") == "rw"
+    out = _payment_out(payment, rw)
+    run = db.scalar(select(m.FlowRun).where(m.FlowRun.payment_id == payment.id))
+    if run is not None:
+        out.lines = (out.lines or []) + [{"_flow": {
+            "status": run.status, "step": run.step, "attempts": run.attempts,
+            "error": run.error[:200],
+            "context": {k: v for k, v in (run.context or {}).items()},
+        }}]
+    return out
+
+
+@router.post("/payments/{payment_id}/retry")
+def retry_payment(payment_id: uuid.UUID,
+                  user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
+    """Повторить флоу с последнего успешного шага (после правки маппинга/
+    пополнения кодов). Шаги идемпотентны — созданное не дублируется."""
+    payment = db.get(m.OnlinePayment, payment_id)
+    if payment is None:
+        raise HTTPException(404, "Payment not found")
+    if payment.status == "processed":
+        raise HTTPException(409, "Payment is already processed")
+    connection = db.get(m.Connection, payment.connection_id)
+    recipe, api = _flow_recipe_and_api(db, connection)
+    if recipe is None or api is None:
+        raise HTTPException(409, "sales_flow recipe/api not configured")
+    from . import sales_flow as flow_mod
+    run = flow_mod.run_sales_flow(db, payment=payment, recipe=recipe, api=api)
+    return {"payment_status": payment.status, "flow_status": run.status,
+            "step": run.step, "error": run.error[:300]}
+
+
+@router.post("/webhook-events/{event_id}/reprocess")
+def reprocess_webhook_event(event_id: uuid.UUID,
+                            user: User = Depends(require_module("integrations")),
+                            db: Session = Depends(get_db)):
+    """Переобработать вебхук: нормализация + запуск флоу (дубликаты
+    платежей гасятся UNIQUE)."""
+    event = db.get(m.WebhookEvent, event_id)
+    if event is None:
+        raise HTTPException(404, "Webhook event not found")
+    if event.status == "invalid":
+        raise HTTPException(409, "Event is invalid: verification failed")
+    if event.connection_id is None:
+        raise HTTPException(422, "Event has no provider connection")
+    connection = db.get(m.Connection, event.connection_id)
+    from .crypto import decrypt_dict
+    connector = connector_registry.build(
+        connection.connector_code, connection.config,
+        decrypt_dict(connection.credentials_enc),
+    )
+    from . import sales_flow as flow_mod
+    payment = flow_mod.normalize_payment(db, connection=connection,
+                                         connector=connector, event=event)
+    if payment is None:
+        raise HTTPException(422, "Payload has no payment id")
+    recipe, api = _flow_recipe_and_api(db, connection)
+    if recipe is None or api is None:
+        return {"payment_id": str(payment.id), "flow": "recipe/api not configured"}
+    run = flow_mod.run_sales_flow(db, payment=payment, recipe=recipe, api=api)
+    return {"payment_id": str(payment.id), "flow_status": run.status,
+            "step": run.step, "error": run.error[:300]}
+
+
+# ---------- Маппинги сайт-товар → номенклатура (§5.1) ----------
+
+class ItemMappingIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "connection_id": "uuid-yookassa (или null — глобальный)",
+        "external_item_id": "site-sku-1", "sku": "DIGI-1", "item_id": "uuid",
+    }}}
+
+    connection_id: uuid.UUID | None = None
+    external_item_id: str = Field(min_length=1, max_length=200)
+    sku: str | None = Field(default=None, max_length=100)
+    item_id: uuid.UUID
+
+
+class ItemMappingOut(ItemMappingIn):
+    id: uuid.UUID
+    is_active: bool
+    created_at: object = None
+
+    model_config = {**ItemMappingIn.model_config, "from_attributes": True}
+
+
+@router.get("/item-mappings", response_model=list[ItemMappingOut])
+def list_item_mappings(user: User = Depends(require_module("integrations", "ro")),
+                       db: Session = Depends(get_db)):
+    return db.scalars(select(m.ItemMapping).order_by(m.ItemMapping.created_at.desc())).all()
+
+
+@router.post("/item-mappings", response_model=ItemMappingOut, status_code=201)
+def create_item_mapping(body: ItemMappingIn,
+                        user: User = Depends(require_module("integrations")),
+                        db: Session = Depends(get_db)):
+    existing = db.scalar(select(m.ItemMapping).where(
+        m.ItemMapping.connection_id == body.connection_id
+        if body.connection_id else m.ItemMapping.connection_id.is_(None),
+        m.ItemMapping.external_item_id == body.external_item_id,
+    ))
+    if existing is not None:
+        raise HTTPException(409, "Mapping already exists — use PATCH")
+    mapping = m.ItemMapping(**body.model_dump())
+    db.add(mapping)
+    db.commit()
+    db.refresh(mapping)
+    return mapping
+
+
+@router.patch("/item-mappings/{mapping_id}", response_model=ItemMappingOut)
+def patch_item_mapping(mapping_id: uuid.UUID, body: dict,
+                       user: User = Depends(require_module("integrations")),
+                       db: Session = Depends(get_db)):
+    mapping = db.get(m.ItemMapping, mapping_id)
+    if mapping is None:
+        raise HTTPException(404, "Mapping not found")
+    for field in ("sku", "item_id", "is_active", "connection_id"):
+        if field in body:
+            setattr(mapping, field, body[field])
+    if "external_item_id" in body:
+        mapping.external_item_id = str(body["external_item_id"])
+    db.commit()
+    db.refresh(mapping)
+    return mapping
 
 
 # ---------- Recipes (no-code конструктор) ----------
@@ -445,6 +711,18 @@ def test_notification_rule(rule_id: uuid.UUID, user: User = Depends(require_modu
                "job": "test", "error": "тестовая отправка", "version": "0.1.0"}
     ok = send_notification(rule, payload)
     return {"ok": ok}
+
+
+@router.post("/recipes/{recipe_id}/publish")
+def publish_recipe(recipe_id: uuid.UUID,
+                   user: User = Depends(require_module("integrations")),
+                   db: Session = Depends(get_db)):
+    recipe = db.get(m.Recipe, recipe_id)
+    if recipe is None:
+        raise HTTPException(404, "Recipe not found")
+    recipe.is_published = True
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/recipes")

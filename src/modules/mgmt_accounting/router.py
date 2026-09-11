@@ -14,7 +14,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from src.core.auth import AdminUser, require_module
-from src.core.models import User
+from src.core import models as core_m
+from src.core.models import AuditEvent, User
 from src.core.models import RecordVersion
 from src.db import get_db
 from src.modules.mgmt_accounting import models as m
@@ -273,6 +274,55 @@ def create_counterparty(body: CounterpartyIn, user: User = Depends(require_modul
     db.commit()
     db.refresh(counterparty)
     return CounterpartyOut.model_validate(counterparty).model_copy(update={"warning": warning})
+
+
+class FindOrCreateIn(BaseModel):
+    """find-or-create для онлайн-продаж (sales-automation §5.2): ищем
+    contact по email/phone → его контрагент; иначе создаём пару."""
+    model_config = {"json_schema_extra": {"example": {
+        "email": "buyer@example.com", "phone": "+79001234567", "name": "Иван",
+    }}}
+
+    email: str = ""
+    phone: str = ""
+    name: str = ""
+
+
+@router.post("/counterparties/find-or-create")
+def find_or_create_counterparty(body: FindOrCreateIn,
+                                user: User = Depends(require_module("accounting")),
+                                db: Session = Depends(get_db)):
+    """Логика дублей и контактов — домен учёта (интеграции не лезут в
+    erp_core.contacts). Без email/phone — контрагент «Покупатель сайта»."""
+    contact = None
+    if body.email.strip():
+        contact = db.scalar(select(core_m.Contact).where(core_m.Contact.email == body.email.strip()))
+    if contact is None and body.phone.strip():
+        contact = db.scalar(select(core_m.Contact).where(core_m.Contact.phone == body.phone.strip()))
+    if contact is not None and contact.id:
+        cp = db.scalar(select(m.Counterparty).where(m.Counterparty.contact_id == contact.id))
+        if cp is not None:
+            return {"counterparty_id": cp.id, "created": False}
+    # новая пара контакт+контрагент (или только контрагент-заглушка)
+    if contact is None:
+        contact = core_m.Contact(
+            full_name=body.name.strip() or body.email.strip() or body.phone.strip() or "Покупатель сайта",
+            email=body.email.strip(), phone=body.phone.strip(),
+        )
+        db.add(contact)
+        db.flush()
+    cp = m.Counterparty(
+        name=body.name.strip() or contact.full_name,
+        contact_id=contact.id,
+        internal_code=service.next_counterparty_code(db),
+    )
+    db.add(cp)
+    db.add(AuditEvent(user_id=user.id, action="counterparty.find_or_create",
+                      entity_type="counterparty",
+                      payload={"email": body.email[:80], "phone": body.phone[:20]}))
+    db.commit()
+    db.refresh(cp)
+    return {"counterparty_id": cp.id, "created": True}
 
 
 # ---------- Транзакции ----------

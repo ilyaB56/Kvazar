@@ -1,0 +1,333 @@
+"""Оркестратор «платёж → документы» (sales-automation §3.2, этап B).
+
+Шаги: counterparty → order → confirm → pay (этап C добавит ship →
+deliver → notify). Шаговый flow_runs с продолжением: retry идёт с
+последнего успешного шага, перечитывая context (шаги идемпотентны).
+В учёт ходит через публичный API с X-API-Token (служебная учётка,
+showcase-chain) — интеграции не трогают схемы модулей напрямую (ADR-001).
+
+Ошибки §8: item_not_mapped / price_mismatch / period_closed → платёж в
+manual, деньги учтены транзакцией без source-заказа (или по заказу —
+см. таблицу §8); transaction_only для платежей без строк.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from sqlalchemy import select
+
+from src.core import events
+from src.modules.integrations import models as m
+from src.modules.integrations.connectors.egress import guarded_request
+
+logger = logging.getLogger(__name__)
+
+# фиксированные причины ошибок (§6 integration.payment.failed)
+REASONS = ("item_not_mapped", "price_mismatch", "insufficient_stock",
+           "period_closed", "mapping_error", "delivery_failed")
+
+STEPS = ("counterparty", "order", "confirm", "pay", "ship", "deliver", "notify")
+
+
+class FlowError(Exception):
+    """Остановка флоу: reason из фиксированного набора, manual."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+        self.detail = detail
+
+
+class AccountingApi:
+    """Тонкий клиент публичного API учёта с X-API-Token (служебная учётка).
+
+    Токен передаёт рецепт (connection http_rest с secret api_key) или
+    конфиг sales_flow; v1 — тот же механизм, что и recipes_executor.
+    """
+
+    def __init__(self, base_url: str, api_token: str, timeout: int = 15):
+        self._base = base_url.rstrip("/")
+        self._headers = {"X-API-Token": api_token, "Content-Type": "application/json"}
+        self._timeout = timeout
+
+    def _call(self, method: str, path: str, json_body: dict | None = None) -> dict:
+        # ADR-001: сеть только в connectors/ — ходим через guarded_request
+        response = guarded_request(
+            "sales_flow", method, f"{self._base}{path}", headers=self._headers,
+            json_body=json_body, timeout=self._timeout,
+        )
+        if response.status_code >= 400:
+            detail = ""
+            try:
+                body = response.json()
+                detail = str(body.get("detail", body))[:200]
+            except ValueError:
+                detail = response.text[:200]
+            raise FlowError(_map_http_error(response.status_code, detail),
+                            f"{method} {path} → {response.status_code}: {detail}")
+        return response.json() if response.content else {}
+
+    def find_or_create(self, buyer: dict, fallback_name: str) -> str:
+        data = self._call("POST", "/api/v1/accounting/counterparties/find-or-create", {
+            "email": buyer.get("email", ""),
+            "phone": buyer.get("phone", ""),
+            "name": buyer.get("name", "") or fallback_name,
+        })
+        return data["counterparty_id"]
+
+    def create_order(self, counterparty_id: str, lines: list[dict]) -> dict:
+        return self._call("POST", "/api/v1/accounting/sales-orders", {
+            "counterparty_id": counterparty_id,
+            "lines": lines,
+        })
+
+    def confirm_order(self, order_id: str) -> dict:
+        return self._call("POST", f"/api/v1/accounting/sales-orders/{order_id}/confirm", {})
+
+    def pay_order(self, order_id: str, account_id: str, amount: str) -> dict:
+        return self._call("POST", f"/api/v1/accounting/sales-orders/{order_id}/pay", {
+            "account_id": account_id, "amount": amount,
+        })
+
+    def create_transaction(self, counterparty_id: str, account_id: str,
+                           amount: str, currency: str, description: str) -> dict:
+        # транзакция без source-заказа (§12.3): деньги не ждут товара
+        return self._call("POST", "/api/v1/accounting/transactions", {
+            "kind": "income", "operated_at": datetime.now(UTC).date().isoformat(),
+            "amount": amount, "currency": currency, "account_id": account_id,
+            "counterparty_id": counterparty_id, "description": description,
+            "post_immediately": True,
+        })
+
+
+def _map_http_error(status: int, detail: str) -> str:
+    """HTTP-ошибка учёта → фиксированная причина флоу (§8)."""
+    if "insufficient_stock" in detail:
+        return "insufficient_stock"
+    if "период" in detail.lower() or "period" in detail.lower():
+        return "period_closed"
+    if "kind_mismatch" in detail or "not found" in detail.lower():
+        return "mapping_error"
+    return f"http_{status}"
+
+
+def _resolve_lines(db, payment: m.OnlinePayment) -> list[dict]:
+    """Строки платежа → строки заказа: маппинг external_item_id → sku →
+    item_id; цена из платежа. Нет совпадения → FlowError(item_not_mapped)."""
+    lines_out: list[dict] = []
+    for line in payment.lines or []:
+        external_id = str(line.get("external_id", "")).strip()
+        sku = str(line.get("sku", "")).strip()
+        mapping = None
+        if external_id:
+            mapping = db.scalar(select(m.ItemMapping).where(
+                m.ItemMapping.connection_id == payment.connection_id,
+                m.ItemMapping.external_item_id == external_id,
+                m.ItemMapping.is_active.is_(True),
+            ))
+            if mapping is None:  # глобальный по sku
+                mapping = db.scalar(select(m.ItemMapping).where(
+                    m.ItemMapping.connection_id.is_(None),
+                    m.ItemMapping.external_item_id == external_id,
+                    m.ItemMapping.is_active.is_(True),
+                ))
+        if mapping is None and sku:
+            mapping = db.scalar(select(m.ItemMapping).where(
+                m.ItemMapping.connection_id == payment.connection_id,
+                m.ItemMapping.sku == sku,
+                m.ItemMapping.is_active.is_(True),
+            ))
+        if mapping is None:
+            raise FlowError("item_not_mapped", f"external_id={external_id} sku={sku}")
+        lines_out.append({
+            "item_id": str(mapping.item_id),  # UUID → строка для JSON API
+            "qty": str(line.get("qty", 1)),
+            "unit_price": str(line.get("price", "0")),
+            "_external": {"external_id": external_id, "sku": sku,
+                          "price": str(line.get("price", "0")),
+                          "name": line.get("name", "")},
+        })
+    return lines_out
+
+
+def _check_prices(db, lines: list[dict], tolerance: Decimal) -> None:
+    """price_mismatch (§8): цена платежа vs sale_price номенклатуры —
+    эталон v1. sale_price не задан → сверять не с чем (пропускаем).
+    Вызывается после pay: по §8 заказ подтверждается и деньги учтены,
+    стоп — отгрузка/выдача (этап C не продолжит manual-платёж)."""
+    from src.modules.mgmt_accounting.features.inventory import models as inv_m
+
+    for line in lines:
+        price = Decimal(str(line.get("unit_price", "0")))
+        if price <= 0:
+            raise FlowError("price_mismatch", f"non-positive price {price}")
+        item = db.get(inv_m.Item, uuid.UUID(str(line["item_id"])))
+        if item is None or item.sale_price is None:
+            continue
+        reference = Decimal(str(item.sale_price))
+        if reference <= 0:
+            continue
+        diff = abs(reference - price)
+        if diff > tolerance:
+            raise FlowError(
+                "price_mismatch",
+                f"item {item.sku}: paid {price} vs sale_price {reference} "
+                f"(tolerance {tolerance})")
+
+
+def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
+                   api: AccountingApi) -> m.FlowRun:
+    """Исполнить (или продолжить) флоу платежа. Все шаги идемпотентны:
+    context хранит созданные id; retry пропускает готовое."""
+    definition = (recipe.definition or {}) if recipe else {}
+    action = definition.get("action", {})
+    config = action.get("config", {}) if isinstance(action, dict) else {}
+    account_id = str(config.get("account_id", ""))
+    tolerance = Decimal(str(config.get("price_tolerance", "0")))
+    on_no_items = config.get("on_no_items", "transaction_only")
+    fallback_name = config.get("buyer_fallback_name", "Покупатель сайта")
+
+    run = db.scalar(select(m.FlowRun).where(m.FlowRun.payment_id == payment.id))
+    if run is None:
+        run = m.FlowRun(payment_id=payment.id, recipe_id=recipe.id if recipe else None)
+        db.add(run)
+    else:
+        run.attempts += 1
+        run.status = "running"
+        run.error = ""
+    ctx = dict(run.context or {})
+    db.flush()
+
+    def fail(reason: str, detail: str):
+        run.status = "manual"
+        run.error = f"{reason}: {detail}"[:500]
+        payment.status = "manual"
+        payment.error_step = run.step
+        payment.error_reason = reason
+        events.publish(db, "integration.payment.failed", {
+            "payment_id": str(payment.id),
+            "provider_payment_id": payment.provider_payment_id,
+            "step": run.step, "reason": reason,
+        })
+
+    try:
+        # ---- counterparty ----
+        if "counterparty" not in ctx:
+            cp_id = str(api.find_or_create(payment.buyer or {}, fallback_name))
+            ctx["counterparty_id"] = cp_id
+            run.step = "counterparty"
+            db.flush()
+        lines = _resolve_lines(db, payment)
+
+        if not lines and on_no_items == "transaction_only":
+            # §8: оплата без товарных строк — только транзакция + контрагент
+            if "transaction_id" not in ctx:
+                txn = api.create_transaction(
+                    str(ctx["counterparty_id"]), str(account_id),
+                    str(payment.amount), payment.currency,
+                    f"Онлайн-оплата {payment.provider} {payment.provider_payment_id} (без строк)",
+                )
+                ctx["transaction_id"] = txn.get("id")
+                payment.transaction_id = uuid.UUID(txn["id"]) if txn.get("id") else None
+            run.step = "pay"
+            _finish(db, run, payment, ctx)
+            return run
+
+        # ---- order ----
+        if "order_id" not in ctx:
+            order = api.create_order(str(ctx["counterparty_id"]), [
+                {"item_id": str(line["item_id"]), "qty": str(line["qty"]),
+                 "unit_price": str(line["unit_price"])} for line in lines])
+            ctx["order_id"] = order["id"]
+            ctx["order_number"] = order.get("number")
+            run.step = "order"
+            db.flush()
+        payment.sales_order_id = uuid.UUID(ctx["order_id"])
+
+        # ---- confirm ----
+        if "confirmed" not in ctx:
+            confirmed = api.confirm_order(ctx["order_id"])
+            ctx["confirmed"] = True
+            ctx["order_number"] = confirmed.get("number") or ctx.get("order_number")
+            run.step = "confirm"
+            db.flush()
+
+        # ---- pay ----
+        if "transaction_id" not in ctx:
+            txn = api.pay_order(str(ctx["order_id"]), str(account_id), str(payment.amount))
+            ctx["transaction_id"] = txn.get("id")
+            payment.transaction_id = uuid.UUID(txn["id"]) if txn.get("id") else None
+            run.step = "pay"
+            db.flush()
+
+        # price_mismatch ПОСЛЕ pay (§8): деньги учтены, стоп — отгрузка;
+        # шаги уже созданы — manual помешает этапу C продолжить автоматически
+        _check_prices(db, lines, tolerance)
+
+        _finish(db, run, payment, ctx)
+        return run
+    except FlowError as exc:
+        fail(exc.reason, exc.detail)
+        db.commit()
+        return run
+
+
+def _finish(db, run: m.FlowRun, payment: m.OnlinePayment, ctx: dict):
+    run.status = "done"
+    run.step = "pay"  # этап B завершается оплатой; C добавит ship/deliver/notify
+    run.finished_at = datetime.now(UTC)
+    run.context = ctx
+    payment.status = "processed"
+    payment.updated_at = datetime.now(UTC)
+    events.publish(db, "integration.payment.processed", {
+        "payment_id": str(payment.id),
+        "provider_payment_id": payment.provider_payment_id,
+        "sales_order_id": ctx.get("order_id"),
+        "transaction_id": ctx.get("transaction_id"),
+        "shipment_id": None,
+    })
+    db.commit()
+    events.dispatch_outbox(db)
+
+
+def normalize_payment(db, *, connection, connector, event: m.WebhookEvent) -> m.OnlinePayment | None:
+    """Вебхук (verified) → online_payments + событие received; идемпотентно
+    по UNIQUE(connection, provider_payment_id)."""
+    payload = event.payload or {}
+    normalized = connector.normalize(payload) if hasattr(connector, "normalize") else None
+    if not normalized or not normalized.get("payment_id"):
+        return None
+    existing = db.scalar(select(m.OnlinePayment).where(
+        m.OnlinePayment.connection_id == connection.id,
+        m.OnlinePayment.provider_payment_id == normalized["payment_id"],
+    ))
+    if existing is not None:
+        return existing
+    payment = m.OnlinePayment(
+        connection_id=connection.id,
+        provider=connection.connector_code,
+        provider_payment_id=normalized["payment_id"],
+        amount=Decimal(str(normalized.get("amount", "0"))),
+        currency=normalized.get("currency", "RUB")[:3],
+        buyer=normalized.get("buyer") or {},
+        lines=normalized.get("lines") or [],
+        metadata_json=normalized.get("metadata") or {},
+        webhook_event_id=event.id,
+    )
+    db.add(payment)
+    db.flush()
+    events.publish(db, "integration.payment.received", {
+        "payment_id": str(payment.id),
+        "provider": payment.provider,
+        "provider_payment_id": payment.provider_payment_id,
+        "amount": str(payment.amount),
+        "currency": payment.currency,
+        "lines_count": len(payment.lines),
+    })
+    db.commit()
+    events.dispatch_outbox(db)
+    return payment
