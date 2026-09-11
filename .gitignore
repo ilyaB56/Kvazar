@@ -18,3 +18,7 @@ deploy/test-manifest.json*
 deploy/.update-manifest.json*
 deploy/.erp-state.json
 deploy/update.log
+
+# рабочие артефакты агента
+.zcode-tmp/
+frontend/patch_*.py
