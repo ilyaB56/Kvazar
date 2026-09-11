@@ -336,6 +336,8 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
 
         # ---- notify: повторяемый — коды читаются по serial_ids на лету ----
         if digital_only and delivery_channel != "none":
+            run.step = "notify"  # наблюдаемость: шаг виден и при ожидании, и в fail()
+            db.flush()
             _notify(db, api=api, payment=payment, ctx=ctx,
                     channel=delivery_channel, recipe_config=config)
 

@@ -185,6 +185,107 @@ SECRETS_KEY), уникальность/поиск — по sha256-отпечат
 События: `acc.inventory.*`, `acc.purchase.*`, `acc.sales.*`,
 `acc.production.order.posted` — все в Telegram-белом списке.
 
+## Онлайн-продажи (оплата на сайте → документы → коды сами)
+
+Автоматизация продаж цифровых товаров: покупатель платит на сайте (ЮKassa) —
+ERP сама создаёт контрагента, заказ (ЗК-), приходную транзакцию (ПК-),
+отгрузку с FIFO-выдачей цифровых кодов и отправляет покупателю письмо/Telegram
+с кодами. Спека: `docs/design/sales-automation-spec.md`.
+
+### Как это работает
+
+1. ЮKassa присылает notification `payment.succeeded` на webhook-endpoint ERP.
+   **Тело нотификации не доверяется**: ERP повторно запрашивает платёж у API
+   ЮKassa с ключами магазина (`verify_by_fetch`) — чужим запросом коды не
+   выдать. Дубли гасит журнал `webhook_events` (UNIQUE по connection+event).
+2. Платёж нормализуется в `online_payments`: покупатель и строки — из
+   `metadata` платежа (`email` + `lines: [{external_id, sku, qty, price}]` —
+   сайт кладёт их при создании платежа).
+3. По рецепту `sales_flow`: контрагент (find-or-create по email) → заказ →
+   confirm → оплата → сверка цен (`price_tolerance`) → отгрузка (выданные
+   коды фиксируются в `shipment_lines.serial_ids`) → разовая выдача `deliver`
+   → `notify` (письмо с кодами; расшифровка на лету, открытые коды нигде
+   не хранятся). Каждый шаг идемпотентен, прогресс — в `flow_runs`: retry
+   продолжает с последнего шага, ничего не дублируется.
+4. Ошибки → платёж `manual` с причиной (`item_not_mapped`, `price_mismatch`,
+   `insufficient_stock`, `delivery_failed`): чините причину (маппинг/
+   пополнение склада/SMTP) → `POST /api/v1/integrations/payments/{id}/retry`.
+   Деньги при ошибке доставки уже учтены — retry повторит только notify.
+
+### Настройка ЮKassa (пошагово)
+
+1. **Подключение провайдера**:
+   `POST /api/v1/integrations/connections`
+   `{"name": "ЮKassa", "connector_code": "yookassa",`
+   `"credentials": {"shop_id": "<shopId>", "secret_key": "<secretKey>"}}`
+   (shopId/secretKey — «Магазин → Ключи API» в кабинете ЮKassa;
+   `base_url` в config не указывайте — используется боевой API).
+2. **Webhook-endpoint**:
+   `POST /api/v1/integrations/webhooks`
+   `{"name": "ЮKassa: payment.succeeded", "target_module": "payments", "connection_id": "<id подключения>"}`.
+   В кабинете ЮKassa (Магазин → HTTP-уведомления) укажите URL:
+   `https://<ваш-домен>/api/v1/integrations/hooks/<endpoint_id>`,
+   событие `payment.succeeded`. Заголовок/подпись не нужны — авторизация
+   повторным GET статуса (провайдерский режим `connection_id`).
+3. **Egress-allowlist**: `api.yookassa.ru` уже в дефолтном списке
+   (`Settings.connector_allowlist`); строгий режим запрещает всё вне списка —
+   при собственном API-домене провайдера добавьте его. Входящую IP-фильтрацию
+   не настраиваем: проверка повторным GET надёжнее списка IP провайдера,
+   флуд режет rate limit nginx (30 r/m) на hooks.
+4. **Маппинг товаров сайта**:
+   `POST /api/v1/integrations/item-mappings`
+   `{"connection_id": "<id ЮKassa>", "external_item_id": "site-sku-1", "sku": "DIGI-1", "item_id": "<uuid номенклатуры>"}`.
+   Товар должен быть цифровым (`kind=digital`, `tracking=serial`), коды —
+   на цифровом складе. `connection_id: null` — глобальный маппинг на все
+   подключения.
+
+### Seed-рецепт «Онлайн-продажа цифровых»
+
+Рецепт = триггер + действие. Применение через API (admin-токен; этот же JSON —
+пример в OpenAPI у `POST /api/v1/integrations/recipes`):
+
+```json
+{
+  "name": "Онлайн-продажа цифровых",
+  "definition": {
+    "trigger_event": "integration.payment.received",
+    "action": {
+      "type": "sales_flow",
+      "connection_id": "<uuid подключения ЮKassa>",
+      "config": {
+        "account_id": "<uuid счёта зачисления>",
+        "price_tolerance": "0",
+        "on_no_items": "transaction_only",
+        "delivery_channel": "email",
+        "smtp_connection_id": "<uuid smtp-подключения>"
+      }
+    },
+    "api_connection_id": "<uuid служебного подключения http_rest>"
+  }
+}
+```
+
+Порядок применения:
+
+1. Служебная учётка для флоу (в учёт ходим публичным API, ADR-001):
+   `POST /api/v1/admin/api-tokens` `{"name": "sales-flow", "role": "user"}` → токен.
+2. Служебное подключение: `POST /api/v1/integrations/connections`
+   `{"name": "sales-flow-api", "connector_code": "http_rest",`
+   `"credentials": {"api_key": "<токен>"}, "config": {"base_url": "http://api:8000"}}`
+   — флоу сам добавит `/api/v1` и заголовок `X-API-Token`.
+3. SMTP-подключение для писем: `POST /api/v1/integrations/connections`
+   `{"name": "SMTP", "connector_code": "smtp", "credentials": {"username": "...", "password": "..."},`
+   `"config": {"host": "smtp.example.ru", "port": 587, "use_tls": true, "from_email": "sales@yourshop.ru"}}`.
+   Для Telegram вместо/вместе с email: `"delivery_channel": "telegram"`
+   и `"telegram_chat_id": "<chat>"` (канал v1 — сообщения бота).
+4. Создать рецепт (JSON выше) → `POST /api/v1/integrations/recipes/{id}/publish`.
+   Рецепт выбирается по `action.connection_id` — у каждого эквайринг-подключения
+   может быть свой сценарий.
+
+Проверка: `GET /api/v1/integrations/payments` — статусы и связи
+(заказ/транзакция/отгрузка), `GET /payments/{id}` добавляет срез `flow_runs`
+(шаг/попытки/ошибка). ro-роль видит замаскированного покупателя.
+
 ## Обновление и бэкапы (фаза 1, ADR-004)
 
 Уточнение к ADR-004: в фазе 1 **применение обновления — командой на хосте**

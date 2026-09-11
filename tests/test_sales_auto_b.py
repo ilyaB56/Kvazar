@@ -9,7 +9,7 @@
 (B5) цена −10% при tolerance 0 → price_mismatch: заказ по ценам платежа
      подтверждён, оплаты/отгрузки нет (§8: стоп после confirm).
 
-Инфраструктура: mock ЮKassa (9998, из этапа A), служебный connection
+Инфраструктура: mock ЮKassa (свободный порт — bind 0), служебный connection
 http_rest → наш API с api_key (X-API-Token), рецепт sales_flow.
 """
 
@@ -73,10 +73,14 @@ class _YooKassaMock(BaseHTTPRequestHandler):
 
 @pytest.fixture(scope="module")
 def yookassa_mock():
-    server = HTTPServer(("127.0.0.1", 9999), _YooKassaMock)
+    # порт 0: ОС выдаёт свободный — транзиентные конфликты сетапа
+    # при полном прогоне исключены (полировка этапа D)
+    server = HTTPServer(("127.0.0.1", 0), _YooKassaMock)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}/v3"
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield server
+    yield base_url
     server.shutdown()
+    server.server_close()
 
 
 def _payment_body(payment_id: str, lines: list[dict], amount: str,
@@ -149,7 +153,7 @@ def stage(client, admin_headers, yookassa_mock):
     yk_conn = client.post(f"{API}/integrations/connections", json={
         "name": f"b-yk-{RUN}", "connector_code": "yookassa",
         "credentials": {"shop_id": "shop1", "secret_key": "secret1"},
-        "config": {"base_url": "http://127.0.0.1:9999/v3"},
+        "config": {"base_url": yookassa_mock},
     }, headers=admin_headers).json()
     hook = client.post(f"{API}/integrations/webhooks", json={
         "name": f"b-hook-{RUN}", "target_module": "payments",

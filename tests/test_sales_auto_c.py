@@ -9,8 +9,8 @@
 (C4) коды не встречаются ни в одном событии/журнале (grep по outbox и
      audit — только отпечатки).
 
-Инфраструктура: mock ЮKassa (9999), mock SMTP (9997), api-token,
-smtp-connection, рецепт с delivery_channel=email.
+Инфраструктура: mock ЮKassa и mock SMTP (свободные порты — bind 0),
+api-token, smtp-connection, рецепт с delivery_channel=email.
 """
 
 from __future__ import annotations
@@ -112,10 +112,13 @@ class _SmtpMock(BaseHTTPRequestHandler):
 
 @pytest.fixture(scope="module")
 def yookassa_mock():
-    server = HTTPServer(("127.0.0.1", 9989), _YooKassaMock)
+    # порт 0 — свободный порт от ОС (полировка этапа D: без конфликтов)
+    server = HTTPServer(("127.0.0.1", 0), _YooKassaMock)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}/v3"
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield server
+    yield base_url
     server.shutdown()
+    server.server_close()
 
 
 @pytest.fixture(scope="module")
@@ -127,11 +130,13 @@ def smtp_mock():
         daemon_threads = True
         request_queue_size = 8
 
-    server = Server(("127.0.0.1", 9997), None)
+    server = Server(("127.0.0.1", 0), None)
+    port = server.server_address[1]
     server.RequestHandlerClass = type("H", (_SmtpMock,), {})
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield server
+    yield port
     server.shutdown()
+    server.server_close()
 
 
 def _payment_body(payment_id: str, lines: list[dict], amount: str,
@@ -208,14 +213,14 @@ def stage(client, admin_headers, yookassa_mock, smtp_mock):
     smtp_conn = client.post(f"{API}/integrations/connections", json={
         "name": f"c-smtp-{RUN}", "connector_code": "smtp",
         "credentials": {},
-        "config": {"host": "127.0.0.1", "port": 9997, "use_tls": False,
+        "config": {"host": "127.0.0.1", "port": smtp_mock, "use_tls": False,
                    "from_email": "sales@test.local", "timeout_seconds": 5},
     }, headers=admin_headers).json()
 
     yk_conn = client.post(f"{API}/integrations/connections", json={
         "name": f"c-yk-{RUN}", "connector_code": "yookassa",
         "credentials": {"shop_id": "shop1", "secret_key": "secret1"},
-        "config": {"base_url": "http://127.0.0.1:9989/v3"},
+        "config": {"base_url": yookassa_mock},
     }, headers=admin_headers).json()
     hook = client.post(f"{API}/integrations/webhooks", json={
         "name": f"c-hook-{RUN}", "target_module": "payments",

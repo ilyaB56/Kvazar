@@ -351,17 +351,21 @@ def deliver_shipment(shipment_id: uuid.UUID, body: DeliverIn | None = None,
     channel = (body.channel_note if body and body.channel_note else "manual").strip().lower()
     serials_out: list[dict] = []
     lines = db.scalars(select(m.ShipmentLine).where(
-        m.ShipmentLine.shipment_id == shipment.id)).all()
+        m.ShipmentLine.shipment_id == shipment.id
+    ).order_by(m.ShipmentLine.item_id)).all()
     for line in lines:
         item = db.get(inv.Item, line.item_id)
         if item is None or item.tracking != "serial" or not line.serial_ids:
             continue
-        rows = db.scalars(select(inv.ItemSerial).where(
-            inv.ItemSerial.id.in_([uuid.UUID(str(i)) for i in line.serial_ids]))).all()
+        # коды — в порядке serial_ids строки (FIFO-фиксация проведения),
+        # а не в произвольном порядке выдачи БД
+        ids = [uuid.UUID(str(i)) for i in line.serial_ids]
+        by_id = {row.id: row for row in db.scalars(
+            select(inv.ItemSerial).where(inv.ItemSerial.id.in_(ids))).all()}
         serials_out.append({
             "item_id": str(line.item_id),
             "sku": item.sku,
-            "codes": [inv_service.serial_code(row) for row in rows],
+            "codes": [inv_service.serial_code(by_id[i]) for i in ids if i in by_id],
         })
 
     shipment.delivered_at = datetime.now(UTC)

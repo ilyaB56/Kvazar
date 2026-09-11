@@ -1,0 +1,17 @@
+# Контекст сборки api/worker/beat (корень репо): в образ — только
+# бэкенд-рантайм. Фронтенд собирается своим контекстом (frontend/),
+# секреты и локальные артефакты в образ не попадают (в т.ч. .env).
+.git
+.venv
+.zcode-tmp
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.env
+.env.*
+!.env.example
+frontend
+deploy
+docs
+*.md

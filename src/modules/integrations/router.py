@@ -84,6 +84,28 @@ class SyncJobPatch(BaseModel):
 
 
 class RecipeIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "name": "Онлайн-продажа цифровых",
+        "definition": {
+            "trigger_event": "integration.payment.received",
+            "action": {
+                "type": "sales_flow",
+                # connection_id = подключение провайдера (эквайринг):
+                # по нему выбирается рецепт вебхука этого провайдера
+                "connection_id": "uuid подключения yookassa",
+                "config": {
+                    "account_id": "uuid счёта зачисления",
+                    "price_tolerance": "0",
+                    "on_no_items": "transaction_only",
+                    "delivery_channel": "email",
+                    "smtp_connection_id": "uuid smtp-подключения",
+                },
+            },
+            # служебное подключение http_rest → наш API (токен роли user)
+            "api_connection_id": "uuid служебного подключения",
+        },
+    }}}
+
     name: str
     definition: dict = {}
     is_published: bool = False
@@ -455,6 +477,22 @@ def list_runs(sync_job_id: uuid.UUID, user: User = Depends(require_module("integ
 # ---------- Онлайн-платежи (sales-automation §5.1, этап B) ----------
 
 class PaymentOut(BaseModel):
+    model_config = {
+        "from_attributes": True,
+        # пример GET /integrations/payments (buyer показан как видит rw;
+        # ro получает замаскированного «b***@e***.com»)
+        "json_schema_extra": {"example": {
+            "id": "0bd6d4a6-...-f2c1", "connection_id": "9af1c2b0-...",
+            "provider": "yookassa", "provider_payment_id": "2b5d9f30-000f-5000-9000-1e2a7b6d4c3a",
+            "status": "processed", "amount": "1000.00", "currency": "RUB",
+            "buyer": {"email": "buyer@example.com"},
+            "lines": [{"external_id": "site-sku-1", "sku": "DIGI-1", "qty": 2,
+                       "unit_price": "500.00"}],
+            "sales_order_id": "…", "transaction_id": "…", "shipment_id": "…",
+            "error_step": "", "error_reason": "",
+        }},
+    }
+
     id: uuid.UUID
     connection_id: uuid.UUID
     provider: str
@@ -471,8 +509,6 @@ class PaymentOut(BaseModel):
     error_step: str = ""
     error_reason: str = ""
     created_at: object = None
-
-    model_config = {"from_attributes": True}
 
 
 def _mask_buyer(buyer: dict) -> dict:

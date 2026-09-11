@@ -10,7 +10,8 @@
      правила и отсутствие нарушений в живом прогоне ruff).
 
 Mock API ЮKassa поднимается локально (как mock-Telegram в smoke):
-connection.base_url → http://localhost:9998/v3.
+connection.base_url → http://127.0.0.1:<свободный порт>/v3 — порт выдаёт
+ОС (bind на 0), конфликтов между модулями прогона нет.
 """
 
 from __future__ import annotations
@@ -75,11 +76,13 @@ class _YooKassaMock(BaseHTTPRequestHandler):
 
 @pytest.fixture(scope="module")
 def yookassa_mock():
-    server = HTTPServer(("127.0.0.1", 9998), _YooKassaMock)
+    server = HTTPServer(("127.0.0.1", 0), _YooKassaMock)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}/v3"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    yield server
+    yield base_url
     server.shutdown()
+    server.server_close()
 
 
 def _payment_body(payment_id: str, status: str = "succeeded", amount: str = "1000.00") -> dict:
@@ -122,7 +125,7 @@ def stage(client, admin_headers, yookassa_mock):
     conn = client.post(f"{API}/integrations/connections", json={
         "name": f"yookassa-test-{RUN}", "connector_code": "yookassa",
         "credentials": {"shop_id": "shop1", "secret_key": "secret1"},
-        "config": {"base_url": "http://127.0.0.1:9998/v3"},
+        "config": {"base_url": yookassa_mock},
     }, headers=admin_headers)
     assert conn.status_code == 201, conn.text
     hook = client.post(f"{API}/integrations/webhooks", json={

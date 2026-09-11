@@ -1063,6 +1063,163 @@ status, outbox_prd = call("GET",
 check("prd D: acc.production.order.posted в outbox",
       status == 200 and any(prd_order["id"] == e["payload"]["order_id"] for e in outbox_prd))
 
+# 24f. Онлайн-продажа (sales-automation, этап D): вебхук ЮKassa (mock) →
+# документы → FIFO-выдача кодов; дубль вебхука гасится идемпотентностью
+def _start_mock_yookassa():
+    """Мок API ЮKassa: GET /v3/payments/{id} (Basic shop1:secret1)."""
+    import base64
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    auth = "Basic " + base64.b64encode(b"shop1:secret1").decode()
+    payments = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.headers.get("Authorization", "") != auth:
+                self.send_response(401)
+                self.end_headers()
+                return
+            pid = self.path.split("?")[0].rsplit("/", 1)[1]
+            body = payments.get(pid)
+            payload = json.dumps(body or {}).encode()
+            self.send_response(200 if body else 404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            if body:
+                self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    # порт 0 — свободный порт от ОС; 0.0.0.0 — контейнер api достукивается
+    # через host.docker.internal (как mock-Telegram в секции 21)
+    server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, payments
+
+
+_yk_server, _yk_payments = _start_mock_yookassa()
+_yk_port = _yk_server.server_address[1]
+_ol_pid = f"smoke-ol-{run_tag}"
+_yk_payments[_ol_pid] = {
+    "id": _ol_pid, "status": "succeeded", "paid": True,
+    "amount": {"value": "1000.00", "currency": "RUB"},
+    "metadata": {"email": f"ol-{run_tag}@example.com", "lines": [
+        {"external_id": f"ol-site-{run_tag}", "qty": 2, "price": "500.00"},
+    ]},
+}
+
+# НСИ: цифровой товар с 2 кодами, счёт зачисления
+status, ol_item = call("POST", f"{ACC}/items", {
+    "sku": f"SMOKE-OL-{run_tag}", "name": "smoke онлайн-код",
+    "kind": "digital", "unit_code": "лицензия",
+    "sale_price": "500.00",
+}, token=token)
+status, ol_locs = call("GET", f"{ACC}/locations", token=token)
+ol_dig = next(row for row in ol_locs if row["name"] == "Цифровой склад")
+status, ol_rcpt = call("POST", f"{ACC}/receipts", {
+    "counterparty_id": sup["id"],
+    "lines": [{"item_id": ol_item["id"], "qty": "2", "unit_cost": "100",
+               "location_id": ol_dig["id"],
+               "serial_codes": [f"OL-{run_tag}-1", f"OL-{run_tag}-2"]}],
+}, token=token)
+call("POST", f"{ACC}/receipts/{ol_rcpt['id']}/post", token=token)
+status, ol_acc = call("POST", f"{ACC}/accounts", {
+    "name": f"smoke-эквайринг-{run_tag}", "currency": "RUB"}, token=token)
+
+# подключения: служебный http_rest → наш API + провайдер yookassa (mock)
+status, ol_api_tok = call("POST", "/api/v1/admin/api-tokens",
+                          {"name": f"smoke-ol-flow-{run_tag}", "role": "user"}, token=token)
+ol_api_conn, _ol_created = get_or_create("/api/v1/integrations/connections",
+    lambda c: c["name"] == f"smoke-ol-api-{run_tag}",
+    {"name": f"smoke-ol-api-{run_tag}", "connector_code": "http_rest",
+     "credentials": {"api_key": ol_api_tok["token"]},
+     "config": {"base_url": "http://api:8000"}}, token)
+status, ol_yk = call("POST", "/api/v1/integrations/connections", {
+    "name": f"smoke-ol-yk-{run_tag}", "connector_code": "yookassa",
+    "credentials": {"shop_id": "shop1", "secret_key": "secret1"},
+    "config": {"base_url": f"http://host.docker.internal:{_yk_port}/v3"},
+}, token=token)
+status, ol_hook = call("POST", "/api/v1/integrations/webhooks", {
+    "name": f"smoke-ol-hook-{run_tag}", "target_module": "payments",
+    "connection_id": ol_yk["id"],
+}, token=token)
+call("POST", "/api/v1/integrations/item-mappings", {
+    "connection_id": ol_yk["id"], "external_item_id": f"ol-site-{run_tag}",
+    "sku": ol_item["sku"], "item_id": ol_item["id"],
+}, token=token)
+# seed-рецепт «Онлайн-продажа» (delivery_channel=none — email-доставка
+# глубоко покрыта pytest этапа C; здесь — сквозной цикл на чистом стеке)
+status, ol_recipe = call("POST", "/api/v1/integrations/recipes", {
+    "name": f"smoke-ol-recipe-{run_tag}",
+    "definition": {
+        "trigger_event": "integration.payment.received",
+        "action": {"type": "sales_flow", "connection_id": ol_yk["id"],
+                   "config": {"account_id": ol_acc["id"], "price_tolerance": "0",
+                              "on_no_items": "transaction_only",
+                              "delivery_channel": "none"}},
+        "api_connection_id": ol_api_conn["id"],
+    },
+}, token=token)
+call("POST", f"/api/v1/integrations/recipes/{ol_recipe['id']}/publish", token=token)
+
+# вебхук payment.succeeded → 202; обработка асинхронна (поток)
+status, _ol_ack = call("POST", f"/api/v1/integrations/hooks/{ol_hook['id']}", {
+    "type": "notification", "event": "payment.succeeded",
+    "object": _yk_payments[_ol_pid],
+}, token=token)
+check("ol A: вебхук принят (202)", status == 202, str(status))
+
+_ol_pay = None
+for _ in range(20):
+    time.sleep(1)
+    status, _ol_list = call("GET", "/api/v1/integrations/payments?provider=yookassa",
+                            token=token)
+    _ol_pay = next((p for p in _ol_list
+                    if p["provider_payment_id"] == _ol_pid), None)
+    if _ol_pay and _ol_pay["status"] == "processed":
+        break
+check("ol B: платёж processed (флоу прошёл)",
+      _ol_pay is not None and _ol_pay["status"] == "processed",
+      str(_ol_pay)[:120])
+check("ol B: документы созданы (заказ + транзакция + отгрузка)",
+      bool(_ol_pay) and bool(_ol_pay["sales_order_id"]) and bool(_ol_pay["transaction_id"])
+      and bool(_ol_pay["shipment_id"]),
+      str(_ol_pay and (_ol_pay["sales_order_id"], _ol_pay["transaction_id"],
+                       _ol_pay["shipment_id"]))[:120])
+if _ol_pay and _ol_pay.get("sales_order_id"):
+    status, ol_order = call("GET", f"{ACC}/sales-orders/{_ol_pay['sales_order_id']}",
+                            token=token)
+    check("ol B: заказ ЗК- со статусом shipped",
+          status == 200 and (ol_order.get("number") or "").startswith("ЗК-")
+          and ol_order["status"] == "shipped", str(ol_order.get("status"))[:80])
+    status, ol_bal = call("GET", f"{ACC}/stock/balances?item_id={ol_item['id']}", token=token)
+    check("ol C: оба кода выданы FIFO (цифровой склад пуст)",
+          status == 200 and sum(Decimal(b["qty"]) for b in ol_bal) == 0, str(ol_bal)[:110])
+
+    # дубль вебхука → duplicate, документы не дублируются
+    status, _ol_ack2 = call("POST", f"/api/v1/integrations/hooks/{ol_hook['id']}", {
+        "type": "notification", "event": "payment.succeeded",
+        "object": _yk_payments[_ol_pid],
+    }, token=token)
+    time.sleep(3)
+    status, _ol_list2 = call("GET", "/api/v1/integrations/payments?provider=yookassa",
+                             token=token)
+    _ol_same = [p for p in _ol_list2 if p["provider_payment_id"] == _ol_pid]
+    status, ol_order2 = call("GET", f"{ACC}/sales-orders/{_ol_pay['sales_order_id']}",
+                             token=token)
+    check("ol D: дубль вебхука — платёж один, заказ прежний",
+          len(_ol_same) == 1 and _ol_same[0]["sales_order_id"] == _ol_pay["sales_order_id"]
+          and ol_order2["number"] == ol_order["number"],
+          f"payments={len(_ol_same)}")
+else:
+    check("ol B: заказ ЗК- (пропуск: нет платежа)", False, "flow не дошёл до заказа")
+
+_yk_server.shutdown()
+_yk_server.server_close()
+
 # 25. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []
 for _ in range(6):
