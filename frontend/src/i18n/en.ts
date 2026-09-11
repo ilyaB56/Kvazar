@@ -583,4 +583,8 @@ export default {
     assistant: 'AI assistant',
     assistantCrumb: 'Dialogs and proposals',
   },
+  ai: {
+    thinking: 'Assistant is thinking',
+    stillGenerating: 'Answer is still being generated — waiting',
+  },
 }

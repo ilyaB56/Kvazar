@@ -29,6 +29,8 @@ const activeId = ref<string | null>(null)
 const messages = ref<Message[]>([])
 const input = ref('')
 const sending = ref(false)
+// ответ ещё может прийти поллингом после обрыва запроса (медленная LLM)
+const polling = ref(false)
 const loadingSessions = ref(true)
 const bottom = ref<HTMLElement>()
 
@@ -44,12 +46,12 @@ async function loadSessions() {
 async function openSession(id: string) {
   activeId.value = id
   messages.value = await get<Message[]>(`/ai/sessions/${id}`)
-  scrollToBottom()
+  scrollToBottom('auto')
 }
 
 async function sendMessage() {
   const text = input.value.trim()
-  if (!text || sending.value || !canWrite.value) return
+  if (!text || sending.value || polling.value || !canWrite.value) return
   sending.value = true
   input.value = ''
   messages.value.push({ role: 'user', content: text })
@@ -66,9 +68,36 @@ async function sendMessage() {
     await loadSessions()
   } catch (error) {
     toast.apiError(error)
+    // Генерация на локальной LLM идёт минуты: прокси/сеть могли оборвать
+    // запрос, а бэкенд допишет ответ в сессию — поллим, чтобы показать
+    // его без перезагрузки страницы.
+    void pollForAnswer()
   } finally {
     sending.value = false
     scrollToBottom()
+  }
+}
+
+async function pollForAnswer() {
+  const sessionId = activeId.value
+  if (!sessionId) return
+  polling.value = true
+  const known = messages.value.length
+  try {
+    for (let attempt = 0; attempt < 24; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 5000))
+      if (activeId.value !== sessionId) return
+      try {
+        const fresh = await get<Message[]>(`/ai/sessions/${sessionId}`)
+        if (fresh.length > known) {
+          messages.value = fresh
+          await loadSessions()
+          return
+        }
+      } catch { /* сеть моргнула — попробуем на следующей итерации */ }
+    }
+  } finally {
+    polling.value = false
   }
 }
 
@@ -90,8 +119,8 @@ function newSession() {
   messages.value = []
 }
 
-function scrollToBottom() {
-  nextTick(() => bottom.value?.scrollIntoView({ behavior: 'smooth' }))
+function scrollToBottom(behavior: ScrollBehavior = 'smooth') {
+  nextTick(() => bottom.value?.scrollIntoView({ behavior, block: 'end' }))
 }
 
 // ---------- Документы ----------
@@ -256,7 +285,7 @@ onMounted(() => {
             <Skeleton class="h-8 w-full" />
             <Skeleton class="h-8 w-full" />
           </div>
-          <ul v-else class="space-y-0.5">
+          <ul v-else class="erp-scroll max-h-[55vh] space-y-0.5 overflow-y-auto pr-0.5">
             <li
               v-for="session in sessions" :key="session.id"
               class="group flex cursor-pointer items-center justify-between gap-1 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-accent"
@@ -277,7 +306,7 @@ onMounted(() => {
         </CardContent>
       </Card>
 
-      <Card class="flex min-h-[440px] flex-col border-zinc-200 shadow-sm dark:border-zinc-800">
+      <Card class="flex h-[min(72vh,680px)] min-h-[440px] flex-col border-zinc-200 shadow-sm dark:border-zinc-800">
         <CardContent class="flex flex-1 flex-col p-0">
           <div class="erp-scroll flex-1 space-y-3 overflow-y-auto p-4">
             <div
@@ -314,13 +343,16 @@ onMounted(() => {
                 </div>
               </div>
             </div>
-            <div v-if="!messages.length" class="flex flex-1 items-center justify-center py-16">
+            <div v-if="!messages.length && !sending && !polling" class="flex flex-1 items-center justify-center py-16">
               <div class="text-center">
                 <span class="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-violet-500/10 text-violet-600 dark:text-violet-300">
                   <Bot class="h-6 w-6" />
                 </span>
                 <p class="mt-3 text-sm text-muted-foreground">{{ t('ai.placeholder') }}</p>
               </div>
+            </div>
+            <div v-if="sending || polling" class="max-w-[75%] self-start rounded-2xl bg-zinc-100 px-3.5 py-2 text-sm text-muted-foreground dark:bg-zinc-800">
+              {{ sending ? t('ai.thinking') : t('ai.stillGenerating') }}<span class="animate-pulse">…</span>
             </div>
             <div ref="bottom" />
           </div>
@@ -329,10 +361,10 @@ onMounted(() => {
             @submit.prevent="sendMessage"
           >
             <Input
-              v-model="input" :placeholder="t('ai.placeholder')" :disabled="sending || !canWrite"
+              v-model="input" :placeholder="t('ai.placeholder')" :disabled="sending || polling || !canWrite"
               class="flex-1"
             />
-            <Button variant="emerald" size="icon" type="submit" :disabled="sending || !input.trim() || !canWrite">
+            <Button variant="emerald" size="icon" type="submit" :disabled="sending || polling || !input.trim() || !canWrite">
               <Send class="h-4 w-4" />
             </Button>
           </form>

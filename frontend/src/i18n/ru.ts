@@ -157,6 +157,8 @@ export default {
     title: 'ИИ-ассистент',
     newSession: 'Новая сессия',
     noSessions: 'Нет сессий',
+    thinking: 'Ассистент думает',
+    stillGenerating: 'Ответ ещё формируется — ждём',
     untitled: 'Без заголовка',
     placeholder: 'Спросите о документах, курсах или движении денег…',
     send: 'Отправить',
