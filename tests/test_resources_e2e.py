@@ -104,7 +104,7 @@ def test_resources_e2e_purchase_assemble_sell_digital(client, admin_headers, db)
     account = _post(client, admin_headers, "/accounts",
                     {"name": f"e2e-счёт-{RUN}", "currency": "RUB"})
     locations = {row["name"]: row for row in _get(client, admin_headers, "/locations")}
-    main, digital = locations["Основной склад"], locations["Цифровой склад"]
+    main = locations["Основной склад"]
 
     material = _post(client, admin_headers, "/items", {
         "sku": f"E2E-MAT-{RUN}", "name": "e2e материал",

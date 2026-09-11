@@ -63,8 +63,8 @@ def posted_shipment(client, admin_headers):
         "sku": f"SERIDS-{RUN}", "name": f"serial ids {RUN}", "kind": "digital",
         "unit_code": "лицензия", "tracking": "serial",
     }, headers=admin_headers).json()
-    loc = next(l for l in client.get(f"{ACC}/locations", headers=admin_headers).json()
-               if l["name"] == "Цифровой склад")
+    loc = next(row for row in client.get(f"{ACC}/locations", headers=admin_headers).json()
+               if row["name"] == "Цифровой склад")
     codes = [f"SERIDS-{RUN}-{i}" for i in (1, 2)]
     receipt = client.post(f"{ACC}/receipts", json={
         "counterparty_id": cp["id"],

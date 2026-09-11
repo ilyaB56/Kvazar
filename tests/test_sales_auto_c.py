@@ -170,8 +170,8 @@ def stage(client, admin_headers, yookassa_mock, smtp_mock):
         "sku": f"C-DIGI-{RUN}", "name": f"c код {RUN}", "kind": "digital",
         "unit_code": "лицензия", "tracking": "serial", "sale_price": "500.00",
     }, headers=admin_headers).json()
-    loc = next(l for l in client.get(f"{ACC}/locations", headers=admin_headers).json()
-               if l["name"] == "Цифровой склад")
+    loc = next(row for row in client.get(f"{ACC}/locations", headers=admin_headers).json()
+               if row["name"] == "Цифровой склад")
     supplier = client.post(f"{ACC}/counterparties", json={
         "name": f"c-поставщик-{RUN}"}, headers=admin_headers).json()
     account = client.post(f"{ACC}/accounts", json={
