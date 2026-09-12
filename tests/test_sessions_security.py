@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -25,6 +26,32 @@ API = "/api/v1"
 RUN = uuid.uuid4().hex[:8]  # уникальные тест-юзеры за прогон
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(scope="module", autouse=True)
+def cleanup_sessions():
+    """Уборка за прогоном (ревью 2026-09-12): тестовые логины оставляют
+    не-revoked строки auth_sessions в общей БД. Вычищаем созданные за
+    прогон строки с UA httpx/теста — браузерные сеансы не трогаем."""
+    t0 = datetime.now(timezone.utc)
+    yield
+    try:
+        from sqlalchemy import text
+
+        from src.db import SessionLocal
+
+        db = SessionLocal()
+        try:
+            db.execute(text(
+                "DELETE FROM erp_core.auth_sessions WHERE created_at >= :t0"
+                " AND (user_agent LIKE 'python-httpx/%'"
+                "      OR user_agent = 'sessions-security-test')"
+            ).bindparams(t0=t0))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001 — вне контейнера БД нет, убирать нечего
+        pass
 
 
 @pytest.fixture(scope="module")
@@ -189,3 +216,29 @@ def test_a5_password_change_terminates_all(client):
     fresh = pwd_login("PwdNew12345!")
     assert fresh.status_code == 200, fresh.text
     assert fresh.json()["active_sessions"] == 1
+
+
+def test_a6_spoofed_forwarded_for_ignored(client):
+    """Инъекция X-Forwarded-For (спека §2.4): клиент шлёт левый первый
+    адрес — IP сеанса берём ПОСЛЕДНИЙ (его дописывает наш nginx через
+    $proxy_add_x_forwarded_for). Ходим через web:80 — реальная цепочка
+    прокси; напямкую до api тест ничего бы не доказал (некому дописывать)."""
+    web_url = os.environ.get("ERP_TEST_WEB_URL", "http://web:80")
+    try:
+        probe = httpx.post(f"{web_url}/api/v1/auth/login", json={
+            "email": "admin@example.com",
+            "password": os.environ.get("ERP_ADMIN_PASSWORD", "admin12345"),
+        }, headers={"X-Forwarded-For": "8.8.8.8, 1.2.3.4"}, timeout=10)
+        probe.raise_for_status()
+    except httpx.HTTPError:
+        pytest.skip("web (nginx) недоступен из контейнера")
+    token = probe.json()
+
+    sessions = httpx.get(f"{web_url}/api/v1/auth/sessions",
+                         headers={"Authorization": f"Bearer {token['access_token']}"},
+                         timeout=10).json()
+    current = next(r for r in sessions if r["is_current"])
+    assert current["ip"] not in ("8.8.8.8", "1.2.3.4"), current
+    assert current["ip"], "IP пуст — заголовок не дошёл до api"
+    httpx.post(f"{web_url}/api/v1/auth/logout",
+               json={"refresh_token": token["refresh_token"]}, timeout=10)

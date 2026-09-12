@@ -130,8 +130,10 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)):
     # данные для показа самому пользователю (в события шины не идут)
     from src.config import get_settings as _gs
     sid = uuid.uuid4()
-    # за nginx реальный клиент — в X-Forwarded-For (первый адрес цепочки)
-    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    # IP = ПОСЛЕДНИЙ адрес X-Forwarded-For (sessions-security §2.4,
+    # ревью 2026-09-11): его дописывает наш nginx, равен реальному
+    # remote_addr; первый адрес клиент подделывает инъекцией заголовка
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[-1].strip()
     db.add(AuthSession(
         id=sid, user_id=user.id,
         user_agent=(request.headers.get("user-agent") or "")[:256],
