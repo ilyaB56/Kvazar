@@ -129,6 +129,30 @@ onBeforeUnmount(() => { if (permissionsTimer !== null) window.clearInterval(perm
 
 // ---------- Профиль: смена пароля + выход ----------
 const passwordOpen = ref(false)
+
+// ---------- Модалка «в аккаунт уже вошли» (sessions-security §2.3) ----------
+// Показ один раз за вход (activeSessions>1), интерфейс не блокирует:
+// «Завершить другие сеансы» или «Продолжить» — оба живут дальше.
+const sessionWarn = ref(false)
+const sessionBusy = ref(false)
+watch(
+  () => [auth.isAuthenticated, auth.activeSessions] as const,
+  ([authenticated, count]) => { sessionWarn.value = authenticated && count > 1 },
+  { immediate: true },
+)
+async function terminateOtherSessions() {
+  if (sessionBusy.value) return
+  sessionBusy.value = true
+  try {
+    const terminated = await auth.logoutOthers()
+    toast.success(t('sessions.terminatedToast', { n: terminated }))
+    sessionWarn.value = false
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    sessionBusy.value = false
+  }
+}
 async function logout() {
   await auth.apiLogout()
   auth.logout()
@@ -286,6 +310,29 @@ async function logout() {
     </div>
 
     <ChangePasswordDialog v-model="passwordOpen" />
+
+    <!-- В аккаунт уже выполнен вход: выбор пользователя, не блокировка -->
+    <Dialog :open="sessionWarn" :title="t('sessions.warnTitle')" width="480px"
+            @update:open="(v: boolean) => { if (!v) sessionWarn = false }">
+      <div class="space-y-4">
+        <div class="flex items-start gap-3">
+          <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400">
+            <ShieldAlert class="h-5 w-5" />
+          </span>
+          <p class="text-sm leading-relaxed text-muted-foreground">
+            {{ t('sessions.warnText', { n: auth.activeSessions - 1 }) }}
+          </p>
+        </div>
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" size="sm" @click="sessionWarn = false">
+            {{ t('sessions.warnContinue') }}
+          </Button>
+          <Button variant="emerald" size="sm" :disabled="sessionBusy" @click="terminateOtherSessions">
+            {{ t('sessions.warnTerminate') }}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
     <ToastHost />
   </div>
 </template>

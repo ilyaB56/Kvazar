@@ -315,10 +315,11 @@ def test_c1_happy_path_fifo_sold_email(client, admin_headers, stage):
         headers=admin_headers).json()
     assert balances and Decimal(balances[0]["qty"]) == Decimal("3")  # 5 − 2
 
-    # письмо ушло с кодами
+    # письмо ушло ровно с выданными кодами (внутри партии FIFO-выбор
+    # недетерминирован — важна партия и соответствие письма выдаче)
     letters = _mailbox_since(payment_id)
     assert letters, "письмо не дошло в mock SMTP"
-    assert f"C-OLD-{RUN}-0" in letters[-1]["raw"]
+    assert all(code in letters[-1]["raw"] for code in codes)
     assert email in letters[-1]["raw"]
 
     # повторный deliver → 409 с фактом

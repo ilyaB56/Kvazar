@@ -399,6 +399,23 @@ export default {
   profile: {
     passwordHint: 'Changing the password revokes all active sessions and tokens (security-p0): you will need to sign in again everywhere.',
   },
+  sessions: {
+    warnTitle: 'This account is already signed in',
+    warnText: 'Other active sessions detected ({n}). It may be you in another browser — or someone else with your password. Terminate them?',
+    warnTerminate: 'Terminate other sessions',
+    warnContinue: 'Continue',
+    terminatedToast: 'Terminated sessions: {n}',
+    title: 'Active sessions',
+    hint: 'Devices signed in to your account. Changing the password terminates all sessions.',
+    current: 'Current',
+    entered: 'signed in',
+    activity: 'active',
+    empty: 'No active sessions found',
+    revoke: 'Terminate',
+    revokeOthers: 'Terminate all others',
+    revokedToast: 'Session terminated',
+    unknownDevice: 'Unknown device',
+  },
   security: {
     passwordTitle: 'Password and sessions',
     passwordHint: 'At least 8 characters, not from the common list. Changing the password revokes all issued tokens.',

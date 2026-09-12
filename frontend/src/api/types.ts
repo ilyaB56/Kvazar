@@ -5,6 +5,8 @@ export interface TokenPair {
   access_token: string
   refresh_token: string
   token_type: string
+  /** sessions-security: активные сеансы ПОСЛЕ этого входа (>1 — модалка) */
+  active_sessions?: number
 }
 
 export interface User {

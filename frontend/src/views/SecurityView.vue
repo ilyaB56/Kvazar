@@ -3,7 +3,7 @@
 // служебные API-токены (/admin/api-tokens, CRUD), политика паролей.
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { KeyRound, Plus, ShieldCheck, Trash2 } from 'lucide-vue-next'
+import { KeyRound, Monitor, Plus, ShieldCheck, Trash2 } from 'lucide-vue-next'
 import { del, get, post } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
@@ -76,6 +76,80 @@ async function revokeToken(row: ApiToken) {
   }
 }
 
+// ---------- Активные сеансы (sessions-security §2.3) ----------
+interface AuthSession {
+  id: string
+  user_agent: string
+  ip: string
+  created_at: string
+  last_used_at: string | null
+  is_current: boolean
+}
+const sessions = ref<AuthSession[] | null>(null)
+const sessionBusy = ref<Record<string, boolean>>({})
+
+async function loadSessions() {
+  try {
+    sessions.value = await get<AuthSession[]>('/auth/sessions')
+  } catch {
+    sessions.value = null
+  }
+}
+onMounted(loadSessions)
+
+/** Браузер/ОС из user_agent — для показа самому пользователю. */
+function deviceLabel(ua: string): string {
+  if (!ua) return t('sessions.unknownDevice')
+  const browsers: Array<[RegExp, string]> = [
+    [/YaBrowser\/([\d.]+)/, 'Yandex Browser'],
+    [/Edg\/([\d.]+)/, 'Edge'],
+    [/OPR\/([\d.]+)/, 'Opera'],
+    [/Chrome\/([\d.]+)/, 'Chrome'],
+    [/Firefox\/([\d.]+)/, 'Firefox'],
+    [/Safari\/([\d.]+)/, 'Safari'],
+    [/python-requests|httpx|sessions-security-test/, 'API-клиент'],
+  ]
+  const systems: Array<[RegExp, string]> = [
+    [/Windows NT 10/, 'Windows'],
+    [/Windows/, 'Windows'],
+    [/Mac OS X/, 'macOS'],
+    [/Android/, 'Android'],
+    [/iPhone|iPad/, 'iOS'],
+    [/Linux/, 'Linux'],
+  ]
+  const browser = browsers.find(([re]) => re.test(ua))?.[1] ?? ''
+  const system = systems.find(([re]) => re.test(ua))?.[1] ?? ''
+  return [system, browser].filter(Boolean).join(' · ') || t('sessions.unknownDevice')
+}
+
+async function revokeSession(row: AuthSession) {
+  sessionBusy.value[row.id] = true
+  try {
+    await post(`/auth/sessions/${row.id}/revoke`)
+    toast.success(t('sessions.revokedToast'))
+    await loadSessions()
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    sessionBusy.value[row.id] = false
+  }
+}
+
+async function revokeOtherSessions() {
+  if (sessionBusy.value.all) return
+  sessionBusy.value.all = true
+  try {
+    const terminated = await auth.logoutOthers()
+    toast.success(t('sessions.terminatedToast', { n: terminated }))
+    auth.activeSessions = 1
+    await loadSessions()
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    sessionBusy.value.all = false
+  }
+}
+
 async function copySecret(value: string) {
   try {
     await navigator.clipboard.writeText(value)
@@ -103,6 +177,57 @@ async function copySecret(value: string) {
           </div>
         </div>
         <Button variant="outline" size="sm" @click="passwordOpen = true">{{ t('password.submit') }}</Button>
+      </CardContent>
+    </Card>
+
+    <!-- Активные сеансы (sessions-security) -->
+    <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+      <CardContent class="p-5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="flex items-center gap-2 text-sm font-semibold">
+            <Monitor class="h-4 w-4 text-emerald-600" /> {{ t('sessions.title') }}
+          </p>
+          <Button
+            v-if="sessions && sessions.length > 1" variant="outline" size="sm"
+            :disabled="sessionBusy.all" @click="revokeOtherSessions"
+          >
+            {{ t('sessions.revokeOthers') }}
+          </Button>
+        </div>
+        <p class="mt-1 text-xs text-muted-foreground">{{ t('sessions.hint') }}</p>
+
+        <div v-if="sessions && sessions.length === 0" class="py-8">
+          <EmptyState :title="t('ui.emptyTitle')" :description="t('sessions.empty')" />
+        </div>
+        <div v-else-if="sessions" class="mt-3 space-y-2">
+          <div
+            v-for="row in sessions" :key="row.id"
+            class="flex flex-wrap items-center gap-3 rounded-lg border border-zinc-200 px-3 py-2.5 dark:border-zinc-800"
+          >
+            <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+              <Monitor class="h-4 w-4" />
+            </span>
+            <div class="min-w-0 flex-1">
+              <p class="flex items-center gap-2 text-sm font-medium">
+                {{ deviceLabel(row.user_agent) }}
+                <Badge v-if="row.is_current" variant="secondary" class="text-[10px]">
+                  {{ t('sessions.current') }}
+                </Badge>
+              </p>
+              <p class="mt-0.5 text-xs text-muted-foreground">
+                IP {{ row.ip || '—' }} · {{ t('sessions.entered') }} {{ d(row.created_at, 'short') }} ·
+                {{ t('sessions.activity') }} {{ row.last_used_at ? d(row.last_used_at, 'short') : '—' }}
+              </p>
+            </div>
+            <Button
+              v-if="!row.is_current" variant="ghost" size="sm" class="text-red-600 hover:text-red-700 dark:text-red-400"
+              :disabled="sessionBusy[row.id]" @click="revokeSession(row)"
+            >
+              <Trash2 class="mr-1.5 h-3.5 w-3.5" /> {{ t('sessions.revoke') }}
+            </Button>
+          </div>
+        </div>
+        <Skeleton v-else class="mt-3 h-20 w-full" />
       </CardContent>
     </Card>
 

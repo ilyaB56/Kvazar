@@ -37,6 +37,9 @@ export const useAuthStore = defineStore('auth', {
     // права роли на модули: {module: 'rw' | 'ro' | 'none'} (редизайн §6.3);
     // null — ещё не загружены (guard дождётся fetchPermissions)
     permissions: null as Record<string, string> | null,
+    // sessions-security §2.2: сеансов после последнего входа; >1 —
+    // ErpShell показывает модалку «в аккаунт уже вошли» (один раз за вход)
+    activeSessions: 0,
   }),
   getters: {
     isAuthenticated: (state) => !!state.accessToken,
@@ -91,6 +94,7 @@ export const useAuthStore = defineStore('auth', {
         body: JSON.stringify({ email, password }),
       })
       this.persist(tokens, remember)
+      this.activeSessions = tokens.active_sessions ?? 1
       await this.fetchMe()
       await this.fetchPermissions()
     },
@@ -108,10 +112,25 @@ export const useAuthStore = defineStore('auth', {
           body: JSON.stringify({ refresh_token: this.refreshToken }),
         })
         this.persist(tokens)
+        this.activeSessions = tokens.active_sessions ?? this.activeSessions
         return true
       } catch {
         return false
       }
+    },
+    async logoutOthers(): Promise<number> {
+      // sessions-security §2.2: завершить все прочие активные сеансы;
+      // текущий (чей refresh передан) остаётся. Сырой fetch — как apiLogout.
+      if (!this.refreshToken) return 0
+      const response = await fetch('/api/v1/auth/logout-others', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: this.refreshToken }),
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const data = await response.json() as { terminated: number }
+      this.activeSessions = 1
+      return data.terminated
     },
     async apiLogout(): Promise<void> {
       // Отзыв refresh-токена на сервере (security-p0). Best-effort: сырой fetch
@@ -128,6 +147,7 @@ export const useAuthStore = defineStore('auth', {
       }
     },
     logout() {
+      this.activeSessions = 0
       this.accessToken = ''
       this.refreshToken = ''
       this.user = null
