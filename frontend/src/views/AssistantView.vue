@@ -274,18 +274,19 @@ onMounted(() => {
       @update:model-value="tab = $event"
     />
 
-    <!-- Чат -->
+    <!-- Чат: обе колонки ограничены по высоте доступной области (100dvh −
+         хром приложения ~15rem) — страница не растёт от контента ассистента -->
     <div v-if="tab === 'chat'" class="grid grid-cols-1 gap-4 lg:grid-cols-[240px_1fr]">
-      <Card class="h-fit border-zinc-200 shadow-sm dark:border-zinc-800">
-        <CardContent class="p-3">
-          <Button v-if="canWrite" variant="outline" size="sm" class="mb-2 w-full gap-1.5" @click="newSession">
+      <Card class="flex max-h-48 w-full flex-col overflow-hidden border-zinc-200 shadow-sm dark:border-zinc-800 lg:max-h-[calc(100dvh-15rem)] lg:w-60">
+        <CardContent class="flex min-h-0 flex-col p-3">
+          <Button v-if="canWrite" variant="outline" size="sm" class="mb-2 w-full shrink-0 gap-1.5" @click="newSession">
             <Plus class="h-3.5 w-3.5" /> {{ t('ai.newSession') }}
           </Button>
           <div v-if="loadingSessions" class="space-y-2">
             <Skeleton class="h-8 w-full" />
             <Skeleton class="h-8 w-full" />
           </div>
-          <ul v-else class="erp-scroll max-h-[55vh] space-y-0.5 overflow-y-auto pr-0.5">
+          <ul v-else class="erp-scroll min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-0.5">
             <li
               v-for="session in sessions" :key="session.id"
               class="group flex cursor-pointer items-center justify-between gap-1 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-accent"
@@ -306,15 +307,15 @@ onMounted(() => {
         </CardContent>
       </Card>
 
-      <Card class="flex h-[min(72vh,680px)] min-h-[440px] flex-col border-zinc-200 shadow-sm dark:border-zinc-800">
-        <CardContent class="flex flex-1 flex-col p-0">
-          <div class="erp-scroll flex-1 space-y-3 overflow-y-auto p-4">
+      <Card class="flex h-[calc(100dvh-15rem)] max-h-[760px] min-h-[440px] flex-col border-zinc-200 shadow-sm dark:border-zinc-800">
+        <CardContent class="flex min-h-0 flex-1 flex-col p-0">
+          <div class="erp-scroll min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
             <div
               v-for="(message, index) in messages" :key="index"
               class="flex flex-col" :class="message.role === 'user' && 'items-end'"
             >
               <div
-                class="max-w-[75%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-relaxed"
+                class="max-w-[75%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-sm leading-relaxed"
                 :class="message.role === 'user'
                   ? 'bg-emerald-600 text-white'
                   : 'bg-zinc-100 dark:bg-zinc-800'"
