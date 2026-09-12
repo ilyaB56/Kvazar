@@ -130,10 +130,12 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)):
     # данные для показа самому пользователю (в события шины не идут)
     from src.config import get_settings as _gs
     sid = uuid.uuid4()
+    # за nginx реальный клиент — в X-Forwarded-For (первый адрес цепочки)
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
     db.add(AuthSession(
         id=sid, user_id=user.id,
         user_agent=(request.headers.get("user-agent") or "")[:256],
-        ip=(request.client.host if request.client else "")[:64],
+        ip=(forwarded or (request.client.host if request.client else ""))[:64],
     ))
     db.add(
         AuditEvent(user_id=user.id, action="login", entity_type="user", entity_id=str(user.id))
