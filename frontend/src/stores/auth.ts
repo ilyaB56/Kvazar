@@ -118,16 +118,23 @@ export const useAuthStore = defineStore('auth', {
         return false
       }
     },
-    async logoutOthers(): Promise<number> {
-      // sessions-security §2.2: завершить все прочие активные сеансы;
-      // текущий (чей refresh передан) остаётся. Сырой fetch — как apiLogout.
+    async logoutOthers(password: string): Promise<number> {
+      // sessions-security §2.2 (дополнение 2026-09-12): завершить все
+      // прочие активные сеансы с подтверждением паролем; текущий (чей
+      // refresh передан) остаётся. Сырой fetch — как apiLogout.
       if (!this.refreshToken) return 0
       const response = await fetch('/api/v1/auth/logout-others', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: this.refreshToken }),
+        body: JSON.stringify({ refresh_token: this.refreshToken, password }),
       })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (!response.ok) {
+        const error = new Error(`HTTP ${response.status}`) as HttpError
+        error.status = response.status
+        const retryAfter = Number(response.headers.get('Retry-After'))
+        if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfter = retryAfter
+        throw error
+      }
       const data = await response.json() as { terminated: number }
       this.activeSessions = 1
       return data.terminated

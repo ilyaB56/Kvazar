@@ -75,3 +75,41 @@ def reset_login_rate_limit(request: Request) -> None:
         if not _warned:
             logger.warning("login rate limit unavailable, fail-open", exc_info=True)
             _warned = True
+
+
+def check_password_confirm_rate_limit(user_id) -> None:
+    """Счётчик подтверждений паролем (sessions-security §2.2): разрушительные
+    действия над сеансами (logout-others/revoke) — 5 попыток/60с по user_id,
+    429 c Retry-After. Ключ по пользователю, а не IP: брутфорс под одним
+    аккаунтом не обходится сменой адреса. Redis недоступен → fail-open."""
+    global _warned
+    try:
+        client = _client()
+        key = f"pw_confirm_attempts:{user_id}"
+        count = client.incr(key)
+        if count == 1:
+            client.expire(key, WINDOW_SECONDS)
+        if count > MAX_ATTEMPTS:
+            ttl = max(client.ttl(key), 1)
+            raise HTTPException(
+                429, "Too many attempts", headers={"Retry-After": str(ttl)}
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        if not _warned:
+            logger.warning("password-confirm rate limit unavailable, fail-open",
+                           exc_info=True)
+            _warned = True
+
+
+def reset_password_confirm_rate_limit(user_id) -> None:
+    """Успешное подтверждение: счётчик сбрасывается."""
+    global _warned
+    try:
+        _client().delete(f"pw_confirm_attempts:{user_id}")
+    except Exception:
+        if not _warned:
+            logger.warning("password-confirm rate limit unavailable, fail-open",
+                           exc_info=True)
+            _warned = True

@@ -116,8 +116,24 @@ def test_a3_logout_others_kills_first_session(client):
     first = _login(client)
     second = _login(client)
 
+    # без пароля → 422 (схема требует поле)
     response = client.post(f"{API}/auth/logout-others",
                            json={"refresh_token": second["refresh_token"]})
+    assert response.status_code == 422, response.text
+    # неверный пароль → 403 wrong_password, сеансы живы
+    response = client.post(f"{API}/auth/logout-others",
+                           json={"refresh_token": second["refresh_token"],
+                                 "password": "definitely-wrong"})
+    assert response.status_code == 403 and "wrong_password" in response.text, response.text
+    alive = client.get(f"{API}/auth/sessions",
+                       headers=_auth(second["access_token"])).json()
+    assert len(alive) >= 2, "сеансы не должны умирать от неверного пароля"
+
+    # верный пароль → завершение работает
+    response = client.post(f"{API}/auth/logout-others",
+                           json={"refresh_token": second["refresh_token"],
+                                 "password": os.environ.get("ERP_ADMIN_PASSWORD",
+                                                            "admin12345")})
     assert response.status_code == 200, response.text
     assert response.json()["terminated"] >= 1
 
@@ -152,27 +168,45 @@ def test_a4_revoke_foreign_and_revoked(client):
                                 headers=_auth(other["access_token"])).json()
     other_sid = other_sessions[0]["id"]
 
-    # чужой сеанс → 404 (не раскрываем существование)
+    admin_pwd = os.environ.get("ERP_ADMIN_PASSWORD", "admin12345")
+
+    # чужой сеанс → 404 даже с неверным паролем (не раскрываем существование)
+    response = client.post(f"{API}/auth/sessions/{other_sid}/revoke",
+                           headers=_auth(admin["access_token"]),
+                           json={"password": "wrong"})
+    assert response.status_code == 404, response.text
+    # без пароля → 422
     response = client.post(f"{API}/auth/sessions/{other_sid}/revoke",
                            headers=_auth(admin["access_token"]))
-    assert response.status_code == 404, response.text
+    assert response.status_code == 422, response.text
 
-    # свой не-текущий: второй вход админом → ревок → повтор → 409
+    # свой не-текущий: неверный пароль → 403 и сеанс жив;
+    # верный → ревок → повтор → 409
     second = _login(client)
     mine = client.get(f"{API}/auth/sessions",
                       headers=_auth(second["access_token"])).json()
     stale = next(r for r in mine if not r["is_current"])
     response = client.post(f"{API}/auth/sessions/{stale['id']}/revoke",
-                           headers=_auth(second["access_token"]))
-    assert response.status_code == 200, response.text
+                           headers=_auth(second["access_token"]),
+                           json={"password": "wrong"})
+    assert response.status_code == 403, response.text
     response = client.post(f"{API}/auth/sessions/{stale['id']}/revoke",
                            headers=_auth(second["access_token"]))
+    assert response.status_code == 422, response.text
+    response = client.post(f"{API}/auth/sessions/{stale['id']}/revoke",
+                           headers=_auth(second["access_token"]),
+                           json={"password": admin_pwd})
+    assert response.status_code == 200, response.text
+    response = client.post(f"{API}/auth/sessions/{stale['id']}/revoke",
+                           headers=_auth(second["access_token"]),
+                           json={"password": admin_pwd})
     assert response.status_code == 409, response.text
 
-    # ревок текущего сеанса → 409 (для текущего есть logout)
+    # ревок текущего сеанса (с верным паролем) → 409: для текущего есть logout
     current_id = next(r for r in mine if r["is_current"])["id"]
     response = client.post(f"{API}/auth/sessions/{current_id}/revoke",
-                           headers=_auth(second["access_token"]))
+                           headers=_auth(second["access_token"]),
+                           json={"password": admin_pwd})
     assert response.status_code == 409, response.text
 
     # отозванный refresh мёртв
@@ -242,3 +276,30 @@ def test_a6_spoofed_forwarded_for_ignored(client):
     assert current["ip"], "IP пуст — заголовок не дошёл до api"
     httpx.post(f"{web_url}/api/v1/auth/logout",
                json={"refresh_token": token["refresh_token"]}, timeout=10)
+
+
+def test_a7_password_confirm_bruteforce_blocked(client):
+    """5 неудачных подтверждений/60с по user_id → 6-я попытка 429 c
+    Retry-After (даже с верным паролем — окно должно отработать)."""
+    admin = _login(client)
+    email = f"sessions-bf-{RUN}@erp.local"
+    client.post(f"{API}/users", json={
+        "email": email, "password": "Bf12345678!", "role": "readonly",
+        "name": "BF"}, headers=_auth(admin["access_token"]))
+    response = client.post(f"{API}/auth/login",
+                           json={"email": email, "password": "Bf12345678!"})
+    assert response.status_code == 200, response.text
+    mine = response.json()
+
+    for i in range(5):
+        response = client.post(f"{API}/auth/logout-others",
+                               json={"refresh_token": mine["refresh_token"],
+                                     "password": f"wrong-{i}"})
+        assert response.status_code == 403, f"попытка {i + 1}: {response.status_code}"
+
+    response = client.post(f"{API}/auth/logout-others",
+                           json={"refresh_token": mine["refresh_token"],
+                                 "password": "Bf12345678!"})
+    assert response.status_code == 429, response.text
+    retry_after = response.headers.get("Retry-After")
+    assert retry_after and int(retry_after) > 0

@@ -42,7 +42,10 @@ from src.core.models import (
     User,
 )
 from src.core.passwords import validate_password
-from src.core.rate_limit import check_login_rate_limit, reset_login_rate_limit
+from src.core.rate_limit import (
+    check_login_rate_limit, check_password_confirm_rate_limit,
+    reset_login_rate_limit, reset_password_confirm_rate_limit,
+)
 from src.db import SessionLocal, get_db
 
 router = APIRouter(tags=["core"])
@@ -66,6 +69,16 @@ class TokenOut(BaseModel):
 
 class RefreshIn(BaseModel):
     refresh_token: str
+
+
+class LogoutOthersIn(RefreshIn):
+    """sessions-security §2.2 (дополнение 2026-09-12): разрушительное
+    действие над сеансами — с подтверждением паролем."""
+    password: str
+
+
+class SessionRevokeIn(BaseModel):
+    password: str
 
 
 class ChangePasswordIn(BaseModel):
@@ -229,10 +242,22 @@ def _session_cutoff() -> datetime:
     return datetime.now(UTC) - timedelta(days=_gs().refresh_expire_days)
 
 
+def _confirm_password(user, password: str) -> None:
+    """Подтверждение паролем (§2.2): неверный → 403 wrong_password (не
+    раскрывает валидность); брутфорс — Redis-счётчик 5/60с по user_id
+    (429). Успех сбрасывает счётчик. Вызывается ПОСЛЕ auth-проверок —
+    мусорные токены счётчик не жгут."""
+    check_password_confirm_rate_limit(user.id)
+    if not password or not verify_password(password, user.password_hash):
+        raise HTTPException(403, "wrong_password")
+    reset_password_confirm_rate_limit(user.id)
+
+
 @router.post("/auth/logout-others")
-def logout_others(body: RefreshIn, db: Session = Depends(get_db)):
+def logout_others(body: LogoutOthersIn, db: Session = Depends(get_db)):
     """Завершить все прочие активные сеансы; текущий (по refresh-токену)
-    остаётся. Логин не блокируется — это выбор пользователя (§2.2)."""
+    остаётся. Логин не блокируется — это выбор пользователя (§2.2);
+    завершение — с подтверждением паролем (дополнение основателя)."""
     from jwt import PyJWTError
 
     try:
@@ -254,6 +279,7 @@ def logout_others(body: RefreshIn, db: Session = Depends(get_db)):
     current = db.get(AuthSession, uuid.UUID(sid))
     if current is None or current.revoked_at is not None or current.user_id != user.id:
         raise HTTPException(401, "Session revoked")
+    _confirm_password(user, body.password)
     now = datetime.now(UTC)
     others = db.scalars(select(AuthSession).where(
         AuthSession.user_id == user.id,
@@ -316,13 +342,15 @@ def list_auth_sessions(request: Request, user: HumanUser, db: Session = Depends(
 
 
 @router.post("/auth/sessions/{session_id}/revoke")
-def revoke_auth_session(session_id: uuid.UUID, request: Request, user: HumanUser,
-                        db: Session = Depends(get_db)):
-    """Завершить свой сеанс (кроме текущего — для него есть logout).
-    Чужой/несуществующий — 404 (не раскрываем чужие id)."""
+def revoke_auth_session(session_id: uuid.UUID, body: SessionRevokeIn, request: Request,
+                        user: HumanUser, db: Session = Depends(get_db)):
+    """Завершить свой сеанс (кроме текущего — для него есть logout) с
+    подтверждением паролем (§2.2). Чужой/несуществующий — 404 (не
+    раскрываем чужие id — в том числе при неверном пароле)."""
     session = db.get(AuthSession, session_id)
     if session is None or session.user_id != user.id:
         raise HTTPException(404, "Session not found")
+    _confirm_password(user, body.password)
     if session.revoked_at is not None:
         raise HTTPException(409, "Session already revoked")
     from jwt import PyJWTError

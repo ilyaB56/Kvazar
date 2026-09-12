@@ -135,20 +135,38 @@ const passwordOpen = ref(false)
 // «Завершить другие сеансы» или «Продолжить» — оба живут дальше.
 const sessionWarn = ref(false)
 const sessionBusy = ref(false)
+// шаг 2 — подтверждение паролем (спека §2.3): ошибки инлайн, окно живо
+const sessionStep = ref<'info' | 'password'>('info')
+const sessionPassword = ref('')
+const sessionError = ref('')
 watch(
   () => [auth.isAuthenticated, auth.activeSessions] as const,
   ([authenticated, count]) => { sessionWarn.value = authenticated && count > 1 },
   { immediate: true },
 )
+watch(sessionWarn, (open) => {
+  if (open) {
+    sessionStep.value = 'info'
+    sessionPassword.value = ''
+    sessionError.value = ''
+  }
+})
 async function terminateOtherSessions() {
-  if (sessionBusy.value) return
+  if (sessionBusy.value || !sessionPassword.value) return
   sessionBusy.value = true
+  sessionError.value = ''
   try {
-    const terminated = await auth.logoutOthers()
+    const terminated = await auth.logoutOthers(sessionPassword.value)
     toast.success(t('sessions.terminatedToast', { n: terminated }))
     sessionWarn.value = false
   } catch (error) {
-    toast.apiError(error)
+    const { status, retryAfter } = error as { status?: number; retryAfter?: number }
+    if (status === 403) sessionError.value = t('sessions.wrongPassword')
+    else if (status === 429) {
+      sessionError.value = t('sessions.rateLimited', { n: retryAfter ?? 60 })
+    } else {
+      sessionError.value = (error as Error).message
+    }
   } finally {
     sessionBusy.value = false
   }
@@ -311,10 +329,11 @@ async function logout() {
 
     <ChangePasswordDialog v-model="passwordOpen" />
 
-    <!-- В аккаунт уже выполнен вход: выбор пользователя, не блокировка -->
+    <!-- В аккаунт уже выполнен вход: выбор пользователя, не блокировка;
+         завершение — с подтверждением паролем (спека §2.3) -->
     <Dialog :open="sessionWarn" :title="t('sessions.warnTitle')" width="480px"
             @update:open="(v: boolean) => { if (!v) sessionWarn = false }">
-      <div class="space-y-4">
+      <div v-if="sessionStep === 'info'" class="space-y-4">
         <div class="flex items-start gap-3">
           <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400">
             <ShieldAlert class="h-5 w-5" />
@@ -327,11 +346,35 @@ async function logout() {
           <Button variant="outline" size="sm" @click="sessionWarn = false">
             {{ t('sessions.warnContinue') }}
           </Button>
-          <Button variant="emerald" size="sm" :disabled="sessionBusy" @click="terminateOtherSessions">
+          <Button variant="emerald" size="sm" @click="sessionStep = 'password'">
             {{ t('sessions.warnTerminate') }}
           </Button>
         </div>
       </div>
+      <form v-else class="space-y-4" @submit.prevent="terminateOtherSessions">
+        <p class="text-sm leading-relaxed text-muted-foreground">
+          {{ t('sessions.passwordPrompt') }}
+        </p>
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('sessions.passwordLabel') }}</Label>
+          <Input
+            v-model="sessionPassword" type="password"
+            :placeholder="'••••••••'" autofocus
+          />
+        </div>
+        <p v-if="sessionError" class="text-xs font-medium text-red-600 dark:text-red-400">
+          {{ sessionError }}
+        </p>
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" size="sm" type="button" @click="sessionStep = 'info'">
+            {{ t('sessions.backButton') }}
+          </Button>
+          <Button variant="emerald" size="sm" type="submit"
+                  :disabled="sessionBusy || !sessionPassword">
+            {{ t('sessions.confirmButton') }}
+          </Button>
+        </div>
+      </form>
     </Dialog>
     <ToastHost />
   </div>

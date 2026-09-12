@@ -8,6 +8,7 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public retryAfter?: number, // 429: секунды до разблокировки
   ) {
     super(message)
   }
@@ -51,7 +52,11 @@ export async function api<T>(path: string, init: RequestInit = {}, retried = fal
     } catch {
       // тело не JSON — оставляем HTTP-код
     }
-    throw new ApiError(response.status, message)
+    const retryAfter = Number(response.headers.get('Retry-After'))
+    throw new ApiError(
+      response.status, message,
+      Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined,
+    )
   }
 
   if (response.status === 204) {

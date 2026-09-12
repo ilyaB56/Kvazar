@@ -97,6 +97,52 @@ async function loadSessions() {
 }
 onMounted(loadSessions)
 
+// подтверждение паролем (спека §2.2/2.3): Завершить / Завершить все другие
+const confirmOpen = ref(false)
+const confirmMode = ref<'one' | 'others'>('others')
+const confirmTarget = ref<AuthSession | null>(null)
+const confirmPassword = ref('')
+const confirmError = ref('')
+const confirmBusy = ref(false)
+
+function askConfirm(mode: 'one' | 'others', row: AuthSession | null = null) {
+  confirmMode.value = mode
+  confirmTarget.value = row
+  confirmPassword.value = ''
+  confirmError.value = ''
+  confirmOpen.value = true
+}
+
+async function doConfirmRevoke() {
+  if (confirmBusy.value || !confirmPassword.value) return
+  confirmBusy.value = true
+  confirmError.value = ''
+  try {
+    if (confirmMode.value === 'others') {
+      const terminated = await auth.logoutOthers(confirmPassword.value)
+      toast.success(t('sessions.terminatedToast', { n: terminated }))
+      auth.activeSessions = 1
+    } else if (confirmTarget.value) {
+      await post(`/auth/sessions/${confirmTarget.value.id}/revoke`, {
+        password: confirmPassword.value,
+      })
+      toast.success(t('sessions.revokedToast'))
+    }
+    confirmOpen.value = false
+    await loadSessions()
+  } catch (error) {
+    const { status, retryAfter } = error as { status?: number; retryAfter?: number }
+    if (status === 403) confirmError.value = t('sessions.wrongPassword')
+    else if (status === 429) {
+      confirmError.value = t('sessions.rateLimited', { n: retryAfter ?? 60 })
+    } else {
+      confirmError.value = (error as Error).message
+    }
+  } finally {
+    confirmBusy.value = false
+  }
+}
+
 /** Браузер/ОС из user_agent — для показа самому пользователю. */
 function deviceLabel(ua: string): string {
   if (!ua) return t('sessions.unknownDevice')
@@ -120,34 +166,6 @@ function deviceLabel(ua: string): string {
   const browser = browsers.find(([re]) => re.test(ua))?.[1] ?? ''
   const system = systems.find(([re]) => re.test(ua))?.[1] ?? ''
   return [system, browser].filter(Boolean).join(' · ') || t('sessions.unknownDevice')
-}
-
-async function revokeSession(row: AuthSession) {
-  sessionBusy.value[row.id] = true
-  try {
-    await post(`/auth/sessions/${row.id}/revoke`)
-    toast.success(t('sessions.revokedToast'))
-    await loadSessions()
-  } catch (error) {
-    toast.apiError(error)
-  } finally {
-    sessionBusy.value[row.id] = false
-  }
-}
-
-async function revokeOtherSessions() {
-  if (sessionBusy.value.all) return
-  sessionBusy.value.all = true
-  try {
-    const terminated = await auth.logoutOthers()
-    toast.success(t('sessions.terminatedToast', { n: terminated }))
-    auth.activeSessions = 1
-    await loadSessions()
-  } catch (error) {
-    toast.apiError(error)
-  } finally {
-    sessionBusy.value.all = false
-  }
 }
 
 async function copySecret(value: string) {
@@ -189,7 +207,7 @@ async function copySecret(value: string) {
           </p>
           <Button
             v-if="sessions && sessions.length > 1" variant="outline" size="sm"
-            :disabled="sessionBusy.all" @click="revokeOtherSessions"
+            @click="askConfirm('others')"
           >
             {{ t('sessions.revokeOthers') }}
           </Button>
@@ -221,7 +239,7 @@ async function copySecret(value: string) {
             </div>
             <Button
               v-if="!row.is_current" variant="ghost" size="sm" class="text-red-600 hover:text-red-700 dark:text-red-400"
-              :disabled="sessionBusy[row.id]" @click="revokeSession(row)"
+              @click="askConfirm('one', row)"
             >
               <Trash2 class="mr-1.5 h-3.5 w-3.5" /> {{ t('sessions.revoke') }}
             </Button>
@@ -287,6 +305,34 @@ async function copySecret(value: string) {
     <Skeleton v-else-if="auth.isAdmin && tokens === null" class="h-40 w-full" />
 
     <ChangePasswordDialog v-model="passwordOpen" />
+
+    <!-- Подтверждение паролем разрушительных действий над сеансами -->
+    <Dialog :open="confirmOpen" :title="t('sessions.confirmTitle')" width="440px"
+            @update:open="(v: boolean) => { if (!v) confirmOpen = false }">
+      <form class="space-y-4" @submit.prevent="doConfirmRevoke">
+        <p class="text-sm leading-relaxed text-muted-foreground">
+          {{ confirmMode === 'others'
+            ? t('sessions.confirmOthersText')
+            : t('sessions.confirmOneText', { device: confirmTarget ? deviceLabel(confirmTarget.user_agent) : '' }) }}
+        </p>
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('sessions.passwordLabel') }}</Label>
+          <Input v-model="confirmPassword" type="password" placeholder="••••••••" />
+        </div>
+        <p v-if="confirmError" class="text-xs font-medium text-red-600 dark:text-red-400">
+          {{ confirmError }}
+        </p>
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" size="sm" type="button" @click="confirmOpen = false">
+            {{ t('ui.cancel') }}
+          </Button>
+          <Button variant="emerald" size="sm" type="submit"
+                  :disabled="confirmBusy || !confirmPassword">
+            {{ t('sessions.confirmButton') }}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
 
     <!-- Диалог нового токена -->
     <Dialog :open="tokenOpen" :title="t('security.newToken')" @update:open="(v: boolean) => { if (!v) { tokenOpen = false; freshSecret = null } }">
