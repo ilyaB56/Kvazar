@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.config import get_settings
-from src.core.models import ApiToken, RolePermission, User
+from src.core.models import ApiToken, AuthSession, RolePermission, User
 from src.db import get_db
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -32,7 +32,8 @@ def verify_password(password: str, password_hash: str) -> bool:
     return pwd_context.verify(password, password_hash)
 
 
-def create_access_token(user_id: uuid.UUID, role: str, ver: int = 0) -> str:
+def create_access_token(user_id: uuid.UUID, role: str, ver: int = 0,
+                        sid: uuid.UUID | str | None = None) -> str:
     now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
@@ -43,10 +44,15 @@ def create_access_token(user_id: uuid.UUID, role: str, ver: int = 0) -> str:
         "exp": now + timedelta(minutes=_settings.jwt_expire_minutes),
         "iat": now,
     }
+    if sid is not None:
+        # sessions-security §2.1: клейм сеанса — маркировка «текущий» и
+        # мгновенный 401 по отзыву сессии (logout-others/revoke)
+        payload["sid"] = str(sid)
     return jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
 
 
-def create_refresh_token(user_id: uuid.UUID, ver: int = 0) -> str:
+def create_refresh_token(user_id: uuid.UUID, ver: int = 0,
+                         sid: uuid.UUID | str | None = None) -> str:
     now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
@@ -56,6 +62,8 @@ def create_refresh_token(user_id: uuid.UUID, ver: int = 0) -> str:
         "exp": now + timedelta(days=_settings.refresh_expire_days),
         "iat": now,
     }
+    if sid is not None:
+        payload["sid"] = str(sid)
     return jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
 
 
@@ -108,6 +116,13 @@ def get_current_user(
     # (смена пароля инвалидирует все ранее выданные токены)
     if payload.get("ver", 0) != user.token_version:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token revoked")
+    # sessions-security §2.1: сеанс отозван (logout-others/revoke) — 401
+    # сразу, не дожидаясь exp access-токена (PK-lookup, дёшево)
+    sid = payload.get("sid")
+    if sid:
+        session = db.get(AuthSession, uuid.UUID(sid))
+        if session is not None and session.revoked_at is not None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session revoked")
     return user
 
 

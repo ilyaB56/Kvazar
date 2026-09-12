@@ -179,6 +179,26 @@ class RevokedToken(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class AuthSession(Base):
+    """auth_sessions — активные сеансы входа (sessions-security-spec §2.1).
+
+    id = sid-клейм пары токенов; ротация refresh сохраняет id строки.
+    «Активный» = revoked_at IS NULL и TTL (refresh_expire_days от
+    created_at) не истёк."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.users.id"), index=True)
+    user_agent: Mapped[str] = mapped_column(Text, default="")  # обрезка 256 при записи
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class Backup(Base):
     """backups — реестр резервных копий БД (шифруются Fernet по BACKUP_KEY)."""
 

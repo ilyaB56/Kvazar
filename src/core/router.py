@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from typing import Annotated
 
@@ -30,6 +30,7 @@ from src.core.auth import (
 from src.core.models import (
     ApiToken,
     AuditEvent,
+    AuthSession,
     Backup,
     Company,
     Contact,
@@ -58,6 +59,9 @@ class TokenOut(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    # sessions-security §2.2: активные сеансы ПОСЛЕ этого входа (включая
+    # текущий); >1 — UI показывает модалку «в аккаунт уже вошли»
+    active_sessions: int = 1
 
 
 class RefreshIn(BaseModel):
@@ -122,13 +126,30 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)):
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "Bad credentials")
     reset_login_rate_limit(request)
+    # sessions-security §2.1: сеанс = sid пары токенов; user_agent/ip —
+    # данные для показа самому пользователю (в события шины не идут)
+    from src.config import get_settings as _gs
+    sid = uuid.uuid4()
+    db.add(AuthSession(
+        id=sid, user_id=user.id,
+        user_agent=(request.headers.get("user-agent") or "")[:256],
+        ip=(request.client.host if request.client else "")[:64],
+    ))
     db.add(
         AuditEvent(user_id=user.id, action="login", entity_type="user", entity_id=str(user.id))
     )
+    db.flush()
+    ttl_cut = datetime.now(UTC) - timedelta(days=_gs().refresh_expire_days)
+    active = db.scalar(select(func.count()).select_from(AuthSession).where(
+        AuthSession.user_id == user.id,
+        AuthSession.revoked_at.is_(None),
+        AuthSession.created_at >= ttl_cut,
+    )) or 1
     db.commit()
     return TokenOut(
-        access_token=create_access_token(user.id, user.role, ver=user.token_version),
-        refresh_token=create_refresh_token(user.id, ver=user.token_version),
+        access_token=create_access_token(user.id, user.role, ver=user.token_version, sid=sid),
+        refresh_token=create_refresh_token(user.id, ver=user.token_version, sid=sid),
+        active_sessions=int(active),
     )
 
 
@@ -149,9 +170,19 @@ def refresh(body: RefreshIn, db: Session = Depends(get_db)):
         raise HTTPException(401, "User not found")
     if payload.get("ver", 0) != user.token_version:
         raise HTTPException(401, "Token revoked")
+    # sessions-security §2.1: сеанс отозван (logout-others/revoke) —
+    # refresh запрещён; живой — продлевается (rotация сохраняет sid)
+    sid = payload.get("sid")
+    session = None
+    if sid:
+        session = db.get(AuthSession, uuid.UUID(sid))
+        if session is not None:
+            if session.revoked_at is not None or session.user_id != user.id:
+                raise HTTPException(401, "Session revoked")
+            session.last_used_at = datetime.now(UTC)
     return TokenOut(
-        access_token=create_access_token(user.id, user.role, ver=user.token_version),
-        refresh_token=create_refresh_token(user.id, ver=user.token_version),
+        access_token=create_access_token(user.id, user.role, ver=user.token_version, sid=sid),
+        refresh_token=create_refresh_token(user.id, ver=user.token_version, sid=sid),
     )
 
 
@@ -177,9 +208,137 @@ def logout(body: RefreshIn, db: Session = Depends(get_db)):
             db.add(RevokedToken(
                 jti=uuid.UUID(jti), user_id=user.id, expires_at=expires_at
             ))
+    sid = payload.get("sid")
+    if sid:
+        session = db.get(AuthSession, uuid.UUID(sid))
+        if session is not None and session.revoked_at is None:
+            session.revoked_at = datetime.now(UTC)
     db.add(AuditEvent(user_id=user.id, action="logout", entity_type="user", entity_id=str(user.id)))
     db.commit()
     return {"ok": True}
+
+
+# ---------- Сеансы входа (sessions-security-spec §2.2) ----------
+
+def _session_cutoff() -> datetime:
+    from src.config import get_settings as _gs
+    return datetime.now(UTC) - timedelta(days=_gs().refresh_expire_days)
+
+
+@router.post("/auth/logout-others")
+def logout_others(body: RefreshIn, db: Session = Depends(get_db)):
+    """Завершить все прочие активные сеансы; текущий (по refresh-токену)
+    остаётся. Логин не блокируется — это выбор пользователя (§2.2)."""
+    from jwt import PyJWTError
+
+    try:
+        payload = decode_token(body.refresh_token)
+    except PyJWTError as exc:
+        raise HTTPException(401, "Invalid refresh token") from exc
+    if payload.get("type") != "refresh":
+        raise HTTPException(401, "Wrong token type")
+    if payload.get("jti") and db.get(RevokedToken, uuid.UUID(payload["jti"])) is not None:
+        raise HTTPException(401, "Token revoked")
+    user = db.get(User, payload["sub"])
+    if user is None or not user.is_active:
+        raise HTTPException(401, "User not found")
+    if payload.get("ver", 0) != user.token_version:
+        raise HTTPException(401, "Token revoked")
+    sid = payload.get("sid")
+    if not sid:
+        raise HTTPException(401, "Token has no session")
+    current = db.get(AuthSession, uuid.UUID(sid))
+    if current is None or current.revoked_at is not None or current.user_id != user.id:
+        raise HTTPException(401, "Session revoked")
+    now = datetime.now(UTC)
+    others = db.scalars(select(AuthSession).where(
+        AuthSession.user_id == user.id,
+        AuthSession.revoked_at.is_(None),
+        AuthSession.created_at >= _session_cutoff(),
+        AuthSession.id != current.id,
+    )).all()
+    for session in others:
+        session.revoked_at = now
+    db.add(AuditEvent(
+        user_id=user.id, action="auth.sessions.logout_others",
+        entity_type="user", entity_id=str(user.id),
+        payload={"terminated": len(others)},
+    ))
+    db.commit()
+    return {"terminated": len(others)}
+
+
+class AuthSessionOut(BaseModel):
+    id: uuid.UUID
+    user_agent: str
+    ip: str
+    created_at: datetime
+    last_used_at: datetime | None
+    is_current: bool = False
+
+
+@router.get("/auth/sessions", response_model=list[AuthSessionOut])
+def list_auth_sessions(request: Request, user: HumanUser, db: Session = Depends(get_db)):
+    """Свои активные сеансы; текущий помечен is_current (по sid access-токена).
+    Заодно — уборка: протухшие по TTL помечаются revoked_at (§2.1)."""
+    from jwt import PyJWTError
+
+    now = datetime.now(UTC)
+    db.execute(
+        AuthSession.__table__.update().where(
+            AuthSession.user_id == user.id,
+            AuthSession.revoked_at.is_(None),
+            AuthSession.created_at < _session_cutoff(),
+        ).values(revoked_at=now)
+    )
+    current_sid = None
+    auth_header = request.headers.get("authorization") or ""
+    if auth_header.startswith("Bearer "):
+        try:
+            current_sid = decode_token(auth_header[7:]).get("sid")
+        except PyJWTError:
+            current_sid = None
+    rows = db.scalars(select(AuthSession).where(
+        AuthSession.user_id == user.id,
+        AuthSession.revoked_at.is_(None),
+        AuthSession.created_at >= _session_cutoff(),
+    ).order_by(AuthSession.created_at.desc())).all()
+    db.commit()
+    return [AuthSessionOut(
+        id=row.id, user_agent=row.user_agent, ip=row.ip,
+        created_at=row.created_at, last_used_at=row.last_used_at,
+        is_current=current_sid is not None and str(row.id) == current_sid,
+    ) for row in rows]
+
+
+@router.post("/auth/sessions/{session_id}/revoke")
+def revoke_auth_session(session_id: uuid.UUID, request: Request, user: HumanUser,
+                        db: Session = Depends(get_db)):
+    """Завершить свой сеанс (кроме текущего — для него есть logout).
+    Чужой/несуществующий — 404 (не раскрываем чужие id)."""
+    session = db.get(AuthSession, session_id)
+    if session is None or session.user_id != user.id:
+        raise HTTPException(404, "Session not found")
+    if session.revoked_at is not None:
+        raise HTTPException(409, "Session already revoked")
+    from jwt import PyJWTError
+
+    current_sid = None
+    auth_header = request.headers.get("authorization") or ""
+    if auth_header.startswith("Bearer "):
+        try:
+            current_sid = decode_token(auth_header[7:]).get("sid")
+        except PyJWTError:
+            current_sid = None
+    if current_sid and str(session.id) == current_sid:
+        raise HTTPException(409, "Current session: use logout instead")
+    session.revoked_at = datetime.now(UTC)
+    db.add(AuditEvent(
+        user_id=user.id, action="auth.session.revoked",
+        entity_type="auth_session", entity_id=str(session.id),
+    ))
+    db.commit()
+    return {"ok": True, "revoked": str(session.id)}
 
 
 @router.post("/auth/change-password")
@@ -193,6 +352,11 @@ def change_password(body: ChangePasswordIn, user: HumanUser, db: Session = Depen
         raise HTTPException(422, "; ".join(violations))
     user.password_hash = hash_password(body.new_password)
     user.token_version += 1
+    # sessions-security §2.2: смена пароля завершает ВСЕ сеансы каскадом
+    now = datetime.now(UTC)
+    for session in db.scalars(select(AuthSession).where(
+            AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))).all():
+        session.revoked_at = now
     db.add(AuditEvent(
         user_id=user.id, action="password.changed", entity_type="user", entity_id=str(user.id)
     ))
