@@ -117,13 +117,16 @@ def chat_with_tools(messages: list[dict], scenario: str,
 
 
 def chat_reply(*, session_id: uuid.UUID | None, message: str, user_id: uuid.UUID,
-               scenario: str = "chat", scripted_content: str | None = None) -> dict:
-    """Полный цикл: сессия (создание при необходимости) → RAG → модель → запись."""
+               scenario: str = "chat", scripted_content: str | None = None,
+               company_id: uuid.UUID | None = None) -> dict:
+    """Полный цикл: сессия (создание при необходимости) → RAG → модель → запись.
+    Сессия и RAG-поиск — в контексте организации пользователя."""
     db = SessionLocal()
     try:
         session = db.get(m.ChatSession, session_id) if session_id else None
         if session is None:
-            session = m.ChatSession(user_id=user_id, title=message[:40])
+            session = m.ChatSession(user_id=user_id, title=message[:40],
+                                    company_id=company_id)
             db.add(session)
             db.flush()
         elif session.user_id != user_id:

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from typing import Annotated
 
 from src.core.auth import AdminUser, require_module
+from src.core.auth import CompanyScoped
 from src.core.models import User
 from src.core.models import RecordVersion
 from src.db import get_db
@@ -118,15 +119,19 @@ class ReasonIn(BaseModel):
 # ---------- Стадии ----------
 
 @router.get("/stages", response_model=list[StageOut])
-def list_stages(user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db)):
-    return db.scalars(select(m.Stage).order_by(m.Stage.position)).all()
+def list_stages(user: User = Depends(require_module("crm", "ro")),
+                db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    return db.scalars(select(m.Stage).where(
+        m.Stage.company_id == scoped).order_by(m.Stage.position)).all()
 
 
 @router.post("/stages", response_model=StageOut, status_code=201)
-def create_stage(body: StageIn, admin: AdminUser, db: Session = Depends(get_db)):
-    if db.scalar(select(m.Stage).where(m.Stage.position == body.position)):
+def create_stage(body: StageIn, admin: AdminUser,
+                db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    if db.scalar(select(m.Stage).where(m.Stage.position == body.position,
+                                       m.Stage.company_id == scoped)):
         raise HTTPException(409, f"Stage position {body.position} already exists")
-    stage = m.Stage(**body.model_dump())
+    stage = m.Stage(**body.model_dump(), company_id=scoped)
     db.add(stage)
     db.commit()
     db.refresh(stage)
@@ -135,9 +140,9 @@ def create_stage(body: StageIn, admin: AdminUser, db: Session = Depends(get_db))
 
 @router.patch("/stages/{stage_id}", response_model=StageOut)
 def patch_stage(stage_id: uuid.UUID, body: StagePatch, admin: AdminUser,
-                db: Session = Depends(get_db)):
+                db: Session = Depends(get_db), scoped: CompanyScoped = None):
     stage = db.get(m.Stage, stage_id)
-    if stage is None:
+    if stage is None or stage.company_id != scoped:
         raise HTTPException(404, "Stage not found")
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(stage, field, value)
@@ -147,9 +152,10 @@ def patch_stage(stage_id: uuid.UUID, body: StagePatch, admin: AdminUser,
 
 
 @router.delete("/stages/{stage_id}")
-def delete_stage(stage_id: uuid.UUID, admin: AdminUser, db: Session = Depends(get_db)):
+def delete_stage(stage_id: uuid.UUID, admin: AdminUser,
+                db: Session = Depends(get_db), scoped: CompanyScoped = None):
     stage = db.get(m.Stage, stage_id)
-    if stage is None:
+    if stage is None or stage.company_id != scoped:
         raise HTTPException(404, "Stage not found")
     has_deals = db.scalar(select(m.Deal.id).where(m.Deal.stage_id == stage_id).limit(1))
     if has_deals:
@@ -186,8 +192,9 @@ def _enrich(db: Session, deals: list[m.Deal]) -> list[dict]:
 
 @router.get("/deals", response_model=list[DealOut])
 def list_deals(user: User = Depends(require_module("crm", "ro")), q: str | None = None, stage_id: uuid.UUID | None = None,
-               db: Session = Depends(get_db)):
-    query = select(m.Deal).where(m.Deal.is_deleted.is_(False)).order_by(m.Deal.created_at.desc())
+               db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    query = select(m.Deal).where(m.Deal.is_deleted.is_(False),
+                                 m.Deal.company_id == scoped).order_by(m.Deal.created_at.desc())
     if stage_id:
         query = query.where(m.Deal.stage_id == stage_id)
     if q:
@@ -196,31 +203,36 @@ def list_deals(user: User = Depends(require_module("crm", "ro")), q: str | None 
     return _enrich(db, db.scalars(query).all())
 
 
-def _get_deal(db: Session, deal_id: uuid.UUID) -> m.Deal:
+def _get_deal(db: Session, deal_id: uuid.UUID,
+              scoped: uuid.UUID | None = None) -> m.Deal:
     deal = db.get(m.Deal, deal_id)
-    if deal is None or deal.is_deleted:
+    if deal is None or deal.is_deleted or (
+            scoped is not None and deal.company_id != scoped):
         raise HTTPException(404, "Deal not found")
     return deal
 
 
 @router.post("/deals", response_model=DealOut, status_code=201)
-def create_deal(body: DealIn, user: User = Depends(require_module("crm")), db: Session = Depends(get_db)):
+def create_deal(body: DealIn, user: User = Depends(require_module("crm")),
+               db: Session = Depends(get_db), scoped: CompanyScoped = None):
     with svc():
-        deal = service.create_deal(db, user_id=user.id, data=body.model_dump())
+        deal = service.create_deal(db, user_id=user.id,
+                                   data={**body.model_dump(), "company_id": scoped})
     db.commit()
     db.refresh(deal)
     return _enrich(db, [deal])[0]
 
 
 @router.get("/deals/{deal_id}", response_model=DealOut)
-def get_deal(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db)):
-    return _enrich(db, [_get_deal(db, deal_id)])[0]
+def get_deal(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")),
+             db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    return _enrich(db, [_get_deal(db, deal_id, scoped)])[0]
 
 
 @router.patch("/deals/{deal_id}", response_model=DealOut)
 def patch_deal(deal_id: uuid.UUID, body: DealPatch, user: User = Depends(require_module("crm")),
-               db: Session = Depends(get_db)):
-    deal = _get_deal(db, deal_id)
+               db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    deal = _get_deal(db, deal_id, scoped)
     with svc():
         service.update_deal(db, deal, user_id=user.id,
                             changes=body.model_dump(exclude_unset=True))
@@ -231,8 +243,8 @@ def patch_deal(deal_id: uuid.UUID, body: DealPatch, user: User = Depends(require
 
 @router.post("/deals/{deal_id}/move", response_model=DealOut)
 def move_deal(deal_id: uuid.UUID, body: MoveIn, user: User = Depends(require_module("crm")),
-              db: Session = Depends(get_db)):
-    deal = _get_deal(db, deal_id)
+              db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    deal = _get_deal(db, deal_id, scoped)
     with svc():
         service.move_deal(db, deal, user_id=user.id, to_stage_id=body.stage_id)
     db.commit()
@@ -242,8 +254,8 @@ def move_deal(deal_id: uuid.UUID, body: MoveIn, user: User = Depends(require_mod
 
 @router.post("/deals/{deal_id}/delete-mark", response_model=DealOut)
 def delete_mark(deal_id: uuid.UUID, body: ReasonIn, admin: AdminUser,
-                db: Session = Depends(get_db)):
-    deal = _get_deal(db, deal_id)
+                db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    deal = _get_deal(db, deal_id, scoped)
     with svc():
         service.mark_deleted(db, deal, user_id=admin.id, reason=body.reason)
     db.commit()
@@ -252,8 +264,9 @@ def delete_mark(deal_id: uuid.UUID, body: ReasonIn, admin: AdminUser,
 
 
 @router.get("/deals/{deal_id}/counterparty")
-def deal_counterparty(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db)):
-    deal = _get_deal(db, deal_id)
+def deal_counterparty(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")),
+                     db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    deal = _get_deal(db, deal_id, scoped)
     if not deal.counterparty_id:
         return {"counterparty_id": None, "name": None}
     names = service.counterparty_names(db, [deal.counterparty_id])
@@ -321,18 +334,19 @@ class ActivityOut(BaseModel):
 
 
 @router.get("/deals/{deal_id}/communications", response_model=list[CommunicationOut])
-def list_communications(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db)):
-    _get_deal(db, deal_id)
+def list_communications(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")),
+                        db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    _get_deal(db, deal_id, scoped)
     return db.scalars(select(m.Communication).where(m.Communication.deal_id == deal_id)
                       .order_by(m.Communication.occurred_at.desc())).all()
 
 
 @router.post("/deals/{deal_id}/communications", response_model=CommunicationOut, status_code=201)
 def create_communication(deal_id: uuid.UUID, body: CommunicationIn, user: User = Depends(require_module("crm")),
-                         db: Session = Depends(get_db)):
+                         db: Session = Depends(get_db), scoped: CompanyScoped = None):
     from datetime import date as date_type
 
-    _get_deal(db, deal_id)
+    _get_deal(db, deal_id, scoped)
     if body.kind not in ("call", "email", "meeting", "note", "other"):
         raise HTTPException(422, "kind must be call|email|meeting|note|other")
     occurred = body.occurred_at or date_type.today()
@@ -347,8 +361,9 @@ def create_communication(deal_id: uuid.UUID, body: CommunicationIn, user: User =
 
 
 @router.get("/deals/{deal_id}/activities", response_model=list[ActivityOut])
-def list_deal_activities(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db)):
-    _get_deal(db, deal_id)
+def list_deal_activities(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")),
+                        db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    _get_deal(db, deal_id, scoped)
     return db.scalars(select(m.Activity).where(m.Activity.deal_id == deal_id)
                       .order_by(m.Activity.due_at)).all()
 
@@ -376,8 +391,8 @@ def _create_activity(db: Session, deal_id: uuid.UUID, body: ActivityIn,
 
 @router.post("/deals/{deal_id}/activities", response_model=ActivityOut, status_code=201)
 def create_activity(deal_id: uuid.UUID, body: ActivityIn, user: User = Depends(require_module("crm")),
-                    db: Session = Depends(get_db)):
-    _get_deal(db, deal_id)
+                    db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    _get_deal(db, deal_id, scoped)
     row = _create_activity(db, deal_id, body, user.id)
     db.commit()
     db.refresh(row)
@@ -413,13 +428,14 @@ def patch_activity(activity_id: uuid.UUID, body: ActivityPatch, user: User = Dep
 @router.get("/activities", response_model=list[ActivityOut])
 def list_activities(user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db),
                     due_before: object = None, status: str | None = None,
-                    responsible_id: uuid.UUID | None = None):
+                    responsible_id: uuid.UUID | None = None,
+                    scoped: CompanyScoped = None):
     """Общий список задач: свои + все для админа; фильтры due_before/status/responsible."""
     from datetime import date as date_type
 
     is_admin = getattr(user, "role", "user") == "admin"
     query = select(m.Activity).join(m.Deal, m.Deal.id == m.Activity.deal_id).where(
-        m.Deal.is_deleted.is_(False))
+        m.Deal.is_deleted.is_(False), m.Deal.company_id == scoped)
     if not is_admin:
         query = query.where(m.Deal.responsible_id == user.id)
     elif responsible_id:
@@ -439,7 +455,8 @@ def list_activities(user: User = Depends(require_module("crm", "ro")), db: Sessi
 @router.get("/report/pipeline")
 def pipeline_report(user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db),
                     responsible_id: uuid.UUID | None = None,
-                    date_from: object = None, date_to: object = None):
+                    date_from: object = None, date_to: object = None,
+                    scoped: CompanyScoped = None):
     from datetime import date as date_type
 
     def to_date(value):
@@ -447,4 +464,5 @@ def pipeline_report(user: User = Depends(require_module("crm", "ro")), db: Sessi
             return value
         return date_type.fromisoformat(str(value))
 
-    return service.pipeline(db, responsible_id, to_date(date_from), to_date(date_to))
+    return service.pipeline(db, responsible_id, to_date(date_from), to_date(date_to),
+                            company_id=scoped)

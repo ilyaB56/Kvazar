@@ -22,12 +22,15 @@ class Stage(Base):
     """Стадия воронки: вероятность 0–100, флаги won/lost (конечные)."""
 
     __table_args__ = (
-        UniqueConstraint("position"),
+        UniqueConstraint("company_id", "position"),
         {"schema": SCHEMA},
     )
     __tablename__ = "stages"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(120))
     position: Mapped[int] = mapped_column(Integer)
     probability: Mapped[int | None] = mapped_column(Integer)  # 0–100, nullable у won/lost
@@ -45,6 +48,9 @@ class Deal(Base):
     __tablename__ = "deals"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True, nullable=False
+    )
     title: Mapped[str] = mapped_column(String(255))
     stage_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{SCHEMA}.stages.id"), index=True)
     counterparty_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)

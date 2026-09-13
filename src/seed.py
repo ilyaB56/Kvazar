@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from src.config import get_settings
 from src.core.auth import hash_password
-from src.core.models import ModuleRegistry, User
+from src.core.models import Company, ModuleRegistry, User
 from src.core.plugins import MANIFESTS
 from src.db import SessionLocal
 from src.modules.integrations import models as im
@@ -108,6 +108,20 @@ def seed_company_data(db, company_id) -> None:
                 inv_m.Location.company_id == company_id)) is None:
             db.add(inv_m.Location(name=name, kind=kind, is_transit=transit,
                                   company_id=company_id))
+    # стадии CRM — копией эталона «Основной» (позиции/вероятности)
+    from src.modules.mini_crm import models as crm_m
+
+    has_stages = db.scalar(select(crm_m.Stage.id).where(
+        crm_m.Stage.company_id == company_id).limit(1))
+    if has_stages is None:
+        main = db.scalar(select(Company).where(Company.name == "Основная"))
+        if main is not None and main.id != company_id:
+            for row in db.scalars(select(crm_m.Stage).where(
+                    crm_m.Stage.company_id == main.id).order_by(crm_m.Stage.position)).all():
+                db.add(crm_m.Stage(
+                    company_id=company_id, name=row.name, position=row.position,
+                    probability=row.probability, is_won=row.is_won,
+                    is_lost=row.is_lost, is_active=row.is_active))
     today = date.today()
     db.add(acc_m.Period(year=today.year, month=today.month, status="open",
                         company_id=company_id))

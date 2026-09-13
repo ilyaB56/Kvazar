@@ -59,10 +59,11 @@ def chunks_for_file(filename: str, content: str) -> list[str]:
     return chunk_text(content)
 
 
-def index_document(db, *, name: str, content: str, uploaded_by: uuid.UUID) -> m.Document:
+def index_document(db, *, name: str, content: str, uploaded_by: uuid.UUID,
+                    company_id: uuid.UUID | None = None) -> m.Document:
     """Создать документ + чанки с эмбеддингами (одной транзакцией вызова)."""
     document = m.Document(name=name, source_type="csv" if name.lower().endswith(".csv") else "file",
-                          uploaded_by=uploaded_by)
+                          uploaded_by=uploaded_by, company_id=company_id)
     db.add(document)
     db.flush()
     for index, piece in enumerate(chunks_for_file(name, content)):
@@ -79,23 +80,28 @@ def delete_document(db, document: m.Document) -> None:
     db.commit()
 
 
-def search(q: str, limit: int = 5) -> list[dict]:
-    """Top-k чанков по косинусной близости (<=> — дистанция, меньше = ближе)."""
+def search(q: str, limit: int = 5,
+            company_id: uuid.UUID | None = None) -> list[dict]:
+    """Top-k чанков по косинусной близости (<=> — дистанция, меньше = ближе).
+    RAG — в рамках своей организации (chunks фильтруются join по documents)."""
     if not q.strip():
         return []
     query_vector = embed(q)
     vector_literal = "[" + ",".join(f"{v:.6f}" for v in query_vector) + "]"
     db = SessionLocal()
     try:
+        company_filter = ("AND d.company_id = CAST(:company_id AS uuid)"
+                          if company_id is not None else "")
         rows = db.execute(sql_text(f"""
             SELECT c.id, c.text, c.document_id, d.name AS document_name,
                    1 - (c.embedding <=> CAST(:qv AS vector)) AS similarity
             FROM {m.SCHEMA}.chunks c
             JOIN {m.SCHEMA}.documents d ON d.id = c.document_id
-            WHERE d.is_deleted = false
+            WHERE d.is_deleted = false {company_filter}
             ORDER BY c.embedding <=> CAST(:qv AS vector)
             LIMIT :limit
-        """), {"qv": vector_literal, "limit": limit}).mappings().all()
+        """), {"qv": vector_literal, "limit": limit,
+               **({"company_id": str(company_id)} if company_id is not None else {})}).mappings().all()
         return [dict(row) for row in rows]
     finally:
         db.close()

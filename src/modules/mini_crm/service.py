@@ -97,8 +97,10 @@ def _serialize(value: Any) -> Any:
 
 
 def create_deal(db: Session, *, user_id: uuid.UUID, data: dict) -> m.Deal:
+    company_id = data.get("company_id")
     stage = db.get(m.Stage, data.get("stage_id") or "")
-    if stage is None or not stage.is_active:
+    if stage is None or not stage.is_active or (
+            company_id is not None and stage.company_id != company_id):
         raise CrmError(422, "Unknown or inactive stage")
     if stage.is_won or stage.is_lost:
         raise CrmError(422, "Deal cannot start in won/lost stage")
@@ -106,6 +108,7 @@ def create_deal(db: Session, *, user_id: uuid.UUID, data: dict) -> m.Deal:
         raise CrmError(422, "amount must be positive")
 
     deal = m.Deal(
+        company_id=stage.company_id,
         title=data["title"],
         stage_id=stage.id,
         counterparty_id=data.get("counterparty_id"),
@@ -124,6 +127,7 @@ def create_deal(db: Session, *, user_id: uuid.UUID, data: dict) -> m.Deal:
         "deal_id": str(deal.id), "title": deal.title, "stage": stage.name,
         "amount": str(deal.amount), "currency": deal.currency,
         "amount_base": str(deal.amount_base), "responsible_id": str(deal.responsible_id) if deal.responsible_id else None,
+        "company_id": str(deal.company_id) if deal.company_id else None,
     })
     return deal
 
@@ -189,6 +193,7 @@ def move_deal(db: Session, deal: m.Deal, *, user_id: uuid.UUID, to_stage_id: uui
     }
     events.publish(db, "crm.deal.stage_changed", {
         **payload_common, "is_won": target.is_won, "is_lost": target.is_lost,
+        "company_id": str(deal.company_id) if deal.company_id else None,
     })
     if target.is_won:
         events.publish(db, "crm.deal.won", {
@@ -196,12 +201,14 @@ def move_deal(db: Session, deal: m.Deal, *, user_id: uuid.UUID, to_stage_id: uui
             "amount": str(deal.amount), "currency": deal.currency,
             "amount_base": str(deal.amount_base),
             "counterparty_id": str(deal.counterparty_id) if deal.counterparty_id else None,
-        })
+        "company_id": str(deal.company_id) if deal.company_id else None,
+    })
     if target.is_lost:
         events.publish(db, "crm.deal.lost", {
             "deal_id": str(deal.id), "title": deal.title,
             "reason": deal.lost_reason or "",
-        })
+        "company_id": str(deal.company_id) if deal.company_id else None,
+    })
     return deal
 
 
@@ -216,27 +223,30 @@ def mark_deleted(db: Session, deal: m.Deal, *, user_id: uuid.UUID, reason: str) 
 # ---------- Отчёт pipeline (этап C) ----------
 
 def pipeline(db: Session, responsible_id: uuid.UUID | None,
-             date_from: date | None, date_to: date | None) -> dict:
+             date_from: date | None, date_to: date | None,
+             company_id: uuid.UUID | None = None) -> dict:
     """Воронка по открытым стадиям + выиграно/проиграно за период.
 
     weighted = Σ amount_base × probability/100 (квантование half-up до копеек,
     ADR-003); всё в базовой валюте, деньги строками.
     """
+    stage_conds = [m.Stage.is_active.is_(True),
+                   m.Stage.is_won.is_(False), m.Stage.is_lost.is_(False)]
+    if company_id is not None:
+        stage_conds.append(m.Stage.company_id == company_id)
     stages = db.scalars(select(m.Stage).where(
-        m.Stage.is_active.is_(True),
-        m.Stage.is_won.is_(False),
-        m.Stage.is_lost.is_(False),
-    ).order_by(m.Stage.position)).all()
+        *stage_conds).order_by(m.Stage.position)).all()
 
     rows = []
     grand_count = 0
     grand_total = Decimal(0)
     grand_weighted = Decimal(0)
     for stage in stages:
+        deal_conds = [m.Deal.stage_id == stage.id, m.Deal.is_deleted.is_(False)]
+        if company_id is not None:
+            deal_conds.append(m.Deal.company_id == company_id)
         deals = db.scalars(select(m.Deal).where(
-            m.Deal.stage_id == stage.id,
-            m.Deal.is_deleted.is_(False),
-        )).all()
+            *deal_conds)).all()
         if responsible_id is not None:
             deals = [d for d in deals if d.responsible_id == responsible_id]
         total = sum((d.amount_base or Decimal(0) for d in deals), Decimal(0))

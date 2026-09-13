@@ -12,6 +12,7 @@ from sqlalchemy.types import UserDefinedType
 
 from src.db import Base
 
+
 SCHEMA = "ai_agent"
 
 
@@ -36,6 +37,9 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(255))
     source_type: Mapped[str] = mapped_column(String(10), default="file")  # file|csv
     uploaded_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("erp_core.users.id"))
@@ -62,6 +66,9 @@ class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True, nullable=False
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("erp_core.users.id"), index=True)
     title: Mapped[str] = mapped_column(String(120), default="")
@@ -91,6 +98,9 @@ class Proposal(Base):
     __tablename__ = "proposals"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True, nullable=False
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("erp_core.users.id"), index=True)
     action_type: Mapped[str] = mapped_column(String(40))  # create_transaction | categorize
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)

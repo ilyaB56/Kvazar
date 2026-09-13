@@ -51,7 +51,8 @@ def set_autopapply(db, user_id: uuid.UUID, value: bool) -> m.UserSettings:
 
 def create_proposal(*, user_id: uuid.UUID, action_type: str, payload: dict,
                     reason: str = "", idempotency_key: str | None = None,
-                    respect_autopapply: bool = True) -> m.Proposal:
+                    respect_autopapply: bool = True,
+                    company_id: uuid.UUID | None = None) -> m.Proposal:
     """Создать предложение; при autopapply=true — применить сразу (auto_applied).
 
     idempotency_key (этап F): существующий pending-предложение с тем же ключом
@@ -68,6 +69,7 @@ def create_proposal(*, user_id: uuid.UUID, action_type: str, payload: dict,
         proposal = m.Proposal(
             user_id=user_id, action_type=action_type, payload=payload,
             reason=reason, status="pending", idempotency_key=idempotency_key,
+            company_id=company_id,
         )
         db.add(proposal)
         db.flush()
