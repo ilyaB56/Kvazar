@@ -473,6 +473,7 @@ def normalize_payment(db, *, connection, connector, event: m.WebhookEvent) -> m.
     if existing is not None:
         return existing
     payment = m.OnlinePayment(
+        company_id=connection.company_id,
         connection_id=connection.id,
         provider=connection.connector_code,
         provider_payment_id=normalized["payment_id"],

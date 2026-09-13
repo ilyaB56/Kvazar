@@ -111,7 +111,15 @@ def client():
 def _login(http: httpx.Client, email: str, password: str) -> dict:
     response = http.post(f"{API}/auth/login", json={"email": email, "password": password})
     response.raise_for_status()
-    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+    data = response.json()
+    # мультитенантность: супер-админ работает в контексте «Основной»
+    orgs = data.get("organizations") or []
+    if orgs:
+        org_id = next((o["id"] for o in orgs if o.get("name") == "Основная"),
+                      orgs[0]["id"])
+        data = http.post(f"{API}/auth/select-org", json={
+            "refresh_token": data["refresh_token"], "company_id": org_id}).json()
+    return {"Authorization": f"Bearer {data['access_token']}"}
 
 
 @pytest.fixture(scope="module")

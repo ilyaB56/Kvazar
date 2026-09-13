@@ -9,11 +9,12 @@ import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from src.core import events
 from src.core.auth import module_level, require_module
+from src.core.auth import CompanyScoped
 from src.core.models import User
 from src.db import get_db
 from src.modules.integrations import models as m
@@ -121,15 +122,23 @@ def list_connectors(user: User = Depends(require_module("integrations", "ro"))):
 # ---------- Connections ----------
 
 @router.get("/connections", response_model=list[ConnectionOut])
-def list_connections(user: User = Depends(require_module("integrations", "ro")), db: Session = Depends(get_db)):
-    return db.scalars(select(m.Connection)).all()
+def list_connections(user: User = Depends(require_module("integrations", "ro")),
+                    db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    query = select(m.Connection).where(m.Connection.company_id == scoped)
+    if getattr(user, "token_pl", False):
+        # платформенный админ видит и платформенные коннекторы (NULL)
+        query = select(m.Connection).where(or_(
+            m.Connection.company_id == scoped, m.Connection.company_id.is_(None)))
+    return db.scalars(query).all()
 
 
 @router.post("/connections", response_model=ConnectionOut, status_code=201)
-def create_connection(body: ConnectionIn, user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
+def create_connection(body: ConnectionIn, user: User = Depends(require_module("integrations")),
+                     db: Session = Depends(get_db), scoped: CompanyScoped = None):
     if not any(c["code"] == body.connector_code for c in connector_registry.available()):
         raise HTTPException(400, f"Unknown connector: {body.connector_code}")
     connection = m.Connection(
+        company_id=scoped,
         name=body.name,
         connector_code=body.connector_code,
         credentials_enc=encrypt_dict(body.credentials),
@@ -161,8 +170,10 @@ def test_connection(connection_id: uuid.UUID, user: User = Depends(require_modul
 # ---------- Webhooks (входящие) ----------
 
 @router.get("/webhooks", response_model=list[WebhookOut])
-def list_webhooks(user: User = Depends(require_module("integrations", "ro")), db: Session = Depends(get_db)):
-    endpoints = db.scalars(select(m.WebhookEndpoint)).all()
+def list_webhooks(user: User = Depends(require_module("integrations", "ro")),
+                  db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    endpoints = db.scalars(select(m.WebhookEndpoint).where(
+        m.WebhookEndpoint.company_id == scoped)).all()
     return [
         WebhookOut(
             id=e.id, name=e.name, target_module=e.target_module,
@@ -173,12 +184,14 @@ def list_webhooks(user: User = Depends(require_module("integrations", "ro")), db
 
 
 @router.post("/webhooks", status_code=201)
-def create_webhook(body: WebhookIn, user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
+def create_webhook(body: WebhookIn, user: User = Depends(require_module("integrations")),
+                   db: Session = Depends(get_db), scoped: CompanyScoped = None):
     if body.connection_id is not None:
         connection = db.get(m.Connection, body.connection_id)
         if connection is None:
             raise HTTPException(422, "Unknown connection")
     endpoint = m.WebhookEndpoint(
+        company_id=scoped,
         name=body.name,
         secret_token=secrets.token_urlsafe(32),
         target_module=body.target_module,
@@ -425,15 +438,18 @@ def create_mapping(body: MappingIn, user: User = Depends(require_module("integra
 # ---------- Sync jobs ----------
 
 @router.get("/sync-jobs")
-def list_sync_jobs(user: User = Depends(require_module("integrations", "ro")), db: Session = Depends(get_db)):
-    return db.scalars(select(m.SyncJob).order_by(m.SyncJob.created_at)).all()
+def list_sync_jobs(user: User = Depends(require_module("integrations", "ro")),
+                  db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    return db.scalars(select(m.SyncJob).where(
+        m.SyncJob.company_id == scoped).order_by(m.SyncJob.created_at)).all()
 
 
 @router.post("/sync-jobs", status_code=201)
-def create_sync_job(body: SyncJobIn, user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
+def create_sync_job(body: SyncJobIn, user: User = Depends(require_module("integrations")),
+                     db: Session = Depends(get_db), scoped: CompanyScoped = None):
     if db.get(m.Connection, body.connection_id) is None:
         raise HTTPException(400, "Unknown connection")
-    job = m.SyncJob(**body.model_dump())
+    job = m.SyncJob(**body.model_dump(), company_id=scoped)
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -463,7 +479,11 @@ def patch_sync_job(job_id: uuid.UUID, body: SyncJobPatch, user: User = Depends(r
 
 
 @router.get("/sync-runs")
-def list_runs(sync_job_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")), db: Session = Depends(get_db)):
+def list_runs(sync_job_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")),
+              db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    job = db.get(m.SyncJob, sync_job_id)
+    if job is None or job.company_id != scoped:
+        raise HTTPException(404, "Sync job not found")
     runs = db.scalars(
         select(m.SyncRun)
         .where(m.SyncRun.sync_job_id == sync_job_id)
@@ -538,9 +558,11 @@ def _payment_out(payment: m.OnlinePayment, rw: bool) -> PaymentOut:
 @router.get("/payments", response_model=list[PaymentOut])
 def list_payments(user: User = Depends(require_module("integrations", "ro")),
                   db: Session = Depends(get_db),
-                  status: str | None = None, provider: str | None = None):
+                  status: str | None = None, provider: str | None = None,
+                  scoped: CompanyScoped = None):
     rw = module_level(db, user.role, "integrations") == "rw"
-    query = select(m.OnlinePayment).order_by(m.OnlinePayment.created_at.desc())
+    query = select(m.OnlinePayment).where(
+        m.OnlinePayment.company_id == scoped).order_by(m.OnlinePayment.created_at.desc())
     if status is not None:
         query = query.where(m.OnlinePayment.status == status)
     if provider is not None:
@@ -643,22 +665,24 @@ class ItemMappingOut(ItemMappingIn):
 
 @router.get("/item-mappings", response_model=list[ItemMappingOut])
 def list_item_mappings(user: User = Depends(require_module("integrations", "ro")),
-                       db: Session = Depends(get_db)):
-    return db.scalars(select(m.ItemMapping).order_by(m.ItemMapping.created_at.desc())).all()
+                       db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    return db.scalars(select(m.ItemMapping).where(
+        m.ItemMapping.company_id == scoped).order_by(m.ItemMapping.created_at.desc())).all()
 
 
 @router.post("/item-mappings", response_model=ItemMappingOut, status_code=201)
 def create_item_mapping(body: ItemMappingIn,
                         user: User = Depends(require_module("integrations")),
-                        db: Session = Depends(get_db)):
+                        db: Session = Depends(get_db), scoped: CompanyScoped = None):
     existing = db.scalar(select(m.ItemMapping).where(
+        m.ItemMapping.company_id == scoped,
         m.ItemMapping.connection_id == body.connection_id
         if body.connection_id else m.ItemMapping.connection_id.is_(None),
         m.ItemMapping.external_item_id == body.external_item_id,
     ))
     if existing is not None:
         raise HTTPException(409, "Mapping already exists — use PATCH")
-    mapping = m.ItemMapping(**body.model_dump())
+    mapping = m.ItemMapping(**body.model_dump(), company_id=scoped)
     db.add(mapping)
     db.commit()
     db.refresh(mapping)
@@ -715,18 +739,21 @@ class NotificationRuleOut(BaseModel):
 
 
 @router.get("/notification-rules", response_model=list[NotificationRuleOut])
-def list_notification_rules(user: User = Depends(require_module("integrations")), db: Session = Depends(get_db)):
-    return db.scalars(select(m.NotificationRule).order_by(m.NotificationRule.created_at)).all()
+def list_notification_rules(user: User = Depends(require_module("integrations")),
+                           db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    return db.scalars(select(m.NotificationRule).where(
+        m.NotificationRule.company_id == scoped
+    ).order_by(m.NotificationRule.created_at)).all()
 
 
 @router.post("/notification-rules", response_model=NotificationRuleOut, status_code=201)
 def create_notification_rule(body: NotificationRuleIn, user: User = Depends(require_module("integrations")),
-                             db: Session = Depends(get_db)):
+                             db: Session = Depends(get_db), scoped: CompanyScoped = None):
     from src.modules.integrations.notify import NOTIFY_EVENTS
 
     if body.event_name not in NOTIFY_EVENTS:
         raise HTTPException(422, f"event must be one of {list(NOTIFY_EVENTS)}")
-    rule = m.NotificationRule(**body.model_dump())
+    rule = m.NotificationRule(**body.model_dump(), company_id=scoped)
     db.add(rule)
     db.commit()
     db.refresh(rule)

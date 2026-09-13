@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 
 from sqlalchemy import select
 
@@ -96,10 +97,15 @@ def make_notification_handler(event_name: str):
 
         db = SessionLocal()
         try:
-            rules = db.scalars(select(m.NotificationRule).where(
-                m.NotificationRule.event_name == event_name,
-                m.NotificationRule.is_active.is_(True),
-            )).all()
+            # multitenancy §8: правила организации срабатывают только на её
+            # события (company_id в payload с этапа B; без него — только
+            # правила без привязки, таких после 0030 нет)
+            company_id = payload.get("company_id")
+            conds = [m.NotificationRule.event_name == event_name,
+                     m.NotificationRule.is_active.is_(True)]
+            if company_id:
+                conds.append(m.NotificationRule.company_id == uuid.UUID(str(company_id)))
+            rules = db.scalars(select(m.NotificationRule).where(*conds)).all()
         finally:
             db.close()
         for rule in rules:

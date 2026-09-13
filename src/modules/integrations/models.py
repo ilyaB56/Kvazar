@@ -20,6 +20,11 @@ class Connection(Base):
     __tablename__ = "connections"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # NULL = платформенный коннектор (multitenancy Р4): видит только
+    # супер-админ платформы
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True
+    )
     name: Mapped[str] = mapped_column(String(255))
     connector_code: Mapped[str] = mapped_column(String(100), index=True)
     credentials_enc: Mapped[str] = mapped_column(Text, default="")
@@ -35,6 +40,9 @@ class WebhookEndpoint(Base):
     __tablename__ = "webhook_endpoints"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(255))
     secret_token: Mapped[str] = mapped_column(String(128))
     target_module: Mapped[str] = mapped_column(String(100), default="external")
@@ -78,6 +86,9 @@ class FieldMapping(Base):
     __tablename__ = "field_mappings"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(255))
     source_fields: Mapped[list] = mapped_column(JSONB, default=list)
     target_fields: Mapped[list] = mapped_column(JSONB, default=list)
@@ -90,6 +101,9 @@ class SyncJob(Base):
     __tablename__ = "sync_jobs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(255))
     connection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{S}.connections.id"))
     direction: Mapped[str] = mapped_column(String(10), default="fetch")
@@ -142,6 +156,9 @@ class NotificationRule(Base):
     __tablename__ = "notification_rules"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(255))
     event_name: Mapped[str] = mapped_column(String(100), index=True)
     chat_id: Mapped[str] = mapped_column(String(64))
@@ -163,6 +180,9 @@ class OnlinePayment(Base):
     __tablename__ = "online_payments"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True, nullable=False
+    )
     connection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{S}.connections.id", ondelete="CASCADE"))
     provider: Mapped[str] = mapped_column(String(50))
@@ -196,6 +216,9 @@ class ItemMapping(Base):
     __tablename__ = "item_mappings"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True, nullable=False
+    )
     connection_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{S}.connections.id", ondelete="CASCADE"))
     external_item_id: Mapped[str] = mapped_column(String(200))
