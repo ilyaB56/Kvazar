@@ -52,11 +52,17 @@ class Item(Base):
     acc.inventory.low_stock (NULL = не проверять).
     """
 
-    __table_args__ = ({"schema": SCHEMA},)
+    __table_args__ = (
+        UniqueConstraint("company_id", "sku"),
+        {"schema": SCHEMA},
+    )
     __tablename__ = "items"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    sku: Mapped[str] = mapped_column(String(64), unique=True)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
+    sku: Mapped[str] = mapped_column(String(64))
     name: Mapped[str] = mapped_column(String(255))
     kind: Mapped[str] = mapped_column(String(10))  # physical | digital | service
     unit_code: Mapped[str] = mapped_column(ForeignKey(f"{SCHEMA}.units.code"))
@@ -77,11 +83,17 @@ class Location(Base):
     редактирования через API нет — только GET/POST пользовательских.
     """
 
-    __table_args__ = ({"schema": SCHEMA},)
+    __table_args__ = (
+        UniqueConstraint("company_id", "name"),
+        {"schema": SCHEMA},
+    )
     __tablename__ = "locations"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(255), unique=True)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255))
     kind: Mapped[str] = mapped_column(String(10))  # physical | digital
     is_transit: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -106,6 +118,9 @@ class StockMove(Base):
     __tablename__ = "stock_moves"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
     item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{SCHEMA}.items.id"))
     qty: Mapped[Decimal] = mapped_column(Numeric(20, 4))
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))

@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.core.auth import CurrentUser, WriteUser
+from src.core.auth import CompanyScoped
 from src.db import get_db
 from src.modules.mgmt_accounting.features.purchasing import models as m
 from src.modules.mgmt_accounting.features.purchasing import service
@@ -166,9 +167,10 @@ def _order_with_lines(db: Session, order: m.PurchaseOrder) -> OrderOut:
     )
 
 
-def _get_order(db: Session, order_id: uuid.UUID) -> m.PurchaseOrder:
+def _get_order(db: Session, order_id: uuid.UUID,
+              scoped: uuid.UUID | None = None) -> m.PurchaseOrder:
     order = db.get(m.PurchaseOrder, order_id)
-    if order is None:
+    if order is None or (scoped is not None and order.company_id != scoped):
         raise HTTPException(404, "Purchase order not found")
     return order
 
@@ -179,8 +181,10 @@ def list_orders(
     db: Session = Depends(get_db),
     status: str | None = None,
     counterparty_id: uuid.UUID | None = None,
+    scoped: CompanyScoped = None,
 ):
-    query = select(m.PurchaseOrder).order_by(m.PurchaseOrder.created_at.desc())
+    query = select(m.PurchaseOrder).where(
+        m.PurchaseOrder.company_id == scoped).order_by(m.PurchaseOrder.created_at.desc())
     if status is not None:
         query = query.where(m.PurchaseOrder.status == status)
     if counterparty_id is not None:
@@ -191,22 +195,26 @@ def list_orders(
 
 
 @router.post("/purchase-orders", response_model=OrderOut, status_code=201)
-def create_order(body: OrderIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_order(body: OrderIn, user: WriteUser, db: Session = Depends(get_db),
+                scoped: CompanyScoped = None):
     with svc():
-        order = service.create_order(db, user_id=user.id, data=body.model_dump())
+        order = service.create_order(db, user_id=user.id, data=body.model_dump(),
+                                     company_id=scoped)
     db.commit()
     db.refresh(order)  # единый формат сумм с GET: значения из БД
     return _order_with_lines(db, order)
 
 
 @router.get("/purchase-orders/{order_id}", response_model=OrderOut)
-def get_order(order_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
-    return _order_with_lines(db, _get_order(db, order_id))
+def get_order(order_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db),
+             scoped: CompanyScoped = None):
+    return _order_with_lines(db, _get_order(db, order_id, scoped))
 
 
 @router.post("/purchase-orders/{order_id}/confirm", response_model=OrderOut)
-def confirm_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
-    order = _get_order(db, order_id)
+def confirm_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db),
+                 scoped: CompanyScoped = None):
+    order = _get_order(db, order_id, scoped)
     with svc():
         service.confirm_order(db, order, user_id=user.id)
     db.commit()
@@ -215,8 +223,9 @@ def confirm_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(ge
 
 
 @router.post("/purchase-orders/{order_id}/cancel", response_model=OrderOut)
-def cancel_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
-    order = _get_order(db, order_id)
+def cancel_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db),
+                scoped: CompanyScoped = None):
+    order = _get_order(db, order_id, scoped)
     with svc():
         service.cancel_order(db, order, user_id=user.id)
     db.commit()
@@ -225,10 +234,11 @@ def cancel_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get
 
 
 @router.post("/purchase-orders/{order_id}/pay", response_model=TransactionOut)
-def pay_order(order_id: uuid.UUID, body: PayIn, user: WriteUser, db: Session = Depends(get_db)):
+def pay_order(order_id: uuid.UUID, body: PayIn, user: WriteUser,
+              db: Session = Depends(get_db), scoped: CompanyScoped = None):
     """Оплата заказа: исходящая транзакция, категория «Закупки товаров»
     (авто-seed), контрагент наследуется; частичные — несколько оплат (§3.3)."""
-    order = _get_order(db, order_id)
+    order = _get_order(db, order_id, scoped)
     with svc():
         txn = service.pay_order(db, order=order, user_id=user.id, data=body.model_dump())
     db.commit()
@@ -247,9 +257,10 @@ def _receipt_with_lines(db: Session, receipt: m.Receipt) -> ReceiptOut:
     )
 
 
-def _get_receipt(db: Session, receipt_id: uuid.UUID) -> m.Receipt:
+def _get_receipt(db: Session, receipt_id: uuid.UUID,
+                scoped: uuid.UUID | None = None) -> m.Receipt:
     receipt = db.get(m.Receipt, receipt_id)
-    if receipt is None:
+    if receipt is None or (scoped is not None and receipt.company_id != scoped):
         raise HTTPException(404, "Receipt not found")
     return receipt
 
@@ -260,8 +271,10 @@ def list_receipts(
     db: Session = Depends(get_db),
     status: str | None = None,
     purchase_order_id: uuid.UUID | None = None,
+    scoped: CompanyScoped = None,
 ):
-    query = select(m.Receipt).order_by(m.Receipt.created_at.desc())
+    query = select(m.Receipt).where(
+        m.Receipt.company_id == scoped).order_by(m.Receipt.created_at.desc())
     if status is not None:
         query = query.where(m.Receipt.status == status)
     if purchase_order_id is not None:
@@ -272,22 +285,26 @@ def list_receipts(
 
 
 @router.post("/receipts", response_model=ReceiptOut, status_code=201)
-def create_receipt(body: ReceiptIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_receipt(body: ReceiptIn, user: WriteUser, db: Session = Depends(get_db),
+                  scoped: CompanyScoped = None):
     with svc():
-        receipt = service.create_receipt(db, user_id=user.id, data=body.model_dump())
+        receipt = service.create_receipt(db, user_id=user.id, data=body.model_dump(),
+                                         company_id=scoped)
     db.commit()
     db.refresh(receipt)  # единый формат сумм с GET: значения из БД
     return _receipt_with_lines(db, receipt)
 
 
 @router.get("/receipts/{receipt_id}", response_model=ReceiptOut)
-def get_receipt(receipt_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
-    return _receipt_with_lines(db, _get_receipt(db, receipt_id))
+def get_receipt(receipt_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db),
+                scoped: CompanyScoped = None):
+    return _receipt_with_lines(db, _get_receipt(db, receipt_id, scoped))
 
 
 @router.post("/receipts/{receipt_id}/post", response_model=ReceiptOut)
-def post_receipt(receipt_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
-    receipt = _get_receipt(db, receipt_id)
+def post_receipt(receipt_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db),
+                 scoped: CompanyScoped = None):
+    receipt = _get_receipt(db, receipt_id, scoped)
     with svc():
         service.post_receipt(db, receipt)
     db.commit()
@@ -297,10 +314,11 @@ def post_receipt(receipt_id: uuid.UUID, user: WriteUser, db: Session = Depends(g
 
 @router.post("/receipts/{receipt_id}/unpost", response_model=ReceiptOut)
 def unpost_receipt(
-    receipt_id: uuid.UUID, body: ReasonIn, user: WriteUser, db: Session = Depends(get_db)
+    receipt_id: uuid.UUID, body: ReasonIn, user: WriteUser, db: Session = Depends(get_db),
+    scoped: CompanyScoped = None,
 ):
     """Сторно приёмки: инверсионные движения, только без последующих (§6)."""
-    receipt = _get_receipt(db, receipt_id)
+    receipt = _get_receipt(db, receipt_id, scoped)
     with svc():
         service.unpost_receipt(db, receipt, user_id=user.id, reason=body.reason)
     db.commit()
@@ -317,13 +335,15 @@ def purchases_report(
     date_from: date | None = None,
     date_to: date | None = None,
     counterparty_id: uuid.UUID | None = None,
+    scoped: CompanyScoped = None,
 ):
     from datetime import timedelta
 
     date_to = date_to or date.today()
     date_from = date_from or (date_to - timedelta(days=365))
     with svc():
-        return service.purchases_report(db, date_from, date_to, counterparty_id)
+        return service.purchases_report(db, date_from, date_to, counterparty_id,
+                                        company_id=scoped)
 
 
 @router.get("/reports/counterparty-balance")
@@ -332,8 +352,10 @@ def counterparty_balance(
     db: Session = Depends(get_db),
     counterparty_id: uuid.UUID = None,
     on_date: date | None = None,
+    scoped: CompanyScoped = None,
 ):
     if counterparty_id is None:
         raise HTTPException(422, "counterparty_id is required")
     with svc():
-        return service.counterparty_balance(db, counterparty_id, on_date=on_date)
+        return service.counterparty_balance(db, counterparty_id, on_date=on_date,
+                                            company_id=scoped)

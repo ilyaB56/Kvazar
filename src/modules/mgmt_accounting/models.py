@@ -23,14 +23,14 @@ SCHEMA = "mgmt_accounting"
 
 
 class Account(Base):
-    """Счёт/кошелёк. company_id nullable: v1 — одноконтурная система."""
+    """Счёт/кошелёк организации (multitenancy §5.3: NOT NULL с этапа B)."""
 
     __table_args__ = ({"schema": SCHEMA},)
     __tablename__ = "accounts"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    company_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
     )
     name: Mapped[str] = mapped_column(String(255))
     currency: Mapped[str] = mapped_column(String(3))  # ISO 4217
@@ -47,6 +47,9 @@ class Category(Base):
     __tablename__ = "categories"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
     parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey(f"{SCHEMA}.categories.id"))
     name: Mapped[str] = mapped_column(String(255))
     kind: Mapped[str] = mapped_column(String(10))  # income | expense | transfer
@@ -56,11 +59,17 @@ class Category(Base):
 class Counterparty(Base):
     """Контрагент: внутренний автономер + реквизиты; ИНН+КПП — ключ поиска дублей."""
 
-    __table_args__ = ({"schema": SCHEMA},)
+    __table_args__ = (
+        UniqueConstraint("company_id", "internal_code"),
+        {"schema": SCHEMA},
+    )
     __tablename__ = "counterparties"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    internal_code: Mapped[str] = mapped_column(String(20), unique=True)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
+    internal_code: Mapped[str] = mapped_column(String(20))
     name: Mapped[str] = mapped_column(String(255))
     inn: Mapped[str] = mapped_column(String(12), default="")
     kpp: Mapped[str] = mapped_column(String(9), default="")
@@ -84,12 +93,15 @@ class DocSequence(Base):
     """Счётчик номеров вида документа в году; захват — SELECT ... FOR UPDATE."""
 
     __table_args__ = (
-        UniqueConstraint("doc_type_code", "year"),
+        UniqueConstraint("company_id", "doc_type_code", "year"),
         {"schema": SCHEMA},
     )
     __tablename__ = "doc_sequences"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
     doc_type_code: Mapped[str] = mapped_column(ForeignKey(f"{SCHEMA}.doc_types.code"))
     year: Mapped[int] = mapped_column(Integer)
     last_number: Mapped[int] = mapped_column(Integer, default=0)
@@ -115,12 +127,15 @@ class Period(Base):
     """Месячный период; создаётся лениво при первой операции в нём."""
 
     __table_args__ = (
-        UniqueConstraint("year", "month"),
+        UniqueConstraint("company_id", "year", "month"),
         {"schema": SCHEMA},
     )
     __tablename__ = "periods"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
     year: Mapped[int] = mapped_column(Integer)
     month: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(10), default="open")  # open | closed
@@ -135,11 +150,17 @@ class Transaction(Base):
     основная сторона — списание (account_id), парная — зачисление (account_to_id).
     """
 
-    __table_args__ = ({"schema": SCHEMA},)
+    __table_args__ = (
+        UniqueConstraint("company_id", "doc_number"),
+        {"schema": SCHEMA},
+    )
     __tablename__ = "transactions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    doc_number: Mapped[str | None] = mapped_column(String(40), unique=True)  # присваивается при проведении
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
+    doc_number: Mapped[str | None] = mapped_column(String(40))  # присваивается при проведении
     doc_type_code: Mapped[str] = mapped_column(ForeignKey(f"{SCHEMA}.doc_types.code"))
     kind: Mapped[str] = mapped_column(String(10))  # income | expense | transfer
     status: Mapped[str] = mapped_column(String(10), default="draft")  # draft | posted

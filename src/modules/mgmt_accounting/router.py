@@ -13,7 +13,7 @@ from pydantic import BaseModel, BeforeValidator, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from src.core.auth import AdminUser, require_module
+from src.core.auth import AdminUser, CompanyScoped, require_module
 from src.core import models as core_m
 from src.core.models import AuditEvent, User
 from src.core.models import RecordVersion
@@ -203,20 +203,30 @@ class CashflowOut(BaseModel):
     totals: list[CashflowTotal]
 
 
+def _own(db: Session, model, entity_id: uuid.UUID, scoped: uuid.UUID):
+    """Сущность своей организации; чужая = 404 (не раскрываем существование)."""
+    entity = db.get(model, entity_id)
+    if entity is None or entity.company_id != scoped:
+        raise HTTPException(404, f"{model.__name__} not found")
+    return entity
+
+
 # ---------- Справочники ----------
 
 @router.get("/accounts", response_model=list[AccountOut])
 def list_accounts(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db),
-                  q: str | None = None):
-    query = select(m.Account).order_by(m.Account.name)
+                  q: str | None = None, scoped: CompanyScoped = None):
+    query = select(m.Account).where(m.Account.company_id == scoped).order_by(m.Account.name)
     if q:
         query = query.where(m.Account.name.ilike(f"%{q}%"))  # GIN pg_trgm
     return db.scalars(query).all()
 
 
 @router.post("/accounts", response_model=AccountOut, status_code=201)
-def create_account(body: AccountIn, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
-    account = m.Account(name=body.name, currency=body.currency, company_id=body.company_id,
+def create_account(body: AccountIn, user: User = Depends(require_module("accounting")),
+                   db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    # компания — из контекста токена, не из тела (multitenancy §9)
+    account = m.Account(name=body.name, currency=body.currency, company_id=scoped,
                         account_number=body.account_number)
     db.add(account)
     db.commit()
@@ -226,11 +236,10 @@ def create_account(body: AccountIn, user: User = Depends(require_module("account
 
 @router.patch("/accounts/{account_id}", response_model=AccountOut)
 def patch_account(
-    account_id: uuid.UUID, body: AccountPatch, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)
+    account_id: uuid.UUID, body: AccountPatch, user: User = Depends(require_module("accounting")),
+    db: Session = Depends(get_db), scoped: CompanyScoped = None
 ):
-    account = db.get(m.Account, account_id)
-    if account is None:
-        raise HTTPException(404, "Account not found")
+    account = _own(db, m.Account, account_id, scoped)
     with svc():
         service.patch_account(db, account, user_id=user.id, changes=body.model_dump(exclude_unset=True))
     db.commit()
@@ -240,18 +249,22 @@ def patch_account(
 
 @router.get("/categories", response_model=list[CategoryOut])
 def list_categories(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db),
-                    q: str | None = None):
-    query = select(m.Category).order_by(m.Category.name)
+                    q: str | None = None, scoped: CompanyScoped = None):
+    query = select(m.Category).where(m.Category.company_id == scoped).order_by(m.Category.name)
     if q:
         query = query.where(m.Category.name.ilike(f"%{q}%"))
     return db.scalars(query).all()
 
 
 @router.post("/categories", response_model=CategoryOut, status_code=201)
-def create_category(body: CategoryIn, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
-    if body.parent_id is not None and db.get(m.Category, body.parent_id) is None:
-        raise HTTPException(422, f"Unknown parent category: {body.parent_id}")
-    category = m.Category(**body.model_dump())
+def create_category(body: CategoryIn, user: User = Depends(require_module("accounting")),
+                    db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    if body.parent_id is not None:
+        parent = db.scalar(select(m.Category).where(
+            m.Category.id == body.parent_id, m.Category.company_id == scoped))
+        if parent is None:
+            raise HTTPException(422, f"Unknown parent category: {body.parent_id}")
+    category = m.Category(**body.model_dump(), company_id=scoped)
     db.add(category)
     db.commit()
     db.refresh(category)
@@ -260,17 +273,19 @@ def create_category(body: CategoryIn, user: User = Depends(require_module("accou
 
 @router.get("/counterparties", response_model=list[CounterpartyOut])
 def list_counterparties(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db),
-                        q: str | None = None):
-    query = select(m.Counterparty).order_by(m.Counterparty.name)
+                        q: str | None = None, scoped: CompanyScoped = None):
+    query = select(m.Counterparty).where(
+        m.Counterparty.company_id == scoped).order_by(m.Counterparty.name)
     if q:
         query = query.where(m.Counterparty.name.ilike(f"%{q}%"))
     return db.scalars(query).all()
 
 
 @router.post("/counterparties", response_model=CounterpartyOut, status_code=201)
-def create_counterparty(body: CounterpartyIn, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
+def create_counterparty(body: CounterpartyIn, user: User = Depends(require_module("accounting")),
+                        db: Session = Depends(get_db), scoped: CompanyScoped = None):
     with svc():
-        counterparty, warning = service.create_counterparty(db, body.model_dump())
+        counterparty, warning = service.create_counterparty(db, body.model_dump(), company_id=scoped)
     db.commit()
     db.refresh(counterparty)
     return CounterpartyOut.model_validate(counterparty).model_copy(update={"warning": warning})
@@ -291,16 +306,18 @@ class FindOrCreateIn(BaseModel):
 @router.post("/counterparties/find-or-create")
 def find_or_create_counterparty(body: FindOrCreateIn,
                                 user: User = Depends(require_module("accounting")),
-                                db: Session = Depends(get_db)):
+                                db: Session = Depends(get_db), scoped: CompanyScoped = None):
     """Логика дублей и контактов — домен учёта (интеграции не лезут в
-    erp_core.contacts). Без email/phone — контрагент «Покупатель сайта»."""
+    erp_core.contacts). Без email/phone — контрагент «Покупатель сайта».
+    Поиск и создание — в рамках своей организации (multitenancy §5.3)."""
     contact = None
     if body.email.strip():
         contact = db.scalar(select(core_m.Contact).where(core_m.Contact.email == body.email.strip()))
     if contact is None and body.phone.strip():
         contact = db.scalar(select(core_m.Contact).where(core_m.Contact.phone == body.phone.strip()))
     if contact is not None and contact.id:
-        cp = db.scalar(select(m.Counterparty).where(m.Counterparty.contact_id == contact.id))
+        cp = db.scalar(select(m.Counterparty).where(
+            m.Counterparty.contact_id == contact.id, m.Counterparty.company_id == scoped))
         if cp is not None:
             return {"counterparty_id": cp.id, "created": False}
     # новая пара контакт+контрагент (или только контрагент-заглушка)
@@ -314,6 +331,7 @@ def find_or_create_counterparty(body: FindOrCreateIn,
     cp = m.Counterparty(
         name=body.name.strip() or contact.full_name,
         contact_id=contact.id,
+        company_id=scoped,
         internal_code=service.next_counterparty_code(db),
     )
     db.add(cp)
@@ -337,8 +355,11 @@ def list_transactions(
     category_id: uuid.UUID | None = None,
     status: str | None = None,
     kind: str | None = None,
+    scoped: CompanyScoped = None,
 ):
-    query = select(m.Transaction).order_by(m.Transaction.operated_at, m.Transaction.created_at)
+    query = select(m.Transaction).where(
+        m.Transaction.company_id == scoped
+    ).order_by(m.Transaction.operated_at, m.Transaction.created_at)
     if date_from is not None:
         query = query.where(m.Transaction.operated_at >= date_from)
     if date_to is not None:
@@ -357,18 +378,20 @@ def list_transactions(
     return db.scalars(query).all()
 
 
-def _get_transaction(db: Session, txn_id: uuid.UUID) -> m.Transaction:
+def _get_transaction(db: Session, txn_id: uuid.UUID, scoped: uuid.UUID | None = None) -> m.Transaction:
     txn = db.get(m.Transaction, txn_id)
-    if txn is None:
+    if txn is None or (scoped is not None and txn.company_id != scoped):
         raise HTTPException(404, "Transaction not found")
     return txn
 
 
 @router.post("/transactions", response_model=TransactionOut, status_code=201)
-def create_transaction(body: TransactionIn, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
+def create_transaction(body: TransactionIn, user: User = Depends(require_module("accounting")),
+                       db: Session = Depends(get_db), scoped: CompanyScoped = None):
     with svc():
         txn = service.create_transaction(
-            db, user_id=user.id, data=body.model_dump(exclude={"post_immediately"})
+            db, user_id=user.id, data=body.model_dump(exclude={"post_immediately"}),
+            company_id=scoped,
         )
         if body.post_immediately:
             service.post_transaction(db, txn)
@@ -379,9 +402,10 @@ def create_transaction(body: TransactionIn, user: User = Depends(require_module(
 
 @router.patch("/transactions/{txn_id}", response_model=TransactionOut)
 def patch_transaction(
-    txn_id: uuid.UUID, body: TransactionPatch, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)
+    txn_id: uuid.UUID, body: TransactionPatch, user: User = Depends(require_module("accounting")),
+    db: Session = Depends(get_db), scoped: CompanyScoped = None
 ):
-    txn = _get_transaction(db, txn_id)
+    txn = _get_transaction(db, txn_id, scoped)
     with svc():
         service.update_transaction(
             db, txn, user_id=user.id, changes=body.model_dump(exclude_unset=True)
@@ -392,9 +416,10 @@ def patch_transaction(
 
 
 @router.delete("/transactions/{txn_id}")
-def delete_draft(txn_id: uuid.UUID, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
+def delete_draft(txn_id: uuid.UUID, user: User = Depends(require_module("accounting")),
+                  db: Session = Depends(get_db), scoped: CompanyScoped = None):
     """Физическое удаление — единственное, и только для черновиков."""
-    txn = _get_transaction(db, txn_id)
+    txn = _get_transaction(db, txn_id, scoped)
     if txn.status != "draft":
         raise HTTPException(409, "Only drafts can be deleted physically")
     db.delete(txn)
@@ -403,8 +428,9 @@ def delete_draft(txn_id: uuid.UUID, user: User = Depends(require_module("account
 
 
 @router.post("/transactions/{txn_id}/post", response_model=TransactionOut)
-def post_transaction(txn_id: uuid.UUID, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)):
-    txn = _get_transaction(db, txn_id)
+def post_transaction(txn_id: uuid.UUID, user: User = Depends(require_module("accounting")),
+                      db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    txn = _get_transaction(db, txn_id, scoped)
     with svc():
         service.post_transaction(db, txn)
     db.commit()
@@ -414,9 +440,10 @@ def post_transaction(txn_id: uuid.UUID, user: User = Depends(require_module("acc
 
 @router.post("/transactions/{txn_id}/storno", response_model=TransactionOut)
 def storno_transaction(
-    txn_id: uuid.UUID, body: ReasonIn, user: User = Depends(require_module("accounting")), db: Session = Depends(get_db)
+    txn_id: uuid.UUID, body: ReasonIn, user: User = Depends(require_module("accounting")),
+    db: Session = Depends(get_db), scoped: CompanyScoped = None
 ):
-    txn = _get_transaction(db, txn_id)
+    txn = _get_transaction(db, txn_id, scoped)
     with svc():
         storno = service.create_storno(db, txn, user_id=user.id, reason=body.reason)
     db.commit()
@@ -425,8 +452,9 @@ def storno_transaction(
 
 
 @router.post("/transactions/{txn_id}/delete-mark", response_model=TransactionOut)
-def delete_mark(txn_id: uuid.UUID, body: ReasonIn, admin: AdminUser, db: Session = Depends(get_db)):
-    txn = _get_transaction(db, txn_id)
+def delete_mark(txn_id: uuid.UUID, body: ReasonIn, admin: AdminUser,
+                db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    txn = _get_transaction(db, txn_id, scoped)
     with svc():
         service.mark_deleted(db, txn, user_id=admin.id, reason=body.reason)
     db.commit()
@@ -436,9 +464,10 @@ def delete_mark(txn_id: uuid.UUID, body: ReasonIn, admin: AdminUser, db: Session
 
 @router.post("/transactions/{txn_id}/delete-unmark", response_model=TransactionOut)
 def delete_unmark(
-    txn_id: uuid.UUID, body: OptionalReasonIn, admin: AdminUser, db: Session = Depends(get_db)
+    txn_id: uuid.UUID, body: OptionalReasonIn, admin: AdminUser,
+    db: Session = Depends(get_db), scoped: CompanyScoped = None
 ):
-    txn = _get_transaction(db, txn_id)
+    txn = _get_transaction(db, txn_id, scoped)
     with svc():
         service.unmark_deleted(db, txn, user_id=admin.id, reason=body.reason)
     db.commit()
@@ -455,10 +484,11 @@ def cashflow_report(
     date_from: date = Query(...),
     date_to: date = Query(...),
     account_id: uuid.UUID | None = None,
+    scoped: CompanyScoped = None,
 ):
     if date_to < date_from:
         raise HTTPException(422, "date_to must be greater than or equal to date_from")
-    return service.cashflow(db, date_from, date_to, account_id)
+    return service.cashflow(db, date_from, date_to, account_id, company_id=scoped)
 
 
 @router.get("/export/client-bank")
@@ -468,12 +498,14 @@ def export_client_bank(
     date_from: date = Query(...),
     date_to: date = Query(...),
     account_id: uuid.UUID = Query(...),
+    scoped: CompanyScoped = None,
 ):
     """Выгрузка 1CClientBankExchange (cp1251), 1С:Бухгалтерия грузит как выписку."""
     from fastapi import Response
 
     with svc():
-        text = service.export_client_bank(db, date_from, date_to, account_id)
+        text = service.export_client_bank(db, date_from, date_to, account_id,
+                                          company_id=scoped)
     stamp = date_from.strftime("%Y%m%d")
     return Response(
         content=text.encode("windows-1251", errors="replace"),
@@ -514,8 +546,10 @@ def upsert_rate(body: RateIn, user: User = Depends(require_module("accounting"))
 # ---------- Периоды ----------
 
 @router.get("/periods", response_model=list[PeriodOut])
-def list_periods(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db)):
-    return db.scalars(select(m.Period).order_by(m.Period.year, m.Period.month)).all()
+def list_periods(user: User = Depends(require_module("accounting", "ro")),
+                 db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    return db.scalars(select(m.Period).where(
+        m.Period.company_id == scoped).order_by(m.Period.year, m.Period.month)).all()
 
 
 def _check_month(year: int, month: int) -> None:
@@ -530,11 +564,13 @@ def close_period(
     admin: AdminUser,
     body: OptionalReasonIn | None = None,
     db: Session = Depends(get_db),
+    scoped: CompanyScoped = None,
 ):
     _check_month(year, month)
     reason = body.reason if body is not None else None
     with svc():
-        period = service.close_period(db, year, month, user_id=admin.id, reason=reason)
+        period = service.close_period(db, year, month, user_id=admin.id, reason=reason,
+                                      company_id=scoped)
     db.commit()
     db.refresh(period)
     return period
@@ -547,11 +583,13 @@ def reopen_period(
     admin: AdminUser,
     body: OptionalReasonIn | None = None,
     db: Session = Depends(get_db),
+    scoped: CompanyScoped = None,
 ):
     _check_month(year, month)
     reason = body.reason if body is not None else None
     with svc():
-        period = service.reopen_period(db, year, month, user_id=admin.id, reason=reason)
+        period = service.reopen_period(db, year, month, user_id=admin.id, reason=reason,
+                                       company_id=scoped)
     db.commit()
     db.refresh(period)
     return period

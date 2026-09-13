@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from src.core import events
 from src.core.auth import CurrentUser, WriteUser, module_level
+from src.core.auth import CompanyScoped
 from src.core.models import AuditEvent
 from src.core.versioning import record_version
 from src.db import get_db
@@ -172,9 +173,10 @@ def _order_with_lines(db: Session, order: m.SalesOrder) -> OrderOut:
     )
 
 
-def _get_order(db: Session, order_id: uuid.UUID) -> m.SalesOrder:
+def _get_order(db: Session, order_id: uuid.UUID,
+              scoped: uuid.UUID | None = None) -> m.SalesOrder:
     order = db.get(m.SalesOrder, order_id)
-    if order is None:
+    if order is None or (scoped is not None and order.company_id != scoped):
         raise HTTPException(404, "Sales order not found")
     return order
 
@@ -186,8 +188,10 @@ def list_orders(
     status: str | None = None,
     counterparty_id: uuid.UUID | None = None,
     crm_deal_id: uuid.UUID | None = None,
+    scoped: CompanyScoped = None,
 ):
-    query = select(m.SalesOrder).order_by(m.SalesOrder.created_at.desc())
+    query = select(m.SalesOrder).where(
+        m.SalesOrder.company_id == scoped).order_by(m.SalesOrder.created_at.desc())
     if status is not None:
         query = query.where(m.SalesOrder.status == status)
     if counterparty_id is not None:
@@ -198,22 +202,26 @@ def list_orders(
 
 
 @router.post("/sales-orders", response_model=OrderOut, status_code=201)
-def create_order(body: OrderIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_order(body: OrderIn, user: WriteUser, db: Session = Depends(get_db),
+                scoped: CompanyScoped = None):
     with svc():
-        order = service.create_order(db, user_id=user.id, data=body.model_dump())
+        order = service.create_order(db, user_id=user.id, data=body.model_dump(),
+                                     company_id=scoped)
     db.commit()
     db.refresh(order)  # единый формат сумм с GET: значения из БД
     return _order_with_lines(db, order)
 
 
 @router.get("/sales-orders/{order_id}", response_model=OrderOut)
-def get_order(order_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
-    return _order_with_lines(db, _get_order(db, order_id))
+def get_order(order_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db),
+             scoped: CompanyScoped = None):
+    return _order_with_lines(db, _get_order(db, order_id, scoped))
 
 
 @router.post("/sales-orders/{order_id}/confirm", response_model=OrderOut)
-def confirm_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
-    order = _get_order(db, order_id)
+def confirm_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db),
+                 scoped: CompanyScoped = None):
+    order = _get_order(db, order_id, scoped)
     with svc():
         service.confirm_order(db, order, user_id=user.id)
     db.commit()
@@ -222,8 +230,9 @@ def confirm_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(ge
 
 
 @router.post("/sales-orders/{order_id}/cancel", response_model=OrderOut)
-def cancel_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
-    order = _get_order(db, order_id)
+def cancel_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db),
+                scoped: CompanyScoped = None):
+    order = _get_order(db, order_id, scoped)
     with svc():
         service.cancel_order(db, order, user_id=user.id)
     db.commit()
@@ -232,10 +241,11 @@ def cancel_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get
 
 
 @router.post("/sales-orders/{order_id}/pay", response_model=TransactionOut)
-def pay_order(order_id: uuid.UUID, body: PayIn, user: WriteUser, db: Session = Depends(get_db)):
+def pay_order(order_id: uuid.UUID, body: PayIn, user: WriteUser,
+              db: Session = Depends(get_db), scoped: CompanyScoped = None):
     """Оплата заказа: входящая транзакция, категория «Продажи» (авто-seed),
     контрагент наследуется; частичные — несколько оплат (§3.4)."""
-    order = _get_order(db, order_id)
+    order = _get_order(db, order_id, scoped)
     with svc():
         txn = service.pay_order(db, order=order, user_id=user.id, data=body.model_dump())
     db.commit()
@@ -269,9 +279,10 @@ def _shipment_with_lines(db: Session, shipment: m.Shipment,
     return ShipmentOut.model_validate(shipment).model_copy(update={"lines": out_lines})
 
 
-def _get_shipment(db: Session, shipment_id: uuid.UUID) -> m.Shipment:
+def _get_shipment(db: Session, shipment_id: uuid.UUID,
+                scoped: uuid.UUID | None = None) -> m.Shipment:
     shipment = db.get(m.Shipment, shipment_id)
-    if shipment is None:
+    if shipment is None or (scoped is not None and shipment.company_id != scoped):
         raise HTTPException(404, "Shipment not found")
     return shipment
 
@@ -282,9 +293,11 @@ def list_shipments(
     db: Session = Depends(get_db),
     status: str | None = None,
     sales_order_id: uuid.UUID | None = None,
+    scoped: CompanyScoped = None,
 ):
     reveal = module_level(db, user.role, "accounting") == "rw"
-    query = select(m.Shipment).order_by(m.Shipment.created_at.desc())
+    query = select(m.Shipment).where(
+        m.Shipment.company_id == scoped).order_by(m.Shipment.created_at.desc())
     if status is not None:
         query = query.where(m.Shipment.status == status)
     if sales_order_id is not None:
@@ -293,23 +306,27 @@ def list_shipments(
 
 
 @router.post("/shipments", response_model=ShipmentOut, status_code=201)
-def create_shipment(body: ShipmentIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_shipment(body: ShipmentIn, user: WriteUser, db: Session = Depends(get_db),
+                   scoped: CompanyScoped = None):
     with svc():
-        shipment = service.create_shipment(db, user_id=user.id, data=body.model_dump())
+        shipment = service.create_shipment(db, user_id=user.id, data=body.model_dump(),
+                                           company_id=scoped)
     db.commit()
     db.refresh(shipment)  # единый формат сумм с GET: значения из БД
     return _shipment_with_lines(db, shipment)
 
 
 @router.get("/shipments/{shipment_id}", response_model=ShipmentOut)
-def get_shipment(shipment_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
+def get_shipment(shipment_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db),
+                scoped: CompanyScoped = None):
     reveal = module_level(db, user.role, "accounting") == "rw"
-    return _shipment_with_lines(db, _get_shipment(db, shipment_id), reveal)
+    return _shipment_with_lines(db, _get_shipment(db, shipment_id, scoped), reveal)
 
 
 @router.post("/shipments/{shipment_id}/post", response_model=ShipmentOut)
-def post_shipment(shipment_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
-    shipment = _get_shipment(db, shipment_id)
+def post_shipment(shipment_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db),
+                 scoped: CompanyScoped = None):
+    shipment = _get_shipment(db, shipment_id, scoped)
     with svc():
         service.post_shipment(db, shipment)
     db.commit()
@@ -325,7 +342,8 @@ class DeliverIn(BaseModel):
 
 @router.post("/shipments/{shipment_id}/deliver")
 def deliver_shipment(shipment_id: uuid.UUID, body: DeliverIn | None = None,
-                     user: WriteUser = None, db: Session = Depends(get_db)):
+                     user: WriteUser = None, db: Session = Depends(get_db),
+                     scoped: CompanyScoped = None):
     """Разовая выдача расшифрованных кодов отгрузки (sales-automation §5.2).
 
     Возвращает serials один раз; помечает delivered_at/delivered_via, пишет
@@ -335,7 +353,7 @@ def deliver_shipment(shipment_id: uuid.UUID, body: DeliverIn | None = None,
     from datetime import UTC, datetime
 
     shipment = db.get(m.Shipment, shipment_id)
-    if shipment is None:
+    if shipment is None or (scoped is not None and shipment.company_id != scoped):
         raise HTTPException(404, "Shipment not found")
     if shipment.status != "posted":
         raise HTTPException(422, "Only posted shipments can be delivered")
@@ -383,6 +401,7 @@ def deliver_shipment(shipment_id: uuid.UUID, body: DeliverIn | None = None,
         "shipment_id": str(shipment.id),
         "sales_order_id": str(shipment.sales_order_id),
         "channel": channel,
+        "company_id": str(shipment.company_id),
     })
     db.commit()
     events.dispatch_outbox(db)
@@ -392,10 +411,11 @@ def deliver_shipment(shipment_id: uuid.UUID, body: DeliverIn | None = None,
 
 @router.post("/shipments/{shipment_id}/unpost", response_model=ShipmentOut)
 def unpost_shipment(
-    shipment_id: uuid.UUID, body: ReasonIn, user: WriteUser, db: Session = Depends(get_db)
+    shipment_id: uuid.UUID, body: ReasonIn, user: WriteUser, db: Session = Depends(get_db),
+    scoped: CompanyScoped = None,
 ):
     """Сторно отгрузки: инверсионные движения «Клиент → склад» (§6)."""
-    shipment = _get_shipment(db, shipment_id)
+    shipment = _get_shipment(db, shipment_id, scoped)
     with svc():
         service.unpost_shipment(db, shipment, user_id=user.id, reason=body.reason)
     db.commit()
@@ -412,10 +432,12 @@ def sales_report(
     date_from: date | None = None,
     date_to: date | None = None,
     counterparty_id: uuid.UUID | None = None,
+    scoped: CompanyScoped = None,
 ):
     from datetime import timedelta
 
     date_to = date_to or date.today()
     date_from = date_from or (date_to - timedelta(days=365))
     with svc():
-        return service.sales_report(db, date_from, date_to, counterparty_id)
+        return service.sales_report(db, date_from, date_to, counterparty_id,
+                                    company_id=scoped)

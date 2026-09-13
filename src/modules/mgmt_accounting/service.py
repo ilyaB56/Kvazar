@@ -57,17 +57,25 @@ def format_doc_number(prefix: str, year: int, number: int) -> str:
 
 # ---------- Периоды ----------
 
-def get_or_create_period(db: Session, year: int, month: int) -> m.Period:
-    period = db.scalar(select(m.Period).where(m.Period.year == year, m.Period.month == month))
+def get_or_create_period(db: Session, year: int, month: int,
+                       company_id: uuid.UUID | None = None) -> m.Period:
+    # multitenancy: период — на организацию (закрытие в А не мешает Б)
+    conds = [m.Period.year == year, m.Period.month == month]
+    if company_id is not None:
+        conds.append(m.Period.company_id == company_id)
+    period = db.scalar(select(m.Period).where(*conds))
     if period is not None:
         return period
     # гонка «первой операции месяца»: вставляем без конфликта и перечитываем
+    values = {"year": year, "month": month, "status": "open"}
+    if company_id is not None:
+        values["company_id"] = company_id
     db.execute(
         pg_insert(m.Period)
-        .values(year=year, month=month, status="open")
-        .on_conflict_do_nothing(index_elements=["year", "month"])
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["company_id", "year", "month"])
     )
-    period = db.scalar(select(m.Period).where(m.Period.year == year, m.Period.month == month))
+    period = db.scalar(select(m.Period).where(*conds))
     if period is not None:
         return period
     # конкурент откатился — создаём обычной вставкой
@@ -77,18 +85,21 @@ def get_or_create_period(db: Session, year: int, month: int) -> m.Period:
     return period
 
 
-def ensure_period_open(db: Session, operated_at: date) -> None:
-    period = db.scalar(select(m.Period).where(
-        m.Period.year == operated_at.year, m.Period.month == operated_at.month
-    ))
+def ensure_period_open(db: Session, operated_at: date,
+                       company_id: uuid.UUID | None = None) -> None:
+    conds = [m.Period.year == operated_at.year, m.Period.month == operated_at.month]
+    if company_id is not None:
+        conds.append(m.Period.company_id == company_id)
+    period = db.scalar(select(m.Period).where(*conds))
     if period is not None and period.status == "closed":
         raise AccountingError(422, f"Period {operated_at.strftime('%Y-%m')} is closed")
 
 
 def close_period(
-    db: Session, year: int, month: int, *, user_id: uuid.UUID, reason: str | None
+    db: Session, year: int, month: int, *, user_id: uuid.UUID, reason: str | None,
+    company_id: uuid.UUID | None = None,
 ) -> m.Period:
-    period = get_or_create_period(db, year, month)
+    period = get_or_create_period(db, year, month, company_id)
     if period.status == "closed":
         raise AccountingError(409, f"Period {year:04d}-{month:02d} is already closed")
     period.status = "closed"
@@ -97,14 +108,16 @@ def close_period(
     db.flush()
     record_version(db, "acc.period", f"{year:04d}-{month:02d}", user_id,
                    {"status": {"old": "open", "new": "closed"}}, reason=reason)
-    events.publish(db, "acc.period.closed", {"year": year, "month": month})
+    events.publish(db, "acc.period.closed", {
+        "year": year, "month": month, "company_id": str(period.company_id)})
     return period
 
 
 def reopen_period(
-    db: Session, year: int, month: int, *, user_id: uuid.UUID, reason: str | None
+    db: Session, year: int, month: int, *, user_id: uuid.UUID, reason: str | None,
+    company_id: uuid.UUID | None = None,
 ) -> m.Period:
-    period = get_or_create_period(db, year, month)
+    period = get_or_create_period(db, year, month, company_id)
     if period.status == "open":
         raise AccountingError(409, f"Period {year:04d}-{month:02d} is not closed")
     period.status = "open"
@@ -113,29 +126,39 @@ def reopen_period(
     db.flush()
     record_version(db, "acc.period", f"{year:04d}-{month:02d}", user_id,
                    {"status": {"old": "closed", "new": "open"}}, reason=reason)
-    events.publish(db, "acc.period.reopened", {"year": year, "month": month})
+    events.publish(db, "acc.period.reopened", {
+        "year": year, "month": month, "company_id": str(period.company_id)})
     return period
 
 
 # ---------- Нумерация ----------
 
-def next_doc_number(db: Session, doc_type_code: str, operated_at: date) -> str:
-    """Выделить номер документа: SELECT ... FOR UPDATE в транзакции проведения."""
+def next_doc_number(db: Session, doc_type_code: str, operated_at: date,
+                   company_id: uuid.UUID | None = None) -> str:
+    """Выделить номер документа: SELECT ... FOR UPDATE в транзакции проведения.
+    Нумерация — на организацию (Р2): у каждой свой ЗК-1."""
     doc_type = db.get(m.DocType, doc_type_code)
     if doc_type is None or not doc_type.is_active:
         raise AccountingError(422, f"Unknown doc type: {doc_type_code}")
     year = operated_at.year
-    conditions = (m.DocSequence.doc_type_code == doc_type_code, m.DocSequence.year == year)
+    conditions = [m.DocSequence.doc_type_code == doc_type_code,
+                  m.DocSequence.year == year]
+    if company_id is not None:
+        conditions.append(m.DocSequence.company_id == company_id)
     seq = db.execute(
         select(m.DocSequence).where(*conditions).with_for_update()
     ).scalar_one_or_none()
     if seq is None:
         # гонка «первого номера года»: вставляем без конфликта, затем захватываем
         # существующую строку блокировкой
+        values = {"doc_type_code": doc_type_code, "year": year, "last_number": 0}
+        if company_id is not None:
+            values["company_id"] = company_id
         db.execute(
             pg_insert(m.DocSequence)
-            .values(doc_type_code=doc_type_code, year=year, last_number=0)
-            .on_conflict_do_nothing(index_elements=["doc_type_code", "year"])
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=["company_id", "doc_type_code", "year"])
         )
         seq = db.execute(
             select(m.DocSequence).where(*conditions).with_for_update()
@@ -211,11 +234,14 @@ def validate_transaction(db: Session, txn: m.Transaction) -> None:
         _get_active(db, m.Counterparty, txn.counterparty_id, "counterparty")
 
 
-def create_transaction(db: Session, *, user_id: uuid.UUID, data: dict) -> m.Transaction:
+def create_transaction(db: Session, *, user_id: uuid.UUID, data: dict,
+                        company_id: uuid.UUID | None = None) -> m.Transaction:
     """Черновик: номера не потребляет, но период уже проверяет и создаёт лениво."""
-    ensure_period_open(db, data["operated_at"])
-    get_or_create_period(db, data["operated_at"].year, data["operated_at"].month)
+    ensure_period_open(db, data["operated_at"], company_id)
+    get_or_create_period(db, data["operated_at"].year, data["operated_at"].month,
+                         company_id)
     txn = m.Transaction(
+        company_id=company_id,
         doc_type_code=DOC_KIND[data["kind"]],
         kind=data["kind"],
         status="draft",
@@ -252,10 +278,11 @@ def _freeze_rates(db: Session, txn: m.Transaction) -> None:
 def post_transaction(db: Session, txn: m.Transaction) -> m.Transaction:
     if txn.status == "posted":
         raise AccountingError(409, f"Transaction {txn.doc_number or txn.id} is already posted")
-    ensure_period_open(db, txn.operated_at)
+    ensure_period_open(db, txn.operated_at, txn.company_id)
     validate_transaction(db, txn)
     _freeze_rates(db, txn)
-    txn.doc_number = next_doc_number(db, txn.doc_type_code, txn.operated_at)
+    txn.doc_number = next_doc_number(db, txn.doc_type_code, txn.operated_at,
+                                     txn.company_id)
     txn.status = "posted"
     db.flush()
     events.publish(db, "acc.transaction.posted", posted_payload(txn))
@@ -277,6 +304,8 @@ def posted_payload(txn: m.Transaction) -> dict[str, Any]:
         "category_id": str(txn.category_id) if txn.category_id else None,
         "counterparty_id": str(txn.counterparty_id) if txn.counterparty_id else None,
         "dimensions": txn.dimensions or {},
+        # multitenancy §8: company_id в payload существующих событий
+        "company_id": str(txn.company_id) if txn.company_id else None,
     }
 
 
@@ -323,9 +352,10 @@ def create_storno(
         raise AccountingError(422, "Only posted transactions can be stornoed")
     if txn.storno_of_id is not None:
         raise AccountingError(422, "Storno of a storno document is not allowed")
-    ensure_period_open(db, txn.operated_at)
+    ensure_period_open(db, txn.operated_at, txn.company_id)
     kind = INVERSE_KIND[txn.kind]
     storno = m.Transaction(
+        company_id=txn.company_id,
         doc_type_code=STORNO_DOC_TYPE,
         kind=kind,
         status="draft",
@@ -353,6 +383,7 @@ def create_storno(
         "transaction_id": str(storno.id),
         "storno_of": str(txn.id),
         "reason": reason,
+        "company_id": str(txn.company_id) if txn.company_id else None,
     })
     record_version(db, "acc.transaction", str(txn.id), user_id,
                    {"is_stornoed": {"old": False, "new": True}}, reason=reason)
@@ -391,9 +422,12 @@ def next_counterparty_code(db: Session) -> str:
     return f"К-{number:05d}"
 
 
-def create_counterparty(db: Session, data: dict) -> tuple[m.Counterparty, str | None]:
-    """Дубль по ИНН+КПП — предупреждение в ответе, не запрет."""
+def create_counterparty(db: Session, data: dict,
+                        company_id: uuid.UUID | None = None) -> tuple[m.Counterparty, str | None]:
+    """Дубль по ИНН+КПП — предупреждение в ответе, не запрет;
+    дубль ищется в рамках своей организации."""
     counterparty = m.Counterparty(
+        company_id=company_id,
         internal_code=next_counterparty_code(db),
         name=data["name"],
         inn=data.get("inn", ""),
@@ -460,7 +494,8 @@ def upsert_rates_from_event(payload: dict) -> None:
 # ---------- Экспорт 1CClientBankExchange (этап E) ----------
 
 def export_client_bank(
-    db: Session, date_from: date, date_to: date, account_id: uuid.UUID
+    db: Session, date_from: date, date_to: date, account_id: uuid.UUID,
+    company_id: uuid.UUID | None = None,
 ) -> str:
     """Выгрузка «клиент-банк» 1С (cp1251 отдаёт роутер, тут — текст).
 
@@ -469,7 +504,7 @@ def export_client_bank(
     Оговорка спеки: соответствие полей добить загрузкой в реальной 1С.
     """
     account = db.get(m.Account, account_id)
-    if account is None:
+    if account is None or (company_id is not None and account.company_id != company_id):
         raise AccountingError(404, "Account not found")
     if account.currency != "RUB":
         raise AccountingError(422, f"1C export supports RUB accounts only (got {account.currency})")
@@ -497,9 +532,10 @@ def export_client_bank(
         f"РасчСчет={account.account_number}",
         "",
     ]
-    counterparties = {
-        c.id: c.name for c in db.scalars(select(m.Counterparty)).all()
-    }
+    cp_query = select(m.Counterparty)
+    if company_id is not None:
+        cp_query = cp_query.where(m.Counterparty.company_id == company_id)
+    counterparties = {c.id: c.name for c in db.scalars(cp_query).all()}
     for txn in txns:
         amount = f"{txn.amount:.2f}"
         if txn.kind == "income":
@@ -536,7 +572,8 @@ def _txn_flows(txn: m.Transaction) -> list[tuple[uuid.UUID, Decimal]]:
 
 
 def cashflow(
-    db: Session, date_from: date, date_to: date, account_id: uuid.UUID | None
+    db: Session, date_from: date, date_to: date, account_id: uuid.UUID | None,
+    company_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Отчёт «движение денег»: opening/closing balance и итоги по категориям.
 
@@ -548,6 +585,8 @@ def cashflow(
         m.Transaction.is_deleted.is_(False),
         m.Transaction.operated_at <= date_to,
     )
+    if company_id is not None:
+        query = query.where(m.Transaction.company_id == company_id)
     if account_id is not None:
         query = query.where(or_(
             m.Transaction.account_id == account_id,

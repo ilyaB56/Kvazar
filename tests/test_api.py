@@ -34,6 +34,17 @@ def admin_token(client):
         "email": "admin@example.com", "password": "admin12345",
     })
     response.raise_for_status()
+
+    # мультитенантность: админ — супер-админ платформы; модульные данные —
+    # в контексте организации «Основная» (без org — 403 no_company_context)
+    _orgs = response.json().get("organizations") or []
+    if _orgs:
+        _oid = next((o["id"] for o in _orgs if o.get("name") == "Основная"),
+                    _orgs[0]["id"])
+        response = client.post("/api/v1/auth/select-org", json={
+            "refresh_token": response.json()["refresh_token"],
+            "company_id": _oid})
+        response.raise_for_status()
     return response.json()["access_token"]
 
 

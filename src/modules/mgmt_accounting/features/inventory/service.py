@@ -56,8 +56,13 @@ def get_unit(db: Session, code: str) -> m.Unit:
     return unit
 
 
-def create_item(db: Session, data: dict) -> m.Item:
-    if db.scalar(select(m.Item).where(m.Item.sku == data["sku"])) is not None:
+def create_item(db: Session, data: dict,
+                company_id: uuid.UUID | None = None) -> m.Item:
+    # дубль sku — в рамках организации (составной UNIQUE, §5.3)
+    sku_cond = [m.Item.sku == data["sku"]]
+    if company_id is not None:
+        sku_cond.append(m.Item.company_id == company_id)
+    if db.scalar(select(m.Item).where(*sku_cond)) is not None:
         raise AccountingError(422, f"sku_already_exists: {data['sku']}")
     get_unit(db, data["unit_code"])
     kind = data["kind"]
@@ -67,6 +72,7 @@ def create_item(db: Session, data: dict) -> m.Item:
     if tracking not in m.TRACKING_MODES:
         raise AccountingError(422, f"tracking must be one of {m.TRACKING_MODES}")
     item = m.Item(
+        company_id=company_id,
         sku=data["sku"],
         name=data["name"],
         kind=kind,
@@ -104,15 +110,19 @@ def delete_item(db: Session, item: m.Item) -> None:
     db.flush()
 
 
-def create_location(db: Session, data: dict) -> m.Location:
+def create_location(db: Session, data: dict,
+                     company_id: uuid.UUID | None = None) -> m.Location:
     kind = data["kind"]
     if kind not in ("physical", "digital"):
         raise AccountingError(422, "kind must be physical or digital")
     name = data["name"].strip()
-    if db.scalar(select(m.Location).where(m.Location.name == name)) is not None:
+    name_cond = [m.Location.name == name]
+    if company_id is not None:
+        name_cond.append(m.Location.company_id == company_id)
+    if db.scalar(select(m.Location).where(*name_cond)) is not None:
         raise AccountingError(422, f"location_name_exists: {name}")
-    # транзитные локации системные (seed) — пользовательские всегда склады
-    location = m.Location(name=name, kind=kind, is_transit=False)
+    # транзитные локации системные (seed организации) — пользовательские всегда склады
+    location = m.Location(company_id=company_id, name=name, kind=kind, is_transit=False)
     db.add(location)
     db.flush()
     return location
@@ -120,16 +130,20 @@ def create_location(db: Session, data: dict) -> m.Location:
 
 # ---------- Ссылочная целостность и совместимость ----------
 
-def get_item(db: Session, item_id: uuid.UUID) -> m.Item:
+def get_item(db: Session, item_id: uuid.UUID,
+             company_id: uuid.UUID | None = None) -> m.Item:
     item = db.get(m.Item, item_id)
-    if item is None or not item.is_active:
+    if item is None or not item.is_active or (
+            company_id is not None and item.company_id != company_id):
         raise AccountingError(422, f"Unknown or inactive item: {item_id}")
     return item
 
 
-def get_location(db: Session, location_id: uuid.UUID) -> m.Location:
+def get_location(db: Session, location_id: uuid.UUID,
+                  company_id: uuid.UUID | None = None) -> m.Location:
     location = db.get(m.Location, location_id)
-    if location is None or not location.is_active:
+    if location is None or not location.is_active or (
+            company_id is not None and location.company_id != company_id):
         raise AccountingError(422, f"Unknown or inactive location: {location_id}")
     return location
 
@@ -154,10 +168,12 @@ def _check_kind_compat(item: m.Item, *locations: m.Location) -> None:
             )
 
 
-def _transit_by_name(db: Session, name: str) -> m.Location:
-    location = db.scalar(
-        select(m.Location).where(m.Location.name == name, m.Location.is_transit)
-    )
+def _transit_by_name(db: Session, name: str,
+                    company_id: uuid.UUID | None = None) -> m.Location:
+    conds = [m.Location.name == name, m.Location.is_transit]
+    if company_id is not None:
+        conds.append(m.Location.company_id == company_id)
+    location = db.scalar(select(m.Location).where(*conds))
     if location is None:
         raise AccountingError(422, f"System transit location not found: {name}")
     return location
@@ -205,10 +221,13 @@ def stock_balances(
     on_date: date | None = None,
     location_id: uuid.UUID | None = None,
     item_id: uuid.UUID | None = None,
+    company_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Остатки по складам (без транзитных) со стоимостью по avg_cost (§3.6);
     on_date — срез по moved_at, остаток = Σ входов − Σ выходов на дату."""
     query = select(m.StockMove)
+    if company_id is not None:
+        query = query.where(m.StockMove.company_id == company_id)
     if on_date is not None:
         query = query.where(m.StockMove.moved_at <= on_date)
     balances: dict[tuple[uuid.UUID, uuid.UUID], Decimal] = {}
@@ -218,14 +237,19 @@ def stock_balances(
         balances[key_in] = balances.get(key_in, Decimal(0)) + move.qty
         balances[key_out] = balances.get(key_out, Decimal(0)) - move.qty
 
+    loc_query = select(m.Location)
+    item_query = select(m.Item).where(m.Item.kind != "service")
+    if company_id is not None:
+        loc_query = loc_query.where(m.Location.company_id == company_id)
+        item_query = item_query.where(m.Item.company_id == company_id)
     locations = {
         location.id: location
-        for location in db.scalars(select(m.Location)).all()
+        for location in db.scalars(loc_query).all()
         if not location.is_transit and (location_id is None or location.id == location_id)
     }
     items = {
         item.id: item
-        for item in db.scalars(select(m.Item).where(m.Item.kind != "service")).all()
+        for item in db.scalars(item_query).all()
         if item_id is None or item.id == item_id
     }
     rows: list[dict[str, Any]] = []
@@ -274,7 +298,8 @@ def allow_negative_stock(db: Session) -> bool:
     return str(row.value).strip().lower() in ("true", "1", "yes")
 
 
-def void_serial(db: Session, *, code: str, user_id: uuid.UUID, note: str = "") -> m.StockMove:
+def void_serial(db: Session, *, code: str, user_id: uuid.UUID, note: str = "",
+                company_id: uuid.UUID | None = None) -> m.StockMove:
     """Д13: испортить код цифрового товара — движение «локация → Брак»
     (транзит) + status=void; код больше не выдаётся и не возвращается."""
     serial = db.scalar(
@@ -286,9 +311,12 @@ def void_serial(db: Session, *, code: str, user_id: uuid.UUID, note: str = "") -
     if serial is None:
         raise AccountingError(404, "serial_not_found_or_not_in_stock")
     item = db.get(m.Item, serial.item_id)
+    if company_id is not None and item.company_id != company_id:
+        raise AccountingError(404, "serial_not_found_or_not_in_stock")
     location = db.get(m.Location, serial.location_id)
     scrap = db.scalar(select(m.Location).where(
-        m.Location.name == "Брак", m.Location.is_transit))
+        m.Location.name == "Брак", m.Location.is_transit,
+        m.Location.company_id == item.company_id))
     if item is None or location is None or scrap is None:
         raise AccountingError(422, "item_or_location_not_found")
     lock_stock(db, (item.id, location.id))
@@ -409,8 +437,13 @@ def _validate_qty(qty: Decimal) -> Decimal:
 
 
 def _publish_stock_changed(db: Session, changes: list[Change], source_type: str) -> None:
+    # multitenancy §8: company_id — по товару первого изменения (все — одной org)
+    company_id = None
+    if changes:
+        company_id = str(db.get(m.Item, changes[0][0]).company_id)
     events.publish(db, "acc.inventory.stock_changed", {
         "source_type": source_type,
+        "company_id": company_id,
         "changes": [
             {
                 "item_id": str(item_id),
@@ -429,6 +462,7 @@ def _check_low_stock(db: Session, item: m.Item) -> None:
     if qty <= item.low_stock_threshold:
         events.publish(db, "acc.inventory.low_stock", {
             "item_id": str(item.id),
+            "company_id": str(item.company_id),
             "sku": item.sku,
             "qty": str(quantize4(qty)),
             "threshold": str(quantize4(item.low_stock_threshold)),
@@ -437,9 +471,10 @@ def _check_low_stock(db: Session, item: m.Item) -> None:
 
 def transfer_stock(db: Session, *, user_id: uuid.UUID, data: dict) -> m.StockMove:
     """Перемещение между складами одного вида; себестоимость не меняется."""
-    item = get_item(db, data["item_id"])
-    from_location = get_location(db, data["from_location_id"])
-    to_location = get_location(db, data["to_location_id"])
+    company_id = data.get("company_id")
+    item = get_item(db, data["item_id"], company_id)
+    from_location = get_location(db, data["from_location_id"], company_id)
+    to_location = get_location(db, data["to_location_id"], company_id)
     if from_location.id == to_location.id:
         raise AccountingError(422, "transfer_to_same_location")
     if from_location.is_transit or to_location.is_transit:
@@ -456,6 +491,7 @@ def transfer_stock(db: Session, *, user_id: uuid.UUID, data: dict) -> m.StockMov
     _check_stock_enough(db, item, from_location, qty)
 
     move = m.StockMove(
+        company_id=item.company_id,
         item_id=item.id,
         qty=qty,
         unit_cost=item.avg_cost,
@@ -497,6 +533,7 @@ def _apply_receipt(
             )):
                 raise AccountingError(422, f"serial_already_exists: {code}")
     move = m.StockMove(
+        company_id=item.company_id,
         item_id=item.id,
         qty=qty,
         unit_cost=unit_cost,
@@ -543,6 +580,7 @@ def _apply_issue(
         if costs:
             issue_cost = (sum(costs) / Decimal(len(costs))).quantize(Decimal("1e-4"))
     move = m.StockMove(
+        company_id=item.company_id,
         item_id=item.id,
         qty=qty,
         unit_cost=issue_cost,
@@ -574,10 +612,12 @@ def adjustment(db: Session, *, user_id: uuid.UUID, data: dict) -> list[m.StockMo
     по avg_cost (первый приход — по переданной цене), недостача — списание
     в «Брак» по avg_cost (§4). Серийный товар: факт = список кодов на локации.
     """
-    location = get_location(db, data["location_id"])
+    company_id = data.get("company_id")
+    location = get_location(db, data["location_id"], company_id)
     if location.is_transit:
         raise AccountingError(422, "adjustment_of_transit_location_is_not_allowed")
-    transit = _transit_by_name(db, TRANSIT_ADJUSTMENT)
+    transit = _transit_by_name(db, TRANSIT_ADJUSTMENT,
+                               location.company_id)
     moved_at = data.get("moved_at") or date.today()
     note = data.get("note", "")
     moves: list[m.StockMove] = []
@@ -692,8 +732,11 @@ def stock_moves(
     location_id: uuid.UUID | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    company_id: uuid.UUID | None = None,
 ) -> list[m.StockMove]:
     query = select(m.StockMove).order_by(m.StockMove.moved_at, m.StockMove.created_at)
+    if company_id is not None:
+        query = query.where(m.StockMove.company_id == company_id)
     if item_id is not None:
         query = query.where(m.StockMove.item_id == item_id)
     if location_id is not None:

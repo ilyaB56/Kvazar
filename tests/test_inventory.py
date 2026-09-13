@@ -38,6 +38,15 @@ def db():
     session.close()
 
 
+def _co(session) -> uuid.UUID:
+    """Компания теста — «Основная» (multitenancy B1: company_id обязателен)."""
+    from src.core.models import Company
+
+    company = session.scalar(select(Company).where(Company.name == "Основная"))
+    assert company is not None, "run migrations (0027)"
+    return company.id
+
+
 def _admin_id(session) -> uuid.UUID:
     from src.core.models import User
 
@@ -47,12 +56,13 @@ def _admin_id(session) -> uuid.UUID:
 
 
 def _location(session, name: str) -> m.Location:
-    return session.scalar(select(m.Location).where(m.Location.name == name))
+    return session.scalar(select(m.Location).where(
+        m.Location.name == name, m.Location.company_id == _co(session)))
 
 
 def _make_item(session, *, kind: str = "physical", tracking: str | None = None,
                threshold: Decimal | None = None) -> m.Item:
-    item = service.create_item(session, {
+    item = service.create_item(session, company_id=_co(session), data={
         "sku": f"TST-{RUN}-{kind}-{uuid.uuid4().hex[:6]}",
         "name": f"pytest {kind}",
         "kind": kind,
@@ -80,8 +90,9 @@ def _balance(session, item, location) -> Decimal:
 # ---------- Расчёты (без БД) ----------
 
 def test_avg_cost_weighted_formula():
-    item = m.Item(sku="x", name="x", kind="physical", unit_code="шт",
-                  tracking="qty", avg_cost=Decimal("100"))
+    # расчёт без БД: company_id — любая (NOT NULL в модели)
+    item = m.Item(company_id=uuid.uuid4(), sku="x", name="x", kind="physical",
+                  unit_code="шт", tracking="qty", avg_cost=Decimal("100"))
     # 10 rest @ 100 + 10 in @ 200 → 150
     service.recalc_avg_cost(item, Decimal(10), Decimal(10), Decimal(200))
     assert item.avg_cost == Decimal("150.0000")
@@ -105,7 +116,7 @@ def test_double_entry_receipt_transfer_writeoff(db):
     user_id = _admin_id(db)
     item = _make_item(db)
     main = _location(db, "Основной склад")
-    second = service.create_location(db, {"name": f"pytest-склад-{RUN}", "kind": "physical"})
+    second = service.create_location(db, company_id=_co(db), data={"name": f"pytest-склад-{RUN}", "kind": "physical"})
     db.commit()
 
     # приход 10 @ 100 (первый — цена явная), затем перемещение 4
@@ -166,7 +177,7 @@ def test_insufficient_stock_and_issue_cost(db):
     main = _location(db, "Основной склад")
     _adjust(db, user_id, main, [{"item_id": item.id, "qty_fact": Decimal(6),
                                  "unit_cost": Decimal(100)}])
-    second = service.create_location(db, {"name": f"pytest-склад2-{RUN}", "kind": "physical"})
+    second = service.create_location(db, company_id=_co(db), data={"name": f"pytest-склад2-{RUN}", "kind": "physical"})
     db.commit()
 
     with pytest.raises(AccountingError, match="insufficient_stock"):
@@ -235,7 +246,7 @@ def test_serials_receipt_transfer_writeoff_encrypted(db):
         assert row.code_hash == hashlib.sha256(code.encode()).hexdigest()
 
     # перемещение серийника: qty=1 + код
-    digital2 = service.create_location(db, {"name": f"pytest-цифра-{RUN}", "kind": "digital"})
+    digital2 = service.create_location(db, company_id=_co(db), data={"name": f"pytest-цифра-{RUN}", "kind": "digital"})
     db.commit()
     move = service.transfer_stock(db, user_id=user_id, data={
         "item_id": item.id, "qty": Decimal(1),
@@ -326,7 +337,7 @@ def test_item_rules_create_update_delete(db):
 
     # дубль sku — 422
     with pytest.raises(AccountingError, match="sku_already_exists"):
-        service.create_item(db, {"sku": item.sku, "name": "dup", "kind": "physical",
+        service.create_item(db, company_id=_co(db), data={"sku": item.sku, "name": "dup", "kind": "physical",
                                  "unit_code": "шт"})
         db.commit()
 

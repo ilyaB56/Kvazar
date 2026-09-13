@@ -18,6 +18,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from src.core.auth import CurrentUser, WriteUser, require_module
+from src.core.auth import CompanyScoped
 from src.core.models import User
 from src.db import get_db
 from src.modules.mgmt_accounting.features.inventory import models as m
@@ -187,9 +188,11 @@ def list_items(
     kind: str | None = None,
     is_active: bool | None = None,
     q: str | None = None,
+    scoped: CompanyScoped = None,
 ):
     # q — поиск по артикулу/имени (GIN pg_trgm, миграция 0021)
-    query = select(m.Item).order_by(m.Item.sku)
+    query = select(m.Item).where(
+        m.Item.company_id == scoped).order_by(m.Item.sku)
     if kind is not None:
         query = query.where(m.Item.kind == kind)
     if is_active is not None:
@@ -205,31 +208,35 @@ def list_units(user: CurrentUser, db: Session = Depends(get_db)):
 
 
 @router.post("/items", response_model=ItemOut, status_code=201)
-def create_item(body: ItemIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_item(body: ItemIn, user: WriteUser, db: Session = Depends(get_db),
+                scoped: CompanyScoped = None):
     with svc():
-        item = service.create_item(db, body.model_dump())
+        item = service.create_item(db, body.model_dump(), company_id=scoped)
     db.commit()
     db.refresh(item)
     return item
 
 
-def _get_item(db: Session, item_id: uuid.UUID) -> m.Item:
+def _get_item(db: Session, item_id: uuid.UUID,
+              scoped: uuid.UUID | None = None) -> m.Item:
     item = db.get(m.Item, item_id)
-    if item is None:
+    if item is None or (scoped is not None and item.company_id != scoped):
         raise HTTPException(404, "Item not found")
     return item
 
 
 @router.get("/items/{item_id}", response_model=ItemOut)
-def get_item(item_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db)):
-    return _get_item(db, item_id)
+def get_item(item_id: uuid.UUID, user: CurrentUser, db: Session = Depends(get_db),
+             scoped: CompanyScoped = None):
+    return _get_item(db, item_id, scoped)
 
 
 @router.put("/items/{item_id}", response_model=ItemOut)
 def update_item(
-    item_id: uuid.UUID, body: ItemPatch, user: WriteUser, db: Session = Depends(get_db)
+    item_id: uuid.UUID, body: ItemPatch, user: WriteUser, db: Session = Depends(get_db),
+    scoped: CompanyScoped = None,
 ):
-    item = _get_item(db, item_id)
+    item = _get_item(db, item_id, scoped)
     with svc():
         service.update_item(db, item, body.model_dump(exclude_unset=True))
     db.commit()
@@ -238,9 +245,10 @@ def update_item(
 
 
 @router.delete("/items/{item_id}")
-def delete_item(item_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
+def delete_item(item_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db),
+               scoped: CompanyScoped = None):
     """Только неактивная номенклатура без движений (§6)."""
-    item = _get_item(db, item_id)
+    item = _get_item(db, item_id, scoped)
     with svc():
         service.delete_item(db, item)
     db.commit()
@@ -248,14 +256,17 @@ def delete_item(item_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_d
 
 
 @router.get("/locations", response_model=list[LocationOut])
-def list_locations(user: CurrentUser, db: Session = Depends(get_db)):
-    return db.scalars(select(m.Location).order_by(m.Location.name)).all()
+def list_locations(user: CurrentUser, db: Session = Depends(get_db),
+                   scoped: CompanyScoped = None):
+    return db.scalars(select(m.Location).where(
+        m.Location.company_id == scoped).order_by(m.Location.name)).all()
 
 
 @router.post("/locations", response_model=LocationOut, status_code=201)
-def create_location(body: LocationIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_location(body: LocationIn, user: WriteUser, db: Session = Depends(get_db),
+                    scoped: CompanyScoped = None):
     with svc():
-        location = service.create_location(db, body.model_dump())
+        location = service.create_location(db, body.model_dump(), company_id=scoped)
     db.commit()
     db.refresh(location)
     return location
@@ -274,10 +285,11 @@ class SerialVoidIn(BaseModel):
 
 @router.post("/serials/void", response_model=MoveOut, status_code=201)
 def void_serial(body: SerialVoidIn, user: User = Depends(require_module("accounting")),
-                db: Session = Depends(get_db)):
+                db: Session = Depends(get_db), scoped: CompanyScoped = None):
     """Д13: испортить цифровой код — движение в транзит «Брак» + void."""
     with svc():
-        move = service.void_serial(db, code=body.code, user_id=user.id, note=body.note)
+        move = service.void_serial(db, code=body.code, user_id=user.id,
+                                   note=body.note, company_id=scoped)
     db.commit()
     db.refresh(move)
     return service.move_payload(move)
@@ -290,9 +302,11 @@ def stock_balances(
     on_date: date | None = None,
     location_id: uuid.UUID | None = None,
     item_id: uuid.UUID | None = None,
+    scoped: CompanyScoped = None,
 ):
     return service.stock_balances(
-        db, on_date=on_date, location_id=location_id, item_id=item_id
+        db, on_date=on_date, location_id=location_id, item_id=item_id,
+        company_id=scoped,
     )
 
 
@@ -304,27 +318,32 @@ def stock_moves(
     location_id: uuid.UUID | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    scoped: CompanyScoped = None,
 ):
     moves = service.stock_moves(
         db, item_id=item_id, location_id=location_id,
-        date_from=date_from, date_to=date_to,
+        date_from=date_from, date_to=date_to, company_id=scoped,
     )
     return [service.move_payload(move) for move in moves]
 
 
 @router.post("/stock/transfer", response_model=MoveOut, status_code=201)
-def transfer_stock(body: TransferIn, user: WriteUser, db: Session = Depends(get_db)):
+def transfer_stock(body: TransferIn, user: WriteUser, db: Session = Depends(get_db),
+                   scoped: CompanyScoped = None):
     with svc():
-        move = service.transfer_stock(db, user_id=user.id, data=body.model_dump())
+        move = service.transfer_stock(db, user_id=user.id,
+                                      data={**body.model_dump(), "company_id": scoped})
     db.commit()
     db.refresh(move)
     return service.move_payload(move)
 
 
 @router.post("/stock/adjustment", response_model=list[MoveOut], status_code=201)
-def adjustment(body: AdjustmentIn, user: WriteUser, db: Session = Depends(get_db)):
+def adjustment(body: AdjustmentIn, user: WriteUser, db: Session = Depends(get_db),
+               scoped: CompanyScoped = None):
     with svc():
-        moves = service.adjustment(db, user_id=user.id, data=body.model_dump())
+        moves = service.adjustment(db, user_id=user.id,
+                                   data={**body.model_dump(), "company_id": scoped})
     db.commit()
     for move in moves:
         db.refresh(move)

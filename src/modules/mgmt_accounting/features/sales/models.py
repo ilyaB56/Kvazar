@@ -14,7 +14,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, func,
+    Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -34,11 +34,17 @@ class SalesOrder(Base):
     при создании; номер ЗК-… выделяется при confirm; crm_deal_id — связь
     со сделкой (префилл контрагента, кнопка «Создать заказ» — UI этап I)."""
 
-    __table_args__ = ({"schema": SCHEMA},)
+    __table_args__ = (
+        UniqueConstraint("company_id", "number"),
+        {"schema": SCHEMA},
+    )
     __tablename__ = "sales_orders"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    number: Mapped[str | None] = mapped_column(String(40), unique=True)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
+    number: Mapped[str | None] = mapped_column(String(40))
     counterparty_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey(f"{SCHEMA}.counterparties.id"), index=True
     )
@@ -80,11 +86,17 @@ class Shipment(Base):
     списание по средней + статус заказа; unpost — сторно парными
     инверсионными движениями «Клиент → склад»."""
 
-    __table_args__ = ({"schema": SCHEMA},)
+    __table_args__ = (
+        UniqueConstraint("company_id", "number"),
+        {"schema": SCHEMA},
+    )
     __tablename__ = "shipments"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    number: Mapped[str | None] = mapped_column(String(40), unique=True)  # при post
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
+    number: Mapped[str | None] = mapped_column(String(40))  # при post
     sales_order_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey(f"{SCHEMA}.sales_orders.id"), index=True
     )

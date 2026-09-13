@@ -39,6 +39,15 @@ def client():
 def _login(http: httpx.Client, email: str, password: str) -> dict:
     response = http.post("/api/v1/auth/login", json={"email": email, "password": password})
     response.raise_for_status()
+    # мультитенантность: супер-админ работает в контексте «Основной»
+    _orgs = response.json().get("organizations") or []
+    if _orgs:
+        _oid = next((o["id"] for o in _orgs if o.get("name") == "Основная"),
+                    _orgs[0]["id"])
+        response = http.post("/api/v1/auth/select-org", json={
+            "refresh_token": response.json()["refresh_token"],
+            "company_id": _oid})
+        response.raise_for_status()
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 

@@ -41,15 +41,17 @@ TRANSIT_PRODUCTION = "Производство"
 
 def _default_location(db: Session, item: inv.Item) -> inv.Location:
     name = DEFAULT_LOCATIONS[item.kind]
-    location = db.scalar(select(inv.Location).where(inv.Location.name == name))
+    location = db.scalar(select(inv.Location).where(
+        inv.Location.name == name, inv.Location.company_id == item.company_id))
     if location is None:
         raise AccountingError(422, f"Default location not found: {name}")
     return location
 
 
-def _production_transit(db: Session) -> inv.Location:
+def _production_transit(db: Session, company_id=None) -> inv.Location:
     location = db.scalar(select(inv.Location).where(
-        inv.Location.name == TRANSIT_PRODUCTION, inv.Location.is_transit
+        inv.Location.name == TRANSIT_PRODUCTION, inv.Location.is_transit,
+        *([inv.Location.company_id == company_id] if company_id is not None else []),
     ))
     if location is None:
         raise AccountingError(422, f"System transit location not found: {TRANSIT_PRODUCTION}")
@@ -58,8 +60,9 @@ def _production_transit(db: Session) -> inv.Location:
 
 # ---------- Тех.карты ----------
 
-def create_tech_card(db: Session, *, user_id: uuid.UUID, data: dict) -> m.TechCard:
-    product = inv_service.get_item(db, data["product_item_id"])
+def create_tech_card(db: Session, *, user_id: uuid.UUID, data: dict,
+                     company_id: uuid.UUID | None = None) -> m.TechCard:
+    product = inv_service.get_item(db, data["product_item_id"], company_id)
     if product.kind == "service":
         raise AccountingError(422, f"product_is_service: {product.sku}")
     if product.tracking == "serial":
@@ -71,7 +74,7 @@ def create_tech_card(db: Session, *, user_id: uuid.UUID, data: dict) -> m.TechCa
         raise AccountingError(422, "qty_out must be positive")
     components = []
     for row in data.get("components") or []:
-        component = inv_service.get_item(db, row["item_id"])
+        component = inv_service.get_item(db, row["item_id"], company_id)
         qty = inv_service.quantize4(row["qty"])
         if qty <= 0:
             raise AccountingError(422, f"component qty must be positive: {component.sku}")
@@ -87,6 +90,7 @@ def create_tech_card(db: Session, *, user_id: uuid.UUID, data: dict) -> m.TechCa
     if not components:
         raise AccountingError(422, "components_required")
     card = m.TechCard(
+        company_id=company_id,
         name=data["name"],
         product_item_id=product.id,
         qty_out=qty_out,
@@ -107,14 +111,17 @@ def card_components(db: Session, card: m.TechCard) -> list[tuple[inv.Item, Decim
 
 # ---------- Заказы на сборку ----------
 
-def create_order(db: Session, *, user_id: uuid.UUID, data: dict) -> m.ProductionOrder:
+def create_order(db: Session, *, user_id: uuid.UUID, data: dict,
+                company_id: uuid.UUID | None = None) -> m.ProductionOrder:
     card = db.get(m.TechCard, data["tech_card_id"])
-    if card is None or not card.is_active:
+    if card is None or not card.is_active or (
+            company_id is not None and card.company_id != company_id):
         raise AccountingError(422, f"Unknown or inactive tech card: {data['tech_card_id']}")
     qty_planned = inv_service.quantize4(data["qty_planned"])
     if qty_planned <= 0:
         raise AccountingError(422, "qty_planned must be positive")
     order = m.ProductionOrder(
+        company_id=card.company_id,
         tech_card_id=card.id,
         qty_planned=qty_planned,
         status="draft",
@@ -139,7 +146,7 @@ def post_order(db: Session, order: m.ProductionOrder) -> m.ProductionOrder:
     if card is None or not card.is_active:
         raise AccountingError(422, "tech_card_inactive")
     product = inv_service.get_item(db, card.product_item_id)
-    transit = _production_transit(db)
+    transit = _production_transit(db, order.company_id)
     product_location = _default_location(db, product)
 
     material_cost = Decimal(0)
@@ -176,7 +183,7 @@ def post_order(db: Session, order: m.ProductionOrder) -> m.ProductionOrder:
     )
 
     order.status = "posted"
-    order.number = _next_number(db, order.moved_at)
+    order.number = _next_number(db, order.moved_at, order.company_id)
     order.material_cost = inv_service.quantize4(material_cost)
     order.posted_at = datetime.now(UTC)
     db.flush()
@@ -190,14 +197,17 @@ def post_order(db: Session, order: m.ProductionOrder) -> m.ProductionOrder:
         "produced_qty": str(produced),
         "material_cost": str(order.material_cost),
         "unit_cost": str(unit_cost),
+        "company_id": str(order.company_id),
     })
     return order
 
 
-def _next_number(db: Session, moved_at: date) -> str:
+def _next_number(db: Session, moved_at: date,
+                company_id: uuid.UUID | None = None) -> str:
     from src.modules.mgmt_accounting import service as acc_service
 
-    return acc_service.next_doc_number(db, m.ORDER_DOC_TYPE, moved_at)
+    return acc_service.next_doc_number(db, m.ORDER_DOC_TYPE, moved_at,
+                                        company_id)
 
 
 def cancel_order(db: Session, order: m.ProductionOrder, *, user_id: uuid.UUID) -> m.ProductionOrder:
@@ -220,7 +230,7 @@ def unpost_order(db: Session, order: m.ProductionOrder, *, user_id: uuid.UUID, r
         raise AccountingError(409, "Order is already stornoed")
     card = db.get(m.TechCard, order.tech_card_id)
     product = inv_service.get_item(db, card.product_item_id)
-    transit = _production_transit(db)
+    transit = _production_transit(db, order.company_id)
     product_location = _default_location(db, product)
 
     # продукция должна всё ещё лежать на складе — иначе последующие движения

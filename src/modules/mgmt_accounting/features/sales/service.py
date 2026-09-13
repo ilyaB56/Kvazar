@@ -42,7 +42,8 @@ SOURCE_TYPE = "sales_order"
 DEFAULT_LOCATIONS = {"physical": "Основной склад", "digital": "Цифровой склад"}
 
 
-def _get_counterparty(db: Session, counterparty_id: uuid.UUID) -> acc.Counterparty:
+def _get_counterparty(db: Session, counterparty_id: uuid.UUID,
+                     company_id: uuid.UUID | None = None) -> acc.Counterparty:
     counterparty = db.get(acc.Counterparty, counterparty_id)
     if counterparty is None or not counterparty.is_active:
         raise AccountingError(422, f"Unknown or inactive counterparty: {counterparty_id}")
@@ -63,13 +64,14 @@ def _deal_counterparty(db: Session, deal_id: uuid.UUID) -> uuid.UUID:
 
 # ---------- Заказы ----------
 
-def create_order(db: Session, *, user_id: uuid.UUID, data: dict) -> m.SalesOrder:
+def create_order(db: Session, *, user_id: uuid.UUID, data: dict,
+                company_id: uuid.UUID | None = None) -> m.SalesOrder:
     counterparty_id = data.get("counterparty_id")
     if counterparty_id is None and data.get("crm_deal_id") is not None:
         counterparty_id = _deal_counterparty(db, data["crm_deal_id"])
     if counterparty_id is None:
         raise AccountingError(422, "counterparty_id required (или crm_deal_id для префилла)")
-    _get_counterparty(db, counterparty_id)
+    _get_counterparty(db, counterparty_id, company_id)
     currency = data.get("currency") or acc_service.BASE_CURRENCY
     rate = acc_service.rate_for(db, date.today(), currency)
     lines_data = data.get("lines") or []
@@ -77,6 +79,7 @@ def create_order(db: Session, *, user_id: uuid.UUID, data: dict) -> m.SalesOrder
         raise AccountingError(422, "order_lines_required")
 
     order = m.SalesOrder(
+        company_id=company_id,
         counterparty_id=counterparty_id,
         crm_deal_id=data.get("crm_deal_id"),
         status="draft",
@@ -93,7 +96,7 @@ def create_order(db: Session, *, user_id: uuid.UUID, data: dict) -> m.SalesOrder
     amount = Decimal(0)
     amount_base = Decimal(0)
     for line in lines_data:
-        item = inv_service.get_item(db, line["item_id"])
+        item = inv_service.get_item(db, line["item_id"], company_id)
         qty = inv_service.quantize4(line["qty"])
         unit_price = inv_service.quantize4(line["unit_price"])
         if qty <= 0 or unit_price < 0:
@@ -120,7 +123,8 @@ def confirm_order(db: Session, order: m.SalesOrder, *, user_id: uuid.UUID) -> m.
     if order.status != "draft":
         raise AccountingError(409, f"Only draft orders can be confirmed (status={order.status})")
     order.status = "confirmed"
-    order.number = acc_service.next_doc_number(db, m.ORDER_DOC_TYPE, date.today())
+    order.number = acc_service.next_doc_number(db, m.ORDER_DOC_TYPE, date.today(),
+                                                order.company_id)
     # резерв v1: подтверждённый заказ резервирует полные строки (§3.4)
     for line in _order_lines(db, order.id):
         line.reserved_qty = line.qty
@@ -160,6 +164,7 @@ def order_payload(order: m.SalesOrder) -> dict[str, Any]:
         "currency": order.currency,
         "rate": str(order.rate),
         "amount_base": str(order.amount_base),
+        "company_id": str(order.company_id) if order.company_id else None,
     }
 
 
@@ -223,9 +228,10 @@ def _recompute_order_status(db: Session, order: m.SalesOrder) -> None:
 
 # ---------- Отгрузки ----------
 
-def create_shipment(db: Session, *, user_id: uuid.UUID, data: dict) -> m.Shipment:
+def create_shipment(db: Session, *, user_id: uuid.UUID, data: dict,
+                   company_id: uuid.UUID | None = None) -> m.Shipment:
     order = db.get(m.SalesOrder, data["sales_order_id"])
-    if order is None:
+    if order is None or (company_id is not None and order.company_id != company_id):
         raise AccountingError(422, "Unknown sales order")
     if order.status not in ("confirmed", "partially_shipped"):
         raise AccountingError(422, f"order_not_shippable: status={order.status}")
@@ -233,6 +239,7 @@ def create_shipment(db: Session, *, user_id: uuid.UUID, data: dict) -> m.Shipmen
         raise AccountingError(422, "shipment_lines_required")
 
     shipment = m.Shipment(
+        company_id=order.company_id,
         sales_order_id=order.id,
         status="draft",
         counterparty_doc=data.get("counterparty_doc"),
@@ -280,7 +287,8 @@ def create_shipment(db: Session, *, user_id: uuid.UUID, data: dict) -> m.Shipmen
 
 def _default_location(db: Session, item: inv.Item) -> inv.Location:
     name = DEFAULT_LOCATIONS[item.kind]
-    location = db.scalar(select(inv.Location).where(inv.Location.name == name))
+    location = db.scalar(select(inv.Location).where(
+        inv.Location.name == name, inv.Location.company_id == item.company_id))
     if location is None:
         raise AccountingError(422, f"Default location not found: {name}")
     return location
@@ -335,7 +343,8 @@ def post_shipment(db: Session, shipment: m.Shipment) -> m.Shipment:
         raise AccountingError(409, f"Shipment {shipment.number or shipment.id} is already posted")
     order = db.get(m.SalesOrder, shipment.sales_order_id)
     transit = db.scalar(select(inv.Location).where(
-        inv.Location.name == "Клиент", inv.Location.is_transit
+        inv.Location.name == "Клиент", inv.Location.is_transit,
+        inv.Location.company_id == shipment.company_id
     ))
     if transit is None:
         raise AccountingError(422, "System transit location not found: Клиент")
@@ -398,7 +407,8 @@ def post_shipment(db: Session, shipment: m.Shipment) -> m.Shipment:
             revenue_base += line.amount_base
 
     shipment.status = "posted"
-    shipment.number = acc_service.next_doc_number(db, m.SHIPMENT_DOC_TYPE, shipment.moved_at)
+    shipment.number = acc_service.next_doc_number(db, m.SHIPMENT_DOC_TYPE,
+                                                   shipment.moved_at, shipment.company_id)
     shipment.posted_at = datetime.now(UTC)
     # резерв v1: отгруженное снимается со строки заказа
     _apply_reserve_delta(db, order, shipment, restore=False)
@@ -413,6 +423,7 @@ def post_shipment(db: Session, shipment: m.Shipment) -> m.Shipment:
         "counterparty_id": str(order.counterparty_id),
         "moved_at": shipment.moved_at.isoformat(),
         "revenue_base": str(quantize2(revenue_base)),
+        "company_id": str(shipment.company_id),
     })
     return shipment
 
@@ -432,7 +443,8 @@ def unpost_shipment(db: Session, shipment: m.Shipment, *, user_id: uuid.UUID, re
     )).all()
     order = db.get(m.SalesOrder, shipment.sales_order_id)
     transit = db.scalar(select(inv.Location).where(
-        inv.Location.name == "Клиент", inv.Location.is_transit
+        inv.Location.name == "Клиент", inv.Location.is_transit,
+        inv.Location.company_id == shipment.company_id
     ))
 
     for move in moves:
@@ -492,13 +504,17 @@ def _apply_reserve_delta(db: Session, order: m.SalesOrder, shipment: m.Shipment,
 
 # ---------- Оплата ----------
 
-def _sales_category(db: Session) -> acc.Category:
-    """Категория «Продажи» (доход) — авто-seed при первой оплате (§3.4)."""
-    category = db.scalar(select(acc.Category).where(
-        acc.Category.name == SALES_CATEGORY, acc.Category.kind == "income"
-    ))
+def _sales_category(db: Session,
+                    company_id: uuid.UUID | None = None) -> acc.Category:
+    """Категория «Продажи» (доход) — авто-seed при первой оплате (§3.4);
+    сид — в рамках организации (multitenancy §5.3)."""
+    conds = [acc.Category.name == SALES_CATEGORY, acc.Category.kind == "income"]
+    if company_id is not None:
+        conds.append(acc.Category.company_id == company_id)
+    category = db.scalar(select(acc.Category).where(*conds))
     if category is None:
-        category = acc.Category(name=SALES_CATEGORY, kind="income")
+        category = acc.Category(name=SALES_CATEGORY, kind="income",
+                                company_id=company_id)
         db.add(category)
         db.flush()
     return category
@@ -512,8 +528,8 @@ def pay_order(db: Session, *, order: m.SalesOrder, user_id: uuid.UUID, data: dic
     account = db.get(acc.Account, data["account_id"])
     if account is None or not account.is_active:
         raise AccountingError(422, f"Unknown or inactive account: {data['account_id']}")
-    category = _sales_category(db)
-    txn = acc_service.create_transaction(db, user_id=user_id, data={
+    category = _sales_category(db, order.company_id)
+    txn = acc_service.create_transaction(db, user_id=user_id, company_id=order.company_id, data={
         "kind": "income",
         "operated_at": data.get("operated_at") or date.today(),
         "amount": data["amount"],
@@ -531,12 +547,14 @@ def pay_order(db: Session, *, order: m.SalesOrder, user_id: uuid.UUID, data: dic
 # ---------- Отчёты ----------
 
 def sales_report(
-    db: Session, date_from: date, date_to: date, counterparty_id: uuid.UUID | None
+    db: Session, date_from: date, date_to: date, counterparty_id: uuid.UUID | None,
+    company_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Продажи за период (§3.6): выручка по отгрузкам, себестоимость
     списаний (движения к «Клиенту»), маржа = выручка − себестоимость."""
     orders = db.scalars(
         select(m.SalesOrder).where(
+            *([m.SalesOrder.company_id == company_id] if company_id is not None else []),
             func.date(m.SalesOrder.created_at) >= date_from,
             func.date(m.SalesOrder.created_at) <= date_to,
         ).order_by(m.SalesOrder.created_at)
@@ -544,17 +562,25 @@ def sales_report(
     if counterparty_id is not None:
         orders = [o for o in orders if o.counterparty_id == counterparty_id]
 
+    shipment_conds = [
+        m.Shipment.status == "posted",
+        m.Shipment.is_stornoed.is_(False),
+        m.Shipment.moved_at >= date_from,
+        m.Shipment.moved_at <= date_to,
+    ]
+    if company_id is not None:
+        shipment_conds.append(m.Shipment.company_id == company_id)
     shipments = db.scalars(
-        select(m.Shipment).where(
-            m.Shipment.status == "posted",
-            m.Shipment.is_stornoed.is_(False),
-            m.Shipment.moved_at >= date_from,
-            m.Shipment.moved_at <= date_to,
-        ).order_by(m.Shipment.moved_at)
+        select(m.Shipment).where(*shipment_conds).order_by(m.Shipment.moved_at)
     ).all()
 
-    counterparties = {c.id: c for c in db.scalars(select(acc.Counterparty)).all()}
-    items = {i.id: i for i in db.scalars(select(inv.Item)).all()}
+    cp_q = select(acc.Counterparty)
+    item_q = select(inv.Item)
+    if company_id is not None:
+        cp_q = cp_q.where(acc.Counterparty.company_id == company_id)
+        item_q = item_q.where(inv.Item.company_id == company_id)
+    counterparties = {c.id: c for c in db.scalars(cp_q).all()}
+    items = {i.id: i for i in db.scalars(item_q).all()}
 
     by_item: dict[uuid.UUID, dict[str, Decimal]] = {}
     by_counterparty: dict[uuid.UUID, dict[str, Decimal]] = {}

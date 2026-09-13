@@ -39,6 +39,15 @@ def db():
     session.close()
 
 
+def _co(session) -> uuid.UUID:
+    """Компания теста — «Основная» (multitenancy B1: company_id обязателен)."""
+    from src.core.models import Company
+
+    company = session.scalar(select(Company).where(Company.name == "Основная"))
+    assert company is not None, "run migrations (0027)"
+    return company.id
+
+
 def _admin_id(session) -> uuid.UUID:
     from src.core.models import User
 
@@ -48,7 +57,7 @@ def _admin_id(session) -> uuid.UUID:
 
 
 def _item(db, name: str, *, kind: str = "physical") -> inv.Item:
-    item = inv_service.create_item(db, {
+    item = inv_service.create_item(db, company_id=_co(db), data={
         "sku": f"TST-D-{RUN}-{name}-{uuid.uuid4().hex[:6]}",
         "name": f"pytest D {name}",
         "kind": kind,
@@ -59,7 +68,8 @@ def _item(db, name: str, *, kind: str = "physical") -> inv.Item:
 
 
 def _stock(db, user_id, item, qty, unit_cost):
-    location = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад"))
+    location = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад",
+                                     inv.Location.company_id == _co(db)))
     inv_service.adjustment(db, user_id=user_id, data={
         "location_id": location.id,
         "lines": [{"item_id": item.id, "qty_fact": qty, "unit_cost": unit_cost}],
@@ -74,10 +84,10 @@ def test_buy_assemble_sell_cycle(db):
     mat1, mat2, product = _item(db, "м1"), _item(db, "м2"), _item(db, "изделие")
 
     # купили материалы: приёмки закупки (этап B) с разными ценами → средняя
-    supplier, _ = acc_service.create_counterparty(db, {"name": f"pytest-D-поставщик-{RUN}"})
+    supplier, _ = acc_service.create_counterparty(db, company_id=_co(db), data={"name": f"pytest-D-поставщик-{RUN}"})
     db.commit()
     from src.modules.mgmt_accounting.features.purchasing import service as pur_service
-    po = pur_service.create_order(db, user_id=user_id, data={
+    po = pur_service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "counterparty_id": supplier.id, "currency": "RUB",
         "lines": [
             {"item_id": mat1.id, "qty": Decimal(20), "unit_price": Decimal("30")},
@@ -85,7 +95,7 @@ def test_buy_assemble_sell_cycle(db):
         ],
     })
     pur_service.confirm_order(db, po, user_id=user_id)
-    r1 = pur_service.create_receipt(db, user_id=user_id, data={
+    r1 = pur_service.create_receipt(db, user_id=user_id, company_id=_co(db), data={
         "purchase_order_id": po.id,
         "lines": [
             {"item_id": mat1.id, "qty": Decimal(10)},
@@ -95,7 +105,7 @@ def test_buy_assemble_sell_cycle(db):
     pur_service.post_receipt(db, r1)
     db.commit()
     # вторая приёмка mat1 дороже — средняя пересчитывается: (10×30+10×50)/20 = 40
-    r2 = pur_service.create_receipt(db, user_id=user_id, data={
+    r2 = pur_service.create_receipt(db, user_id=user_id, company_id=_co(db), data={
         "purchase_order_id": po.id,
         "lines": [{"item_id": mat1.id, "qty": Decimal(10), "unit_cost": Decimal("50")}],
     })
@@ -105,7 +115,7 @@ def test_buy_assemble_sell_cycle(db):
     assert mat2.avg_cost == Decimal("5.0000")
 
     # тех.карта: за применение — 1 изделие из 2×mat1 + 4×mat2
-    card = service.create_tech_card(db, user_id=user_id, data={
+    card = service.create_tech_card(db, user_id=user_id, company_id=_co(db), data={
         "name": f"pytest-D-карта-{RUN}",
         "product_item_id": product.id,
         "qty_out": Decimal(1),
@@ -116,14 +126,15 @@ def test_buy_assemble_sell_cycle(db):
     })
     db.commit()
 
-    order = service.create_order(db, user_id=user_id, data={
+    order = service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "tech_card_id": card.id, "qty_planned": Decimal(2),
     })
     service.post_order(db, order)
     db.commit()
     assert order.status == "posted" and order.number.startswith("СБ-")
 
-    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад"))
+    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад",
+                                     inv.Location.company_id == _co(db)))
     # материалы списаны по средней: mat1 20−4=16, mat2 20−8=12
     assert inv_service.location_balance(db, mat1.id, main.id) == Decimal(16)
     assert inv_service.location_balance(db, mat2.id, main.id) == Decimal(12)
@@ -135,14 +146,14 @@ def test_buy_assemble_sell_cycle(db):
     # (как «Клиент» — проданное), в отчёты остатков не попадает
 
     # продали изделие: маржа = 2×(300 − 100) = 400
-    customer, _ = acc_service.create_counterparty(db, {"name": f"pytest-D-клиент-{RUN}"})
+    customer, _ = acc_service.create_counterparty(db, company_id=_co(db), data={"name": f"pytest-D-клиент-{RUN}"})
     db.commit()
-    so = sales_service.create_order(db, user_id=user_id, data={
+    so = sales_service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "counterparty_id": customer.id,
         "lines": [{"item_id": product.id, "qty": Decimal(2), "unit_price": Decimal("300")}],
     })
     sales_service.confirm_order(db, so, user_id=user_id)
-    shp = sales_service.create_shipment(db, user_id=user_id, data={
+    shp = sales_service.create_shipment(db, user_id=user_id, company_id=_co(db), data={
         "sales_order_id": so.id,
         "lines": [{"item_id": product.id, "qty": Decimal(2)}],
     })
@@ -160,7 +171,7 @@ def test_component_reservation_blocks_production(db):
     user_id = _admin_id(db)
     mat, product = _item(db, "рез-м"), _item(db, "рез-изд")
     _stock(db, user_id, mat, Decimal(10), Decimal("1"))
-    card = service.create_tech_card(db, user_id=user_id, data={
+    card = service.create_tech_card(db, user_id=user_id, company_id=_co(db), data={
         "name": f"pytest-D-рез-{RUN}",
         "product_item_id": product.id, "qty_out": Decimal(1),
         "components": [{"item_id": mat.id, "qty": Decimal(6)}],
@@ -168,9 +179,9 @@ def test_component_reservation_blocks_production(db):
     db.commit()
 
     # весь остаток зарезервирован заказом продаж — сборке не хватает
-    customer, _ = acc_service.create_counterparty(db, {"name": f"pytest-D-рез-клиент-{RUN}"})
+    customer, _ = acc_service.create_counterparty(db, company_id=_co(db), data={"name": f"pytest-D-рез-клиент-{RUN}"})
     db.commit()
-    so = sales_service.create_order(db, user_id=user_id, data={
+    so = sales_service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "counterparty_id": customer.id,
         "lines": [{"item_id": mat.id, "qty": Decimal(10), "unit_price": Decimal("2")}],
     })
@@ -178,7 +189,7 @@ def test_component_reservation_blocks_production(db):
     db.commit()
     assert sales_service.reserved_qty_by_item(db, mat.id) == Decimal(10)
 
-    order = service.create_order(db, user_id=user_id, data={
+    order = service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "tech_card_id": card.id, "qty_planned": Decimal(1),
     })
     with pytest.raises(AccountingError, match="insufficient_stock.*reserved"):
@@ -200,30 +211,31 @@ def test_unpost_order(db):
     user_id = _admin_id(db)
     mat, product = _item(db, "ст-м"), _item(db, "ст-изд")
     _stock(db, user_id, mat, Decimal(10), Decimal("2"))
-    card = service.create_tech_card(db, user_id=user_id, data={
+    card = service.create_tech_card(db, user_id=user_id, company_id=_co(db), data={
         "name": f"pytest-D-сторно-{RUN}",
         "product_item_id": product.id, "qty_out": Decimal(2),
         "components": [{"item_id": mat.id, "qty": Decimal(3)}],
     })
     db.commit()
-    order = service.create_order(db, user_id=user_id, data={
+    order = service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "tech_card_id": card.id, "qty_planned": Decimal(2),
     })
     service.post_order(db, order)
     db.commit()
-    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад"))
+    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад",
+                                     inv.Location.company_id == _co(db)))
     assert inv_service.location_balance(db, product.id, main.id) == Decimal(4)  # 2×2
     assert inv_service.location_balance(db, mat.id, main.id) == Decimal(4)  # 10−6
 
     # продукция продана — сторно запрещено (последующие движения)
-    customer, _ = acc_service.create_counterparty(db, {"name": f"pytest-D-ст-клиент-{RUN}"})
+    customer, _ = acc_service.create_counterparty(db, company_id=_co(db), data={"name": f"pytest-D-ст-клиент-{RUN}"})
     db.commit()
-    so = sales_service.create_order(db, user_id=user_id, data={
+    so = sales_service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "counterparty_id": customer.id,
         "lines": [{"item_id": product.id, "qty": Decimal(4), "unit_price": Decimal("10")}],
     })
     sales_service.confirm_order(db, so, user_id=user_id)
-    shp = sales_service.create_shipment(db, user_id=user_id, data={
+    shp = sales_service.create_shipment(db, user_id=user_id, company_id=_co(db), data={
         "sales_order_id": so.id,
         "lines": [{"item_id": product.id, "qty": Decimal(4)}],
     })
@@ -259,7 +271,7 @@ def test_unpost_order(db):
 def test_guards_and_event(db):
     user_id = _admin_id(db)
     mat, product = _item(db, "гв-м"), _item(db, "гв-изд")
-    service_item = inv_service.create_item(db, {
+    service_item = inv_service.create_item(db, company_id=_co(db), data={
         "sku": f"TST-D-{RUN}-услуга-{uuid.uuid4().hex[:6]}", "name": "pytest D услуга",
         "kind": "service", "unit_code": "час",
     })
@@ -268,14 +280,14 @@ def test_guards_and_event(db):
 
     # услуга не может быть ни продукцией, ни компонентом
     with pytest.raises(AccountingError, match="product_is_service"):
-        service.create_tech_card(db, user_id=user_id, data={
+        service.create_tech_card(db, user_id=user_id, company_id=_co(db), data={
             "name": "x", "product_item_id": service_item.id, "qty_out": Decimal(1),
             "components": [{"item_id": mat.id, "qty": Decimal(1)}],
         })
         db.commit()
     db.rollback()
     with pytest.raises(AccountingError, match="component_is_service"):
-        service.create_tech_card(db, user_id=user_id, data={
+        service.create_tech_card(db, user_id=user_id, company_id=_co(db), data={
             "name": "x", "product_item_id": product.id, "qty_out": Decimal(1),
             "components": [{"item_id": service_item.id, "qty": Decimal(1)}],
         })
@@ -283,7 +295,7 @@ def test_guards_and_event(db):
     db.rollback()
     # серийная продукция не поддерживается (v1)
     with pytest.raises(AccountingError, match="product_is_serial"):
-        service.create_tech_card(db, user_id=user_id, data={
+        service.create_tech_card(db, user_id=user_id, company_id=_co(db), data={
             "name": "x", "product_item_id": digital.id, "qty_out": Decimal(1),
             "components": [{"item_id": mat.id, "qty": Decimal(1)}],
         })
@@ -291,14 +303,14 @@ def test_guards_and_event(db):
     db.rollback()
     # без компонентов и компонент = продукция
     with pytest.raises(AccountingError, match="components_required"):
-        service.create_tech_card(db, user_id=user_id, data={
+        service.create_tech_card(db, user_id=user_id, company_id=_co(db), data={
             "name": "x", "product_item_id": product.id, "qty_out": Decimal(1),
             "components": [],
         })
         db.commit()
     db.rollback()
     with pytest.raises(AccountingError, match="component_equals_product"):
-        service.create_tech_card(db, user_id=user_id, data={
+        service.create_tech_card(db, user_id=user_id, company_id=_co(db), data={
             "name": "x", "product_item_id": product.id, "qty_out": Decimal(1),
             "components": [{"item_id": product.id, "qty": Decimal(1)}],
         })
@@ -307,13 +319,13 @@ def test_guards_and_event(db):
 
     # нехватка материала без резервов — insufficient_stock
     _stock(db, user_id, mat, Decimal(1), Decimal("1"))
-    card = service.create_tech_card(db, user_id=user_id, data={
+    card = service.create_tech_card(db, user_id=user_id, company_id=_co(db), data={
         "name": f"pytest-D-гв-{RUN}",
         "product_item_id": product.id, "qty_out": Decimal(1),
         "components": [{"item_id": mat.id, "qty": Decimal(2)}],
     })
     db.commit()
-    order = service.create_order(db, user_id=user_id, data={
+    order = service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "tech_card_id": card.id, "qty_planned": Decimal(1),
     })
     with pytest.raises(AccountingError, match="insufficient_stock"):
@@ -333,11 +345,12 @@ def test_guards_and_event(db):
     # досыпали материала — сборка проходит, событие опубликовано
     inv_service.adjustment(db, user_id=user_id, data={
         "location_id": db.scalar(select(inv.Location).where(
-            inv.Location.name == "Основной склад")).id,
+            inv.Location.name == "Основной склад",
+                    inv.Location.company_id == _co(db))).id,
         "lines": [{"item_id": mat.id, "qty_fact": Decimal(5)}],
     })
     db.commit()
-    order2 = service.create_order(db, user_id=user_id, data={
+    order2 = service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "tech_card_id": card.id, "qty_planned": Decimal(1),
     })
     service.post_order(db, order2)

@@ -41,7 +41,8 @@ SOURCE_TYPE = "purchase_order"
 DEFAULT_LOCATIONS = {"physical": "Основной склад", "digital": "Цифровой склад"}
 
 
-def _get_counterparty(db: Session, counterparty_id: uuid.UUID) -> acc.Counterparty:
+def _get_counterparty(db: Session, counterparty_id: uuid.UUID,
+                     company_id: uuid.UUID | None = None) -> acc.Counterparty:
     counterparty = db.get(acc.Counterparty, counterparty_id)
     if counterparty is None or not counterparty.is_active:
         raise AccountingError(422, f"Unknown or inactive counterparty: {counterparty_id}")
@@ -50,10 +51,11 @@ def _get_counterparty(db: Session, counterparty_id: uuid.UUID) -> acc.Counterpar
 
 # ---------- Заказы ----------
 
-def create_order(db: Session, *, user_id: uuid.UUID, data: dict) -> m.PurchaseOrder:
+def create_order(db: Session, *, user_id: uuid.UUID, data: dict,
+                company_id: uuid.UUID | None = None) -> m.PurchaseOrder:
     """Черновик: номера не потребляет; курс и amount_base замораживаются
     при создании (§2.6) — валюта фиксирует экономику сделки."""
-    _get_counterparty(db, data["counterparty_id"])
+    _get_counterparty(db, data["counterparty_id"], company_id)
     currency = data.get("currency") or acc_service.BASE_CURRENCY
     rate = acc_service.rate_for(db, date.today(), currency)
     lines_data = data.get("lines") or []
@@ -61,6 +63,7 @@ def create_order(db: Session, *, user_id: uuid.UUID, data: dict) -> m.PurchaseOr
         raise AccountingError(422, "order_lines_required")
 
     order = m.PurchaseOrder(
+        company_id=company_id,
         counterparty_id=data["counterparty_id"],
         status="draft",
         currency=currency,
@@ -76,7 +79,7 @@ def create_order(db: Session, *, user_id: uuid.UUID, data: dict) -> m.PurchaseOr
     amount = Decimal(0)
     amount_base = Decimal(0)
     for line in lines_data:
-        item = inv_service.get_item(db, line["item_id"])
+        item = inv_service.get_item(db, line["item_id"], company_id)
         qty = inv_service.quantize4(line["qty"])
         unit_price = inv_service.quantize4(line["unit_price"])
         if qty <= 0 or unit_price < 0:
@@ -102,7 +105,8 @@ def confirm_order(db: Session, order: m.PurchaseOrder, *, user_id: uuid.UUID) ->
     if order.status != "draft":
         raise AccountingError(409, f"Only draft orders can be confirmed (status={order.status})")
     order.status = "confirmed"
-    order.number = acc_service.next_doc_number(db, m.ORDER_DOC_TYPE, date.today())
+    order.number = acc_service.next_doc_number(db, m.ORDER_DOC_TYPE, date.today(),
+                                                order.company_id)
     order.updated_at = datetime.now(UTC)
     db.flush()
     record_version(db, "acc.purchase.order", str(order.id), user_id,
@@ -138,6 +142,7 @@ def order_payload(order: m.PurchaseOrder) -> dict[str, Any]:
         "currency": order.currency,
         "rate": str(order.rate),
         "amount_base": str(order.amount_base),
+        "company_id": str(order.company_id) if order.company_id else None,
     }
 
 
@@ -180,13 +185,14 @@ def _recompute_order_status(db: Session, order: m.PurchaseOrder) -> None:
 
 # ---------- Приёмки ----------
 
-def create_receipt(db: Session, *, user_id: uuid.UUID, data: dict) -> m.Receipt:
+def create_receipt(db: Session, *, user_id: uuid.UUID, data: dict,
+                   company_id: uuid.UUID | None = None) -> m.Receipt:
     """Черновик приёмки; для строки заказа себестоимость в базовой валюте
     по умолчанию = цена в валюте × замороженный курс заказа (§3.3)."""
     order = None
     if data.get("purchase_order_id") is not None:
         order = db.get(m.PurchaseOrder, data["purchase_order_id"])
-        if order is None:
+        if order is None or (company_id is not None and order.company_id != company_id):
             raise AccountingError(422, "Unknown purchase order")
         if order.status not in ("confirmed", "partially_received"):
             raise AccountingError(
@@ -195,11 +201,12 @@ def create_receipt(db: Session, *, user_id: uuid.UUID, data: dict) -> m.Receipt:
     counterparty_id = data.get("counterparty_id") or (order.counterparty_id if order else None)
     if counterparty_id is None:
         raise AccountingError(422, "counterparty_id required")
-    _get_counterparty(db, counterparty_id)
+    _get_counterparty(db, counterparty_id, company_id)
     if not data.get("lines"):
         raise AccountingError(422, "receipt_lines_required")
 
     receipt = m.Receipt(
+        company_id=company_id,
         purchase_order_id=order.id if order else None,
         counterparty_id=counterparty_id,
         status="draft",
@@ -269,7 +276,8 @@ def _build_receipt_line(
 
 def _default_location(db: Session, item: inv.Item) -> inv.Location:
     name = DEFAULT_LOCATIONS[item.kind]
-    location = db.scalar(select(inv.Location).where(inv.Location.name == name))
+    location = db.scalar(select(inv.Location).where(
+        inv.Location.name == name, inv.Location.company_id == item.company_id))
     if location is None:
         raise AccountingError(422, f"Default location not found: {name}")
     return location
@@ -283,7 +291,8 @@ def post_receipt(db: Session, receipt: m.Receipt) -> m.Receipt:
     if receipt.status == "posted":
         raise AccountingError(409, f"Receipt {receipt.number or receipt.id} is already posted")
     transit = db.scalar(select(inv.Location).where(
-        inv.Location.name == "Поставщик", inv.Location.is_transit
+        inv.Location.name == "Поставщик", inv.Location.is_transit,
+        inv.Location.company_id == receipt.company_id
     ))
     if transit is None:
         raise AccountingError(422, "System transit location not found: Поставщик")
@@ -331,7 +340,8 @@ def post_receipt(db: Session, receipt: m.Receipt) -> m.Receipt:
             amount_base += quantize2(line.qty * line.unit_cost)
 
     receipt.status = "posted"
-    receipt.number = acc_service.next_doc_number(db, m.RECEIPT_DOC_TYPE, receipt.moved_at)
+    receipt.number = acc_service.next_doc_number(db, m.RECEIPT_DOC_TYPE,
+                                                  receipt.moved_at, receipt.company_id)
     receipt.posted_at = datetime.now(UTC)
     db.flush()
     record_version(db, "acc.purchase.receipt", str(receipt.id), receipt.created_by,
@@ -345,6 +355,7 @@ def post_receipt(db: Session, receipt: m.Receipt) -> m.Receipt:
         "counterparty_id": str(receipt.counterparty_id),
         "moved_at": receipt.moved_at.isoformat(),
         "amount_base": str(amount_base),
+        "company_id": str(receipt.company_id),
     })
     return receipt
 
@@ -363,7 +374,8 @@ def unpost_receipt(db: Session, receipt: m.Receipt, *, user_id: uuid.UUID, reaso
         inv.StockMove.source_type == "receipt", inv.StockMove.source_id == receipt.id
     )).all()
     transit = db.scalar(select(inv.Location).where(
-        inv.Location.name == "Поставщик", inv.Location.is_transit
+        inv.Location.name == "Поставщик", inv.Location.is_transit,
+        inv.Location.company_id == receipt.company_id
     ))
     # строгий баланс: строки одного (товар, склад) суммируются — построчная
     # проверка пропустила бы случай 8+8 при остатке 15
@@ -419,13 +431,17 @@ def unpost_receipt(db: Session, receipt: m.Receipt, *, user_id: uuid.UUID, reaso
 
 # ---------- Оплата ----------
 
-def _purchase_category(db: Session) -> acc.Category:
-    """Категория «Закупки товаров» (расход) — авто-seed при первой оплате (§3.3)."""
-    category = db.scalar(select(acc.Category).where(
-        acc.Category.name == PURCHASE_CATEGORY, acc.Category.kind == "expense"
-    ))
+def _purchase_category(db: Session,
+                       company_id: uuid.UUID | None = None) -> acc.Category:
+    """Категория «Закупки товаров» (расход) — авто-seed при первой оплате (§3.3);
+    сид — в рамках организации (multitenancy §5.3)."""
+    conds = [acc.Category.name == PURCHASE_CATEGORY, acc.Category.kind == "expense"]
+    if company_id is not None:
+        conds.append(acc.Category.company_id == company_id)
+    category = db.scalar(select(acc.Category).where(*conds))
     if category is None:
-        category = acc.Category(name=PURCHASE_CATEGORY, kind="expense")
+        category = acc.Category(name=PURCHASE_CATEGORY, kind="expense",
+                                company_id=company_id)
         db.add(category)
         db.flush()
     return category
@@ -440,8 +456,8 @@ def pay_order(db: Session, *, order: m.PurchaseOrder, user_id: uuid.UUID, data: 
     account = db.get(acc.Account, data["account_id"])
     if account is None or not account.is_active:
         raise AccountingError(422, f"Unknown or inactive account: {data['account_id']}")
-    category = _purchase_category(db)
-    txn = acc_service.create_transaction(db, user_id=user_id, data={
+    category = _purchase_category(db, order.company_id)
+    txn = acc_service.create_transaction(db, user_id=user_id, company_id=order.company_id, data={
         "kind": "expense",
         "operated_at": data.get("operated_at") or date.today(),
         "amount": data["amount"],
@@ -470,28 +486,34 @@ def _order_payments(db: Session, order_id: uuid.UUID) -> list[acc.Transaction]:
 # ---------- Отчёты ----------
 
 def purchases_report(
-    db: Session, date_from: date, date_to: date, counterparty_id: uuid.UUID | None
+    db: Session, date_from: date, date_to: date, counterparty_id: uuid.UUID | None,
+    company_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Закупки за период: итоги по заказам/приёмкам, по товарам, по поставщикам
     (§3.6). Приёмки — проведённые, сторно исключаются (гасятся); оплаты —
     posted-транзакции с source-ссылкой на заказ."""
-    orders = db.scalars(
-        select(m.PurchaseOrder).where(
-            func.date(m.PurchaseOrder.created_at) >= date_from,
+    order_conds = [func.date(m.PurchaseOrder.created_at) >= date_from,
             func.date(m.PurchaseOrder.created_at) <= date_to,
-        ).order_by(m.PurchaseOrder.created_at)
+    ]
+    if company_id is not None:
+        order_conds.append(m.PurchaseOrder.company_id == company_id)
+    orders = db.scalars(
+        select(m.PurchaseOrder).where(*order_conds).order_by(m.PurchaseOrder.created_at)
     ).all()
     if counterparty_id is not None:
         orders = [o for o in orders if o.counterparty_id == counterparty_id]
     orders_amount = sum((o.amount_base for o in orders), Decimal(0))
 
+    receipt_conds = [
+        m.Receipt.status == "posted",
+        m.Receipt.is_stornoed.is_(False),
+        m.Receipt.moved_at >= date_from,
+        m.Receipt.moved_at <= date_to,
+    ]
+    if company_id is not None:
+        receipt_conds.append(m.Receipt.company_id == company_id)
     receipts = db.scalars(
-        select(m.Receipt).where(
-            m.Receipt.status == "posted",
-            m.Receipt.is_stornoed.is_(False),
-            m.Receipt.moved_at >= date_from,
-            m.Receipt.moved_at <= date_to,
-        ).order_by(m.Receipt.moved_at)
+        select(m.Receipt).where(*receipt_conds).order_by(m.Receipt.moved_at)
     ).all()
     if counterparty_id is not None:
         receipts = [r for r in receipts if r.counterparty_id == counterparty_id]
@@ -567,11 +589,12 @@ def purchases_report(
 
 
 def counterparty_balance(
-    db: Session, counterparty_id: uuid.UUID, *, on_date: date | None = None
+    db: Session, counterparty_id: uuid.UUID, *, on_date: date | None = None,
+    company_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Взаиморасчёты (§3.6, §11.3 — лёгкие): сальдо = приёмки − оплаты,
     детализация по документам; всё в базовой валюте."""
-    _get_counterparty(db, counterparty_id)
+    _get_counterparty(db, counterparty_id, company_id)
     counterparty = db.get(acc.Counterparty, counterparty_id)
 
     documents: list[dict[str, Any]] = []

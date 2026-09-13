@@ -48,6 +48,15 @@ def db():
     yield SessionLocal
 
 
+def _co(session) -> uuid.UUID:
+    """Компания теста — «Основная» (multitenancy B1: company_id обязателен)."""
+    from src.core.models import Company
+
+    company = session.scalar(select(Company).where(Company.name == "Основная"))
+    assert company is not None, "run migrations (0027)"
+    return company.id
+
+
 def _admin_id(session) -> uuid.UUID:
     from src.core.models import User
 
@@ -59,14 +68,14 @@ def _admin_id(session) -> uuid.UUID:
 def _account(session, name: str, currency: str) -> m.Account:
     account = session.scalar(select(m.Account).where(m.Account.name == name))
     if account is None:
-        account = m.Account(name=name, currency=currency)
+        account = m.Account(company_id=_co(session), name=name, currency=currency)
         session.add(account)
         session.commit()
     return account
 
 
 def _income(session, user_id, account_id: uuid.UUID, day: date, amount: str) -> m.Transaction:
-    txn = service.create_transaction(session, user_id=user_id, data={
+    txn = service.create_transaction(session, user_id=user_id, company_id=_co(session), data={
         "kind": "income", "operated_at": day, "amount": Decimal(amount),
         "currency": "RUB", "account_id": account_id,
     })
@@ -120,7 +129,7 @@ def test_cross_currency_transfer(db):
         service.upsert_rate(session, day, "USD", Decimal("90.5555"))
         session.commit()
 
-        txn = service.create_transaction(session, user_id=user_id, data={
+        txn = service.create_transaction(session, user_id=user_id, company_id=_co(session), data={
             "kind": "transfer", "operated_at": day, "amount": Decimal("100"),
             "currency": "USD", "account_id": usd.id, "account_to_id": rub.id,
         })
@@ -185,7 +194,7 @@ def test_storno_of_transfer_swaps_sides(db):
         service.upsert_rate(session, day, "USD", Decimal("60"))
         session.commit()
 
-        txn = service.create_transaction(session, user_id=user_id, data={
+        txn = service.create_transaction(session, user_id=user_id, company_id=_co(session), data={
             "kind": "transfer", "operated_at": day, "amount": Decimal("100"),
             "currency": "USD", "account_id": usd.id, "account_to_id": rub.id,
         })

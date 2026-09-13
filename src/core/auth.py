@@ -115,10 +115,11 @@ def get_current_user(
         row.last_used_at = datetime.now(UTC)
         db.commit()
         principal = ApiPrincipal(row)
-        # multitenancy §2 п.2: ApiPrincipal наследует организацию владельца
-        principal.token_org = None
+        # multitenancy §2 п.2/§5.3: организация токена (задана при создании
+        # в контексте org), иначе — организации владельца
+        principal.token_org = str(row.company_id) if row.company_id else None
         principal.token_pl = False
-        if row.owner_user_id:
+        if principal.token_org is None and row.owner_user_id:
             owner = db.get(User, row.owner_user_id)
             if owner is not None:
                 principal.token_org = str(owner.company_id) if owner.company_id else None

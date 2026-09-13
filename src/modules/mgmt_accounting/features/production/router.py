@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.core.auth import CurrentUser, WriteUser
+from src.core.auth import CompanyScoped
 from src.db import get_db
 from src.modules.mgmt_accounting.features.production import models as m
 from src.modules.mgmt_accounting.features.production import service
@@ -107,17 +108,21 @@ def list_tech_cards(
     user: CurrentUser,
     db: Session = Depends(get_db),
     is_active: bool | None = None,
+    scoped: CompanyScoped = None,
 ):
-    query = select(m.TechCard).order_by(m.TechCard.created_at.desc())
+    query = select(m.TechCard).where(
+        m.TechCard.company_id == scoped).order_by(m.TechCard.created_at.desc())
     if is_active is not None:
         query = query.where(m.TechCard.is_active == is_active)
     return db.scalars(query).all()
 
 
 @router.post("/tech-cards", response_model=TechCardOut, status_code=201)
-def create_tech_card(body: TechCardIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_tech_card(body: TechCardIn, user: WriteUser, db: Session = Depends(get_db),
+                     scoped: CompanyScoped = None):
     with svc():
-        card = service.create_tech_card(db, user_id=user.id, data=body.model_dump())
+        card = service.create_tech_card(db, user_id=user.id, data=body.model_dump(),
+                                        company_id=scoped)
     db.commit()
     db.refresh(card)
     return card
@@ -125,9 +130,10 @@ def create_tech_card(body: TechCardIn, user: WriteUser, db: Session = Depends(ge
 
 # ---------- Заказы на сборку ----------
 
-def _get_order(db: Session, order_id: uuid.UUID) -> m.ProductionOrder:
+def _get_order(db: Session, order_id: uuid.UUID,
+              scoped: uuid.UUID | None = None) -> m.ProductionOrder:
     order = db.get(m.ProductionOrder, order_id)
-    if order is None:
+    if order is None or (scoped is not None and order.company_id != scoped):
         raise HTTPException(404, "Production order not found")
     return order
 
@@ -138,8 +144,10 @@ def list_orders(
     db: Session = Depends(get_db),
     status: str | None = None,
     tech_card_id: uuid.UUID | None = None,
+    scoped: CompanyScoped = None,
 ):
-    query = select(m.ProductionOrder).order_by(m.ProductionOrder.created_at.desc())
+    query = select(m.ProductionOrder).where(
+        m.ProductionOrder.company_id == scoped).order_by(m.ProductionOrder.created_at.desc())
     if status is not None:
         query = query.where(m.ProductionOrder.status == status)
     if tech_card_id is not None:
@@ -148,17 +156,20 @@ def list_orders(
 
 
 @router.post("/production-orders", response_model=ProductionOrderOut, status_code=201)
-def create_order(body: ProductionOrderIn, user: WriteUser, db: Session = Depends(get_db)):
+def create_order(body: ProductionOrderIn, user: WriteUser, db: Session = Depends(get_db),
+                scoped: CompanyScoped = None):
     with svc():
-        order = service.create_order(db, user_id=user.id, data=body.model_dump())
+        order = service.create_order(db, user_id=user.id, data=body.model_dump(),
+                                     company_id=scoped)
     db.commit()
     db.refresh(order)
     return order
 
 
 @router.post("/production-orders/{order_id}/post", response_model=ProductionOrderOut)
-def post_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
-    order = _get_order(db, order_id)
+def post_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db),
+               scoped: CompanyScoped = None):
+    order = _get_order(db, order_id, scoped)
     with svc():
         service.post_order(db, order)
     db.commit()
@@ -168,10 +179,11 @@ def post_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_d
 
 @router.post("/production-orders/{order_id}/unpost", response_model=ProductionOrderOut)
 def unpost_order(
-    order_id: uuid.UUID, body: ReasonIn, user: WriteUser, db: Session = Depends(get_db)
+    order_id: uuid.UUID, body: ReasonIn, user: WriteUser, db: Session = Depends(get_db),
+    scoped: CompanyScoped = None,
 ):
     """Сторно сборки — по правилам сторно приёмок (§7-D)."""
-    order = _get_order(db, order_id)
+    order = _get_order(db, order_id, scoped)
     with svc():
         service.unpost_order(db, order, user_id=user.id, reason=body.reason)
     db.commit()
@@ -180,8 +192,9 @@ def unpost_order(
 
 
 @router.post("/production-orders/{order_id}/cancel", response_model=ProductionOrderOut)
-def cancel_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db)):
-    order = _get_order(db, order_id)
+def cancel_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_db),
+                scoped: CompanyScoped = None):
+    order = _get_order(db, order_id, scoped)
     with svc():
         service.cancel_order(db, order, user_id=user.id)
     db.commit()

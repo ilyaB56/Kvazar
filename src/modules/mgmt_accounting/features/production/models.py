@@ -15,7 +15,8 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, func,
+    Boolean, Date, DateTime, ForeignKey, Numeric, String, Text,
+    UniqueConstraint, func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -36,6 +37,9 @@ class TechCard(Base):
     __tablename__ = "tech_cards"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(255))
     product_item_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey(f"{SCHEMA}.items.id"), index=True
@@ -51,11 +55,17 @@ class ProductionOrder(Base):
     """Заказ на сборку: qty_planned применений карты; номер СБ-… при
     проведении; material_cost — себестоимость материалов всей партии."""
 
-    __table_args__ = ({"schema": SCHEMA},)
+    __table_args__ = (
+        UniqueConstraint("company_id", "number"),
+        {"schema": SCHEMA},
+    )
     __tablename__ = "production_orders"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    number: Mapped[str | None] = mapped_column(String(40), unique=True)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), index=True, nullable=False
+    )
+    number: Mapped[str | None] = mapped_column(String(40))
     tech_card_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey(f"{SCHEMA}.tech_cards.id"), index=True
     )

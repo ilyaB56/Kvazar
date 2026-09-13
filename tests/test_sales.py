@@ -40,6 +40,15 @@ def db():
     session.close()
 
 
+def _co(session) -> uuid.UUID:
+    """Компания теста — «Основная» (multitenancy B1: company_id обязателен)."""
+    from src.core.models import Company
+
+    company = session.scalar(select(Company).where(Company.name == "Основная"))
+    assert company is not None, "run migrations (0027)"
+    return company.id
+
+
 def _admin_id(session) -> uuid.UUID:
     from src.core.models import User
 
@@ -49,13 +58,13 @@ def _admin_id(session) -> uuid.UUID:
 
 
 def _customer(db, name: str) -> acc.Counterparty:
-    counterparty, _ = acc_service.create_counterparty(db, {"name": name})
+    counterparty, _ = acc_service.create_counterparty(db, company_id=_co(db), data={"name": name})
     db.commit()
     return counterparty
 
 
 def _item(db, *, kind: str = "physical") -> inv.Item:
-    item = inv_service.create_item(db, {
+    item = inv_service.create_item(db, company_id=_co(db), data={
         "sku": f"TST-C-{RUN}-{kind}-{uuid.uuid4().hex[:6]}",
         "name": f"pytest C {kind}",
         "kind": kind,
@@ -67,7 +76,8 @@ def _item(db, *, kind: str = "physical") -> inv.Item:
 
 def _stock(db, user_id, item, qty, unit_cost, *, location_name="Основной склад"):
     """Заготовка товара: приход инвентаризацией."""
-    location = db.scalar(select(inv.Location).where(inv.Location.name == location_name))
+    location = db.scalar(select(inv.Location).where(
+        inv.Location.name == location_name, inv.Location.company_id == _co(db)))
     inv_service.adjustment(db, user_id=user_id, data={
         "location_id": location.id,
         "lines": [{"item_id": item.id, "qty_fact": qty, "unit_cost": unit_cost}],
@@ -77,7 +87,7 @@ def _stock(db, user_id, item, qty, unit_cost, *, location_name="Основной
 
 
 def _order(db, user_id, counterparty_id, lines, currency="RUB", **extra) -> m.SalesOrder:
-    order = service.create_order(db, user_id=user_id, data={
+    order = service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "counterparty_id": counterparty_id,
         "currency": currency,
         "lines": lines,
@@ -88,7 +98,7 @@ def _order(db, user_id, counterparty_id, lines, currency="RUB", **extra) -> m.Sa
 
 
 def _shipment(db, user_id, order, lines) -> m.Shipment:
-    shipment = service.create_shipment(db, user_id=user_id, data={
+    shipment = service.create_shipment(db, user_id=user_id, company_id=_co(db), data={
         "sales_order_id": order.id, "lines": lines,
     })
     db.commit()
@@ -125,7 +135,8 @@ def test_full_cycle_partial_shipments_payment(db):
     db.commit()
     assert sh1.number.startswith("ОТ-") and sh1.status == "posted"
     assert order.status == "partially_shipped"
-    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад"))
+    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад",
+                                     inv.Location.company_id == _co(db)))
     assert inv_service.location_balance(db, widget.id, main.id) == Decimal(6)
     assert line.reserved_qty == Decimal(6)
     move = db.scalar(select(inv.StockMove).where(inv.StockMove.source_id == sh1.id))
@@ -140,7 +151,7 @@ def test_full_cycle_partial_shipments_payment(db):
     assert inv_service.on_hand(db, widget.id) == Decimal(0)
 
     # оплата: входящая, категория «Продажи» (авто-seed), source-ссылка
-    account = acc.Account(name=f"pytest-C-счёт-{RUN}", currency="RUB")
+    account = acc.Account(company_id=_co(db), name=f"pytest-C-счёт-{RUN}", currency="RUB")
     db.add(account)
     db.flush()
     db.commit()
@@ -152,7 +163,8 @@ def test_full_cycle_partial_shipments_payment(db):
     assert txn.counterparty_id == customer.id
     assert txn.dimensions == {"source_type": "sales_order", "source_id": str(order.id)}
     category = db.scalar(select(acc.Category).where(
-        acc.Category.name == "Продажи", acc.Category.kind == "income"
+        acc.Category.name == "Продажи", acc.Category.kind == "income",
+        acc.Category.company_id == _co(db)
     ))
     assert category is not None and txn.category_id == category.id
 
@@ -182,7 +194,8 @@ def test_digital_fifo_and_explicit_codes(db):
     user_id = _admin_id(db)
     customer = _customer(db, f"pytest-цифра-C-{RUN}")
     code_item = _item(db, kind="digital")
-    digital = db.scalar(select(inv.Location).where(inv.Location.name == "Цифровой склад"))
+    digital = db.scalar(select(inv.Location).where(inv.Location.name == "Цифровой склад",
+                                        inv.Location.company_id == _co(db)))
 
     # два «пополнения» кодами: инвентаризация серийных — полный факт-список,
     # вторая включает старые коды + новые (иначе старые уйдут в недостачу/void)
@@ -278,7 +291,7 @@ def test_deal_prefills_counterparty(db):
     db.commit()
 
     # контрагент префиллится из сделки, crm_deal_id хранится
-    order = service.create_order(db, user_id=user_id, data={
+    order = service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "crm_deal_id": deal.id,
         "lines": [{"item_id": widget.id, "qty": Decimal(1), "unit_price": Decimal("100")}],
     })
@@ -288,7 +301,7 @@ def test_deal_prefills_counterparty(db):
 
     # несуществующая сделка — 422
     with pytest.raises(AccountingError, match="deal_not_found"):
-        service.create_order(db, user_id=user_id, data={
+        service.create_order(db, user_id=user_id, company_id=_co(db), data={
             "crm_deal_id": uuid.uuid4(),
             "lines": [{"item_id": widget.id, "qty": Decimal(1), "unit_price": Decimal(1)}],
         })
@@ -297,7 +310,7 @@ def test_deal_prefills_counterparty(db):
 
     # без контрагента и сделки — 422
     with pytest.raises(AccountingError, match="counterparty_id required"):
-        service.create_order(db, user_id=user_id, data={
+        service.create_order(db, user_id=user_id, company_id=_co(db), data={
             "lines": [{"item_id": widget.id, "qty": Decimal(1), "unit_price": Decimal(1)}],
         })
         db.commit()
@@ -349,7 +362,8 @@ def test_unpost_shipment_returns_stock_and_serials(db):
 
     # сторно отгрузки с серийниками возвращает коды в in_stock
     code_item = _item(db, kind="digital")
-    digital = db.scalar(select(inv.Location).where(inv.Location.name == "Цифровой склад"))
+    digital = db.scalar(select(inv.Location).where(inv.Location.name == "Цифровой склад",
+                                        inv.Location.company_id == _co(db)))
     codes = [f"C-STORNO-{RUN}-{i}" for i in (1, 2)]
     inv_service.adjustment(db, user_id=user_id, data={
         "location_id": digital.id,
@@ -478,7 +492,7 @@ def test_cancel_and_guards(db):
 
     # отгрузка по черновику невозможна
     with pytest.raises(AccountingError, match="order_not_shippable"):
-        service.create_shipment(db, user_id=user_id, data={
+        service.create_shipment(db, user_id=user_id, company_id=_co(db), data={
             "sales_order_id": draft2.id,
             "lines": [{"item_id": widget.id, "qty": Decimal(1)}],
         })

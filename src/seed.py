@@ -1,5 +1,7 @@
 """Первичный сид: админ, реестр модулей, витринная цепочка. Идемпотентный."""
 
+from datetime import date
+
 from sqlalchemy import select
 
 from src.config import get_settings
@@ -79,6 +81,36 @@ def _seed_ai_chain(db) -> None:
             config={"base_url": "http://api:8000", "auth_style": "header",
                     "auth_header_name": "X-API-Token", "timeout_seconds": 30},
         ))
+
+
+def seed_company_data(db, company_id) -> None:
+    """Стартовые данные организации (multitenancy §5.1): базовые категории,
+    склады + системные транзиты, период текущего месяца. Вызывается ядром
+    при создании организации; модули не тянутся напрямую (агрегатор — ядро).
+    Стадии CRM — свои таблицы (этап B2 добавит их сюда же)."""
+    from src.modules.mgmt_accounting import models as acc_m
+    from src.modules.mgmt_accounting.features.inventory import models as inv_m
+
+    for name, kind in (("Продажи", "income"), ("Закупки товаров", "expense")):
+        if db.scalar(select(acc_m.Category).where(
+                acc_m.Category.name == name, acc_m.Category.kind == kind,
+                acc_m.Category.company_id == company_id)) is None:
+            db.add(acc_m.Category(name=name, kind=kind, company_id=company_id))
+    for name, kind, transit in (
+            ("Основной склад", "physical", False),
+            ("Цифровой склад", "digital", False),
+            ("Поставщик", "physical", True),
+            ("Клиент", "physical", True),
+            ("Производство", "physical", True),
+            ("Брак", "physical", True)):
+        if db.scalar(select(inv_m.Location).where(
+                inv_m.Location.name == name,
+                inv_m.Location.company_id == company_id)) is None:
+            db.add(inv_m.Location(name=name, kind=kind, is_transit=transit,
+                                  company_id=company_id))
+    today = date.today()
+    db.add(acc_m.Period(year=today.year, month=today.month, status="open",
+                        company_id=company_id))
 
 
 def run() -> None:

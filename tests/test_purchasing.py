@@ -40,6 +40,15 @@ def db():
     session.close()
 
 
+def _co(session) -> uuid.UUID:
+    """Компания теста — «Основная» (multitenancy B1: company_id обязателен)."""
+    from src.core.models import Company
+
+    company = session.scalar(select(Company).where(Company.name == "Основная"))
+    assert company is not None, "run migrations (0027)"
+    return company.id
+
+
 def _admin_id(session) -> uuid.UUID:
     from src.core.models import User
 
@@ -49,13 +58,13 @@ def _admin_id(session) -> uuid.UUID:
 
 
 def _supplier(db, name: str) -> acc.Counterparty:
-    counterparty, _ = acc_service.create_counterparty(db, {"name": name})
+    counterparty, _ = acc_service.create_counterparty(db, company_id=_co(db), data={"name": name})
     db.commit()
     return counterparty
 
 
 def _item(db, *, kind: str = "physical") -> inv.Item:
-    item = inv_service.create_item(db, {
+    item = inv_service.create_item(db, company_id=_co(db), data={
         "sku": f"TST-B-{RUN}-{kind}-{uuid.uuid4().hex[:6]}",
         "name": f"pytest B {kind}",
         "kind": kind,
@@ -66,7 +75,7 @@ def _item(db, *, kind: str = "physical") -> inv.Item:
 
 
 def _order(db, user_id, counterparty_id, lines, currency="RUB") -> m.PurchaseOrder:
-    order = service.create_order(db, user_id=user_id, data={
+    order = service.create_order(db, user_id=user_id, company_id=_co(db), data={
         "counterparty_id": counterparty_id,
         "currency": currency,
         "lines": lines,
@@ -76,7 +85,7 @@ def _order(db, user_id, counterparty_id, lines, currency="RUB") -> m.PurchaseOrd
 
 
 def _receipt(db, user_id, order, lines) -> m.Receipt:
-    receipt = service.create_receipt(db, user_id=user_id, data={
+    receipt = service.create_receipt(db, user_id=user_id, company_id=_co(db), data={
         "purchase_order_id": order.id, "lines": lines,
     })
     db.commit()
@@ -89,7 +98,7 @@ def test_order_flow_numbers_and_freeze(db):
     user_id = _admin_id(db)
     supplier = _supplier(db, f"pytest-поставщик-{RUN}")
     widget = _item(db)
-    service_item = inv_service.create_item(db, {
+    service_item = inv_service.create_item(db, company_id=_co(db), data={
         "sku": f"TST-B-{RUN}-svc-{uuid.uuid4().hex[:6]}", "name": "pytest B услуга",
         "kind": "service", "unit_code": "час",
     })
@@ -168,7 +177,8 @@ def test_full_cycle_partial_receipts_and_avg_cost(db):
     assert receipt1.status == "posted"
     assert receipt1.number and receipt1.number.startswith("ПМ-")
     assert order.status == "partially_received"
-    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад"))
+    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад",
+                                     inv.Location.company_id == _co(db)))
     assert inv_service.location_balance(db, widget.id, main.id) == Decimal(4)
     assert widget.avg_cost == Decimal("100.0000")
 
@@ -203,13 +213,13 @@ def test_full_cycle_partial_receipts_and_avg_cost(db):
     db.rollback()
 
     # услуга не принимается на склад
-    svc_item = inv_service.create_item(db, {
+    svc_item = inv_service.create_item(db, company_id=_co(db), data={
         "sku": f"TST-B-{RUN}-svc2-{uuid.uuid4().hex[:6]}", "name": "pytest B услуга 2",
         "kind": "service", "unit_code": "час",
     })
     db.commit()
     with pytest.raises(AccountingError, match="service_item_not_receivable"):
-        service.create_receipt(db, user_id=user_id, data={
+        service.create_receipt(db, user_id=user_id, company_id=_co(db), data={
             "counterparty_id": supplier.id,
             "lines": [{"item_id": svc_item.id, "qty": Decimal(1), "unit_cost": Decimal(1)}],
         })
@@ -232,7 +242,7 @@ def test_currency_receipt_cost_from_frozen_rate(db):
     db.commit()
 
     # unit_cost не передан → 10 EUR × 100 = 1000 базовой
-    receipt = service.create_receipt(db, user_id=user_id, data={
+    receipt = service.create_receipt(db, user_id=user_id, company_id=_co(db), data={
         "purchase_order_id": order.id,
         "lines": [{"item_id": gadget.id, "qty": Decimal(2)}],
     })
@@ -250,7 +260,8 @@ def test_unpost_receipt_reverses_moves(db):
     user_id = _admin_id(db)
     supplier = _supplier(db, f"pytest-сторно-{RUN}")
     widget = _item(db)
-    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад"))
+    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад",
+                                     inv.Location.company_id == _co(db)))
     order = _order(db, user_id, supplier.id, [
         {"item_id": widget.id, "qty": Decimal(10), "unit_price": Decimal("50")},
     ])
@@ -264,7 +275,7 @@ def test_unpost_receipt_reverses_moves(db):
     assert inv_service.location_balance(db, widget.id, main.id) == Decimal(5)
 
     # товар уже перемещён — сторно запрещено (последующие движения)
-    second = inv_service.create_location(db, {"name": f"pytest-B-склад-{RUN}", "kind": "physical"})
+    second = inv_service.create_location(db, company_id=_co(db), data={"name": f"pytest-B-склад-{RUN}", "kind": "physical"})
     db.commit()
     inv_service.transfer_stock(db, user_id=user_id, data={
         "item_id": widget.id, "qty": Decimal(2),
@@ -314,9 +325,10 @@ def test_unpost_receipt_aggregates_same_item_lines(db):
     user_id = _admin_id(db)
     supplier = _supplier(db, f"pytest-агр-{RUN}")
     widget = _item(db)
-    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад"))
+    main = db.scalar(select(inv.Location).where(inv.Location.name == "Основной склад",
+                                     inv.Location.company_id == _co(db)))
 
-    base = service.create_receipt(db, user_id=user_id, data={
+    base = service.create_receipt(db, user_id=user_id, company_id=_co(db), data={
         "counterparty_id": supplier.id,
         "lines": [{"item_id": widget.id, "qty": Decimal(15), "unit_cost": Decimal("1")}],
     })
@@ -327,7 +339,7 @@ def test_unpost_receipt_aggregates_same_item_lines(db):
         {"item_id": widget.id, "qty": Decimal(16), "unit_price": Decimal("1")},
     ])
     service.confirm_order(db, order, user_id=user_id)
-    receipt = service.create_receipt(db, user_id=user_id, data={
+    receipt = service.create_receipt(db, user_id=user_id, company_id=_co(db), data={
         "purchase_order_id": order.id,
         "lines": [
             {"item_id": widget.id, "qty": Decimal(8)},
@@ -338,7 +350,7 @@ def test_unpost_receipt_aggregates_same_item_lines(db):
     db.commit()
     assert inv_service.location_balance(db, widget.id, main.id) == Decimal(31)
 
-    second = inv_service.create_location(db, {"name": f"pytest-агр-склад-{RUN}", "kind": "physical"})
+    second = inv_service.create_location(db, company_id=_co(db), data={"name": f"pytest-агр-склад-{RUN}", "kind": "physical"})
     db.commit()
     inv_service.transfer_stock(db, user_id=user_id, data={
         "item_id": widget.id, "qty": Decimal(20),
@@ -385,7 +397,7 @@ def test_payments_category_source_and_balance(db):
     assert any(d["kind"] == "receipt" and d["number"] == receipt.number
                for d in balance["documents"])
 
-    account = acc.Account(name=f"pytest-B-счёт-{RUN}", currency="RUB")
+    account = acc.Account(company_id=_co(db), name=f"pytest-B-счёт-{RUN}", currency="RUB")
     db.add(account)
     db.flush()
     db.commit()
@@ -399,7 +411,8 @@ def test_payments_category_source_and_balance(db):
     assert txn1.counterparty_id == supplier.id
     assert txn1.dimensions == {"source_type": "purchase_order", "source_id": str(order.id)}
     category = db.scalar(select(acc.Category).where(
-        acc.Category.name == "Закупки товаров", acc.Category.kind == "expense"
+        acc.Category.name == "Закупки товаров", acc.Category.kind == "expense",
+        acc.Category.company_id == _co(db)
     ))
     assert category is not None and txn1.category_id == category.id
     # категория одна на две оплаты (авто-seed идемпотентен)
@@ -440,7 +453,7 @@ def test_purchases_report_aggregates(db):
     ])
     service.post_receipt(db, receipt)
     db.commit()
-    account = acc.Account(name=f"pytest-B-отчёт-счёт-{RUN}", currency="RUB")
+    account = acc.Account(company_id=_co(db), name=f"pytest-B-отчёт-счёт-{RUN}", currency="RUB")
     db.add(account)
     db.flush()
     service.pay_order(db, order=order, user_id=user_id, data={
@@ -479,7 +492,7 @@ def test_receipt_registers_serials_and_events(db):
     ])
     service.confirm_order(db, order, user_id=user_id)
     codes = [f"B-SERIAL-{RUN}-1", f"B-SERIAL-{RUN}-2"]
-    receipt = service.create_receipt(db, user_id=user_id, data={
+    receipt = service.create_receipt(db, user_id=user_id, company_id=_co(db), data={
         "purchase_order_id": order.id,
         "lines": [{"item_id": digital.id, "qty": Decimal(2), "serial_codes": codes}],
     })
@@ -495,7 +508,7 @@ def test_receipt_registers_serials_and_events(db):
 
     # qty без кодов — 422
     with pytest.raises(AccountingError, match="serial_qty_mismatch"):
-        service.create_receipt(db, user_id=user_id, data={
+        service.create_receipt(db, user_id=user_id, company_id=_co(db), data={
             "counterparty_id": supplier.id,
             "lines": [{"item_id": digital.id, "qty": Decimal(1)}],
         })

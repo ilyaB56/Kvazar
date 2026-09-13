@@ -673,6 +673,10 @@ def platform_create_org(body: OrgCreateIn, admin: PlatformAdmin,
     company = Company(name=body.name, inn=body.inn, is_active=True)
     db.add(company)
     db.flush()
+    # стартовые данные организации: категории, склады+транзиты, период (§5.1)
+    from src.seed import seed_company_data
+
+    seed_company_data(db, company.id)
     temp_password = _temp_password()
     org_admin = User(
         email=body.admin_email,
@@ -1176,6 +1180,9 @@ def create_api_token(body: ApiTokenIn, admin: AdminUser, db: Session = Depends(g
         token_hash=hashlib.sha256(token.encode()).hexdigest(),
         role=body.role,
         owner_user_id=admin.id,
+        # контекст организации создателя (для pl — выбранная org; для юзера
+        # организации — его компания); машинные вызовы пишут в её данные
+        company_id=getattr(admin, "token_org", None) or admin.company_id,
     )
     db.add(row)
     db.add(AuditEvent(action="api_token.created", entity_type="api_token",

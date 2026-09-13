@@ -242,6 +242,9 @@ class ApiToken(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # контекст организации (multitenancy §5.3): NULL = наследуется от владельца
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"))
     role: Mapped[str] = mapped_column(String(50), default="user")
     owner_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey(f"{CORE_SCHEMA}.users.id"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
