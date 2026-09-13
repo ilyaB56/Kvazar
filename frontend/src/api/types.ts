@@ -7,6 +7,8 @@ export interface TokenPair {
   token_type: string
   /** sessions-security: активные сеансы ПОСЛЕ этого входа (>1 — модалка) */
   active_sessions?: number
+  /** multitenancy: реестр организаций для супер-админа платформы */
+  organizations?: Array<{ id: string; name: string }>
 }
 
 export interface User {
@@ -16,6 +18,10 @@ export interface User {
   role: string
   is_active: boolean
   must_change_password?: boolean
+  // multitenancy: контекст из JWT (/auth/me)
+  company_id?: string | null
+  company_name?: string | null
+  is_platform_admin?: boolean
 }
 
 // ----- Интеграционная платформа -----

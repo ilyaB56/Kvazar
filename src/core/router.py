@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
+import string
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -20,6 +22,7 @@ from src.core.auth import (
     AdminUser,
     CurrentUser,
     HumanUser,
+    PlatformAdmin,
     WriteUser,
     create_access_token,
     create_refresh_token,
@@ -65,6 +68,10 @@ class TokenOut(BaseModel):
     # sessions-security §2.2: активные сеансы ПОСЛЕ этого входа (включая
     # текущий); >1 — UI показывает модалку «в аккаунт уже вошли»
     active_sessions: int = 1
+    # multitenancy §7.1: 2FA включена → вместо пары mfa_token (этап C);
+    # этап A — всегда false. pl-админу здесь же реестр организаций.
+    has_2fa: bool = False
+    organizations: list[dict] = []
 
 
 class RefreshIn(BaseModel):
@@ -93,6 +100,10 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     must_change_password: bool = False
+    # multitenancy: контекст (заполняется в /auth/me; в списках опускается)
+    company_id: uuid.UUID | None = None
+    company_name: str | None = None
+    is_platform_admin: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -139,6 +150,12 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)):
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "Bad credentials")
     reset_login_rate_limit(request)
+    # multitenancy §6: вход в деактивированную организацию запрещён
+    # (вебхуки её коннекторов продолжают копиться — О4)
+    if user.company_id:
+        company = db.get(Company, user.company_id)
+        if company is None or not company.is_active:
+            raise HTTPException(403, "organization_disabled")
     # sessions-security §2.1: сеанс = sid пары токенов; user_agent/ip —
     # данные для показа самому пользователю (в события шины не идут)
     from src.config import get_settings as _gs
@@ -163,10 +180,22 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)):
         AuthSession.created_at >= ttl_cut,
     )) or 1
     db.commit()
+    # multitenancy §7.1: супер-админу — токены без org + реестр; обычному —
+    # org его компании. (2FA-ветка — этап C: сейчас has_2fa всегда false)
+    pl = bool(user.is_platform_admin)
+    org = None if pl else (str(user.company_id) if user.company_id else None)
+    orgs = [{"id": str(c.id), "name": c.name} for c in db.scalars(
+        select(Company).where(Company.is_active.is_(True))
+        .order_by(Company.created_at)).all()] if pl else []
     return TokenOut(
-        access_token=create_access_token(user.id, user.role, ver=user.token_version, sid=sid),
-        refresh_token=create_refresh_token(user.id, ver=user.token_version, sid=sid),
+        access_token=create_access_token(user.id, user.role,
+                                         ver=user.token_version, sid=sid,
+                                         org=org, pl=pl),
+        refresh_token=create_refresh_token(user.id, ver=user.token_version,
+                                           sid=sid, org=org, pl=pl),
         active_sessions=int(active),
+        has_2fa=False,
+        organizations=orgs,
     )
 
 
@@ -197,9 +226,15 @@ def refresh(body: RefreshIn, db: Session = Depends(get_db)):
             if session.revoked_at is not None or session.user_id != user.id:
                 raise HTTPException(401, "Session revoked")
             session.last_used_at = datetime.now(UTC)
+    # ротация в том же тенант-контексте (multitenancy §2 п.2-3)
+    org = payload.get("org")
+    pl = bool(payload.get("pl"))
     return TokenOut(
-        access_token=create_access_token(user.id, user.role, ver=user.token_version, sid=sid),
-        refresh_token=create_refresh_token(user.id, ver=user.token_version, sid=sid),
+        access_token=create_access_token(user.id, user.role,
+                                         ver=user.token_version, sid=sid,
+                                         org=org, pl=pl),
+        refresh_token=create_refresh_token(user.id, ver=user.token_version,
+                                           sid=sid, org=org, pl=pl),
     )
 
 
@@ -296,6 +331,87 @@ def logout_others(body: LogoutOthersIn, db: Session = Depends(get_db)):
     ))
     db.commit()
     return {"terminated": len(others)}
+
+
+class SelectOrgIn(BaseModel):
+    """multitenancy §7.1: выбор организации супер-админом — по refresh-токену
+    (как logout-others); новая пара с org, sid сохраняется, прежняя пара
+    остаётся валидной в другой вкладке (один сеанс — много контекстов)."""
+    refresh_token: str
+    company_id: uuid.UUID
+
+
+class LeaveOrgIn(BaseModel):
+    refresh_token: str
+
+
+def _reissue_pair(db, payload, user, org: str | None) -> TokenOut:
+    """Перевыпуск пары в другом тенант-контексте с сохранением sid."""
+    sid = payload.get("sid")
+    pl = True  # контекст меняет только платформенный админ
+    db.add(AuditEvent(user_id=user.id,
+                      action="auth.org.selected" if org else "auth.org.left",
+                      entity_type="company",
+                      entity_id=org or "",
+                      payload={"sid": sid}))
+    db.commit()
+    return TokenOut(
+        access_token=create_access_token(user.id, user.role,
+                                         ver=user.token_version, sid=sid,
+                                         org=org, pl=pl),
+        refresh_token=create_refresh_token(user.id, ver=user.token_version,
+                                           sid=sid, org=org, pl=pl),
+    )
+
+
+def _validate_refresh_for_context(body, db) -> tuple:
+    """Общие проверки refresh-токена для смены контекста (как logout-others)."""
+    from jwt import PyJWTError
+
+    try:
+        payload = decode_token(body.refresh_token)
+    except PyJWTError as exc:
+        raise HTTPException(401, "Invalid refresh token") from exc
+    if payload.get("type") != "refresh":
+        raise HTTPException(401, "Wrong token type")
+    if payload.get("jti") and db.get(RevokedToken, uuid.UUID(payload["jti"])) is not None:
+        raise HTTPException(401, "Token revoked")
+    user = db.get(User, payload["sub"])
+    if user is None or not user.is_active:
+        raise HTTPException(401, "User not found")
+    if payload.get("ver", 0) != user.token_version:
+        raise HTTPException(401, "Token revoked")
+    sid = payload.get("sid")
+    if not sid:
+        raise HTTPException(401, "Token has no session")
+    session = db.get(AuthSession, uuid.UUID(sid))
+    if session is None or session.revoked_at is not None or session.user_id != user.id:
+        raise HTTPException(401, "Session revoked")
+    return payload, user
+
+
+@router.post("/auth/select-org", response_model=TokenOut)
+def select_org(body: SelectOrgIn, db: Session = Depends(get_db)):
+    """Выбор организации платформенным админом (multitenancy §7.1): только
+    is_platform_admin, по refresh-токену; новая пара с org=выбранная."""
+    payload, user = _validate_refresh_for_context(body, db)
+    if not user.is_platform_admin:
+        raise HTTPException(403, "Platform admin only")
+    company = db.get(Company, body.company_id)
+    if company is None:
+        raise HTTPException(404, "Organization not found")
+    if not company.is_active:
+        raise HTTPException(403, "organization_disabled")
+    return _reissue_pair(db, payload, user, str(company.id))
+
+
+@router.post("/auth/leave-org", response_model=TokenOut)
+def leave_org(body: LeaveOrgIn, db: Session = Depends(get_db)):
+    """Возврат в платформенный контекст (без org), sid сохраняется."""
+    payload, user = _validate_refresh_for_context(body, db)
+    if not user.is_platform_admin:
+        raise HTTPException(403, "Platform admin only")
+    return _reissue_pair(db, payload, user, None)
 
 
 class AuthSessionOut(BaseModel):
@@ -404,8 +520,20 @@ def me(user: HumanUser, db: Annotated[Session, Depends(get_db)] = None):
         AuditEvent.entity_type == "user", AuditEvent.entity_id == str(user.id),
         AuditEvent.action == "password.changed",
     ).limit(1))
+    # временный пароль от платформы и без смены — тоже «смените пароль»
+    temp_issued = changed is None and db.scalar(select(AuditEvent.id).where(
+        AuditEvent.entity_type == "user", AuditEvent.entity_id == str(user.id),
+        AuditEvent.action == "platform.user.temp_password",
+    ).limit(1))
     payload = UserOut.model_validate(user)
-    payload.must_change_password = changed is None and user.email == "admin@example.com"
+    payload.must_change_password = bool(
+        (changed is None and user.email == "admin@example.com") or temp_issued)
+    # тенант-контекст — из клейма org (для бейджа организации в шапке)
+    org = getattr(user, "token_org", None)
+    company = db.get(Company, uuid.UUID(str(org))) if org else None
+    payload.company_id = company.id if company else None
+    payload.company_name = company.name if company else None
+    payload.is_platform_admin = bool(user.is_platform_admin)
     return payload
 
 
@@ -413,7 +541,15 @@ def me(user: HumanUser, db: Annotated[Session, Depends(get_db)] = None):
 
 @router.get("/users", response_model=list[UserOut])
 def list_users(admin: AdminUser, db: Session = Depends(get_db)):
-    return db.scalars(select(User)).all()
+    # multitenancy §9: срез своей организации; платформенный админ в контексте
+    # org видит её, без org — всех (реестр платформы)
+    org = getattr(admin, "token_org", None)
+    if getattr(admin, "token_pl", False):
+        if not org:
+            return db.scalars(select(User)).all()
+        return db.scalars(select(User).where(User.company_id == uuid.UUID(str(org)))).all()
+    return db.scalars(select(User).where(
+        User.company_id == admin.company_id)).all()
 
 
 @router.post("/users", response_model=UserOut, status_code=201)
@@ -422,14 +558,23 @@ def create_user(body: UserCreate, admin: AdminUser, db: Session = Depends(get_db
         raise HTTPException(409, "Email already exists")
     if db.get(Role, body.role) is None:
         raise HTTPException(422, f"Unknown role: {body.role}")
+    # multitenancy §9: компания наследуется от создателя, не из тела.
+    # Платформенный контекст без org компании не имеет — создавать
+    # пользователей нужно внутри организации (select-org).
+    creator_org = getattr(admin, "token_org", None) or (
+        None if admin.is_platform_admin else admin.company_id)
+    if creator_org is None:
+        raise HTTPException(403, "no_company_context: select an organization first")
     user = User(
         email=body.email,
         password_hash=hash_password(body.password),
         full_name=body.full_name,
         role=body.role,
+        company_id=creator_org,
     )
     db.add(user)
-    db.add(AuditEvent(action="user.created", entity_type="user", payload={"email": body.email}))
+    db.add(AuditEvent(user_id=admin.id, action="user.created", entity_type="user",
+                      entity_id=str(user.id), payload={"email": body.email}))
     db.commit()
     db.refresh(user)
     return user
@@ -464,6 +609,162 @@ def patch_user(user_id: uuid.UUID, body: UserPatch, admin: AdminUser,
     db.commit()
     db.refresh(user)
     return user
+
+
+# ---------- Платформа: организации (multitenancy §7.3, только pl) ----------
+
+def _temp_password() -> str:
+    """Временный пароль по политике (цифры+буквы обоих регистров, 12)."""
+    alphabet = string.ascii_letters + string.digits
+    while True:
+        pwd = "Kv-" + "".join(secrets.choice(alphabet) for _ in range(9))
+        if not validate_password(pwd):
+            return pwd
+
+
+class OrgOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    inn: str
+    is_active: bool
+    users_count: int = 0
+    created_at: object = None
+
+    model_config = {"from_attributes": True}
+
+
+class OrgCreateIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "name": "ООО «Ромашка»", "inn": "7707083893",
+        "admin_email": "director@romashka.ru", "admin_full_name": "Иван Иванов",
+    }}}
+
+    name: str = Field(min_length=2, max_length=255)
+    inn: str = Field(default="", max_length=12)
+    admin_email: str = Field(max_length=255)
+    admin_full_name: str = Field(default="", max_length=255)
+
+
+class OrgPatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=255)
+    inn: str | None = Field(default=None, max_length=12)
+    is_active: bool | None = None
+
+
+@router.get("/platform/orgs", response_model=list[OrgOut])
+def platform_list_orgs(admin: PlatformAdmin, db: Session = Depends(get_db)):
+    counts = dict(db.execute(
+        select(User.company_id, func.count(User.id))
+        .where(User.company_id.is_not(None))
+        .group_by(User.company_id)).all())
+    return [OrgOut(id=c.id, name=c.name, inn=c.inn, is_active=c.is_active,
+                   users_count=int(counts.get(c.id, 0)), created_at=c.created_at)
+            for c in db.scalars(select(Company).order_by(Company.created_at)).all()]
+
+
+@router.post("/platform/orgs", status_code=201)
+def platform_create_org(body: OrgCreateIn, admin: PlatformAdmin,
+                        db: Session = Depends(get_db)):
+    """Организация + её админ (роль admin) + временный пароль — показ один
+    раз. Сид стартовых данных организации (категории/стадии/склады) — этап B,
+    когда у модульных таблиц появится company_id."""
+    if db.scalar(select(User).where(User.email == body.admin_email)):
+        raise HTTPException(409, f"Email already exists: {body.admin_email}")
+    company = Company(name=body.name, inn=body.inn, is_active=True)
+    db.add(company)
+    db.flush()
+    temp_password = _temp_password()
+    org_admin = User(
+        email=body.admin_email,
+        password_hash=hash_password(temp_password),
+        full_name=body.admin_full_name,
+        role="admin",
+        company_id=company.id,
+    )
+    db.add(org_admin)
+    db.flush()
+    db.add(AuditEvent(
+        user_id=admin.id, action="platform.org.created",
+        entity_type="company", entity_id=str(company.id),
+        payload={"name": company.name, "admin_email": org_admin.email}))
+    db.add(AuditEvent(
+        user_id=admin.id, action="platform.user.temp_password",
+        entity_type="user", entity_id=str(org_admin.id),
+        payload={"org_id": str(company.id)}))
+    events.publish(db, "platform.org.created", {
+        "org_id": str(company.id), "name": company.name,
+        "admin_email": org_admin.email,
+    })
+    db.commit()
+    db.refresh(company)
+    db.refresh(org_admin)
+    return {
+        "id": str(company.id), "name": company.name, "inn": company.inn,
+        "is_active": company.is_active, "users_count": 1,
+        "created_at": company.created_at,
+        "admin": {"id": str(org_admin.id), "email": org_admin.email,
+                  "full_name": org_admin.full_name, "role": "admin",
+                  "must_change_password": True},
+        "temp_password": temp_password,
+    }
+
+
+@router.patch("/platform/orgs/{company_id}", response_model=OrgOut)
+def platform_patch_org(company_id: uuid.UUID, body: OrgPatchIn,
+                       admin: PlatformAdmin, db: Session = Depends(get_db)):
+    company = db.get(Company, company_id)
+    if company is None:
+        raise HTTPException(404, "Organization not found")
+    was_active = company.is_active
+    if body.name is not None:
+        company.name = body.name
+    if body.inn is not None:
+        company.inn = body.inn
+    if body.is_active is not None:
+        company.is_active = body.is_active
+    db.add(AuditEvent(
+        user_id=admin.id,
+        action="platform.org.deactivated" if was_active and not company.is_active
+        else "platform.org.updated",
+        entity_type="company", entity_id=str(company.id),
+        payload=body.model_dump(exclude_none=True)))
+    events.publish(db, "platform.org.deactivated" if was_active and not company.is_active
+                   else "platform.org.updated",
+                   {"org_id": str(company.id), "name": company.name})
+    db.commit()
+    db.refresh(company)
+    users_count = db.scalar(select(func.count()).select_from(User).where(
+        User.company_id == company.id)) or 0
+    return OrgOut(id=company.id, name=company.name, inn=company.inn,
+                  is_active=company.is_active, users_count=int(users_count),
+                  created_at=company.created_at)
+
+
+@router.post("/platform/users/{user_id}/reset-password")
+def platform_reset_password(user_id: uuid.UUID, admin: PlatformAdmin,
+                            db: Session = Depends(get_db)):
+    """Сброс пароля любого пользователя платформой: временный пароль один
+    раз, token_version+=1 (старые токены и сеансы умирают), аудит."""
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(404, "User not found")
+    temp_password = _temp_password()
+    target.password_hash = hash_password(temp_password)
+    target.token_version += 1
+    now = datetime.now(UTC)
+    for session in db.scalars(select(AuthSession).where(
+            AuthSession.user_id == target.id,
+            AuthSession.revoked_at.is_(None))).all():
+        session.revoked_at = now
+    db.add(AuditEvent(
+        user_id=admin.id, action="platform.password.reset",
+        entity_type="user", entity_id=str(target.id),
+        payload={"email": target.email}))
+    db.add(AuditEvent(
+        user_id=admin.id, action="platform.user.temp_password",
+        entity_type="user", entity_id=str(target.id), payload={}))
+    db.commit()
+    return {"temp_password": temp_password, "must_change_password": True}
 
 
 # ---------- Companies / Contacts ----------

@@ -72,7 +72,17 @@ def _login(http: httpx.Client) -> dict:
         "password": os.environ.get("ERP_ADMIN_PASSWORD", "admin12345"),
     }, headers={"User-Agent": "sessions-security-test"})
     response.raise_for_status()
-    return response.json()
+    data = response.json()
+    # мультитенантность: админ — супер-админ платформы; пользовательский
+    # сценарий этих тестов — внутри организации «Основная»
+    orgs = data.get("organizations") or []
+    if orgs:
+        org_id = next((o["id"] for o in orgs if o.get("name") == "Основная"),
+                      orgs[0]["id"])
+        data = http.post(f"{API}/auth/select-org", json={
+            "refresh_token": data["refresh_token"], "company_id": org_id},
+            headers={"User-Agent": "sessions-security-test"}).json()
+    return data
 
 
 def _auth(token: str) -> dict:

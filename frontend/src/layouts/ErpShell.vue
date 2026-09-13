@@ -3,10 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Menu, Sun, Moon, LogOut, KeyRound, ChevronsUpDown, ShieldAlert, Plug, Bot, Settings2, LayoutDashboard, Wallet, TrendingUp,
+  Building2, Menu, Sun, Moon, LogOut, KeyRound, ChevronsUpDown, ShieldAlert, Plug, Bot, Settings2, LayoutDashboard, Wallet, TrendingUp,
   BarChart3, Package, Truck,
 } from 'lucide-vue-next'
-import { get, post } from '../api/client'
+import { post } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 import QuasarMark from '../components/brand/QuasarMark.vue'
 import NotificationCenter from './NotificationCenter.vue'
@@ -86,16 +86,18 @@ function isActive(to: string): boolean {
   return route.path === to || route.path.startsWith(`${to}/`)
 }
 
-// ---------- Организация (подпись под логотипом, §5) ----------
-const orgName = ref('')
-onMounted(async () => {
+// ---------- Организация (подпись под логотипом, §5; мультитенантность:
+// контекст из /auth/me — у супер-админа меняется выбором организации) ----------
+const orgName = computed(() =>
+  auth.user?.company_name || (auth.tokenPl ? t('mt.platformContext') : ''))
+async function switchOrganization() {
   try {
-    const companies = await get<Array<{ name: string }>>('/companies')
-    orgName.value = companies[0]?.name ?? ''
-  } catch {
-    orgName.value = ''
+    if (auth.tokenOrg) await auth.leaveOrg()
+  } catch (error) {
+    toast.apiError(error)
   }
-})
+  await router.push('/select-org')
+}
 
 // ---------- Мобильный drawer (§5, < lg) ----------
 const mobileOpen = ref(false)
@@ -268,6 +270,15 @@ async function logout() {
             <span v-if="pageCrumb" class="ml-2 hidden font-normal text-muted-foreground sm:inline">· {{ pageCrumb }}</span>
           </p>
         </div>
+        <!-- Бейдж организации (мультитенантность §9): контекст из JWT -->
+        <span
+          v-if="orgName"
+          class="hidden shrink-0 items-center gap-1.5 rounded-full border border-zinc-200 bg-card px-2.5 py-1 text-xs font-medium text-muted-foreground sm:flex dark:border-zinc-700"
+          :title="auth.tokenPl ? t('mt.switchOrgHint') : orgName"
+        >
+          <Building2 class="h-3.5 w-3.5 text-emerald-500" />
+          <span class="max-w-40 truncate">{{ orgName }}</span>
+        </span>
         <Button variant="outline" size="icon" class="h-9 w-9" :aria-label="theme === 'dark' ? t('shell.themeLight') : t('shell.themeDark')" @click="toggleTheme">
           <Sun v-if="theme === 'dark'" class="h-4 w-4" />
           <Moon v-else class="h-4 w-4" />
@@ -296,6 +307,9 @@ async function logout() {
             <p class="font-medium">{{ auth.userName }}</p>
             <p class="text-xs font-normal text-muted-foreground">{{ t(`roles.${auth.user?.role ?? 'user'}`) }}</p>
           </template>
+          <DropdownMenuItem v-if="auth.tokenPl" @click="switchOrganization">
+            <Building2 class="h-4 w-4" /> {{ t('mt.switchOrg') }}
+          </DropdownMenuItem>
           <DropdownMenuItem @click="passwordOpen = true">
             <KeyRound class="h-4 w-4" /> {{ t('shell.changePassword') }}
           </DropdownMenuItem>

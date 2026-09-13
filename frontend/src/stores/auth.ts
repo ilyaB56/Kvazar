@@ -40,9 +40,30 @@ export const useAuthStore = defineStore('auth', {
     // sessions-security §2.2: сеансов после последнего входа; >1 —
     // ErpShell показывает модалку «в аккаунт уже вошли» (один раз за вход)
     activeSessions: 0,
+    // multitenancy: реестр организаций из логина (для супер-админа)
+    organizations: [] as Array<{ id: string; name: string }>,
   }),
   getters: {
     isAuthenticated: (state) => !!state.accessToken,
+    // multitenancy §5.2: контекст из access-JWT (без запросов к серверу)
+    tokenOrg: (state): string | null => {
+      try {
+        const payload = JSON.parse(atob(state.accessToken.split('.')[1]
+          .replace(/-/g, '+').replace(/_/g, '/')))
+        return payload.org ?? null
+      } catch {
+        return null
+      }
+    },
+    tokenPl: (state): boolean => {
+      try {
+        const payload = JSON.parse(atob(state.accessToken.split('.')[1]
+          .replace(/-/g, '+').replace(/_/g, '/')))
+        return !!payload.pl
+      } catch {
+        return false
+      }
+    },
     userName: (state) => state.user?.full_name || state.user?.email || '',
     isAdmin: (state) => state.user?.role === 'admin',
   },
@@ -95,6 +116,7 @@ export const useAuthStore = defineStore('auth', {
       })
       this.persist(tokens, remember)
       this.activeSessions = tokens.active_sessions ?? 1
+      this.organizations = tokens.organizations ?? []
       await this.fetchMe()
       await this.fetchPermissions()
     },
@@ -138,6 +160,23 @@ export const useAuthStore = defineStore('auth', {
       const data = await response.json() as { terminated: number }
       this.activeSessions = 1
       return data.terminated
+    },
+    async selectOrg(companyId: string): Promise<void> {
+      // multitenancy §7.1: пара с org=выбранная, sid сохраняется
+      const tokens = await jsonFetch<TokenPair>('/api/v1/auth/select-org', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: this.refreshToken, company_id: companyId }),
+      })
+      this.persist(tokens)
+    },
+    async leaveOrg(): Promise<void> {
+      const tokens = await jsonFetch<TokenPair>('/api/v1/auth/leave-org', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: this.refreshToken }),
+      })
+      this.persist(tokens)
     },
     async apiLogout(): Promise<void> {
       // Отзыв refresh-токена на сервере (security-p0). Best-effort: сырой fetch

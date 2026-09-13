@@ -32,6 +32,11 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # Версия токенов: += 1 при смене пароля — все ранее выданные токены умирают
     token_version: Mapped[int] = mapped_column(Integer, default=0)
+    # Мультитенантность (multitenancy-spec §5.2): NULL только у платформенного
+    # админа; CHECK (company_id IS NULL) = is_platform_admin — в миграции 0027
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"))
+    is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -69,6 +74,8 @@ class Company(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255))
     inn: Mapped[str] = mapped_column(String(12), default="", index=True)
+    # false = вход пользователей организации запрещён (§5.1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -109,6 +116,9 @@ class AuditEvent(Base):
     entity_type: Mapped[str] = mapped_column(String(100), default="")
     entity_id: Mapped[str] = mapped_column(String(64), default="")
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # заполняется издателем; платформенные события — NULL (§5.3)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -120,6 +130,9 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     value: Mapped[dict | str | int | bool | None] = mapped_column(JSONB)
     value_type: Mapped[str] = mapped_column(String(20), default="string")  # string|int|bool|json
+    # NULL = платформенная настройка (фолбэк org → платформа, Р3)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"))
 
 
 class ModuleRegistry(Base):

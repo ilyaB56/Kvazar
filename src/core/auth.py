@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.config import get_settings
-from src.core.models import ApiToken, AuthSession, RolePermission, User
+from src.core.models import ApiToken, AuthSession, Company, RolePermission, User
 from src.db import get_db
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -33,7 +33,9 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 
 def create_access_token(user_id: uuid.UUID, role: str, ver: int = 0,
-                        sid: uuid.UUID | str | None = None) -> str:
+                        sid: uuid.UUID | str | None = None,
+                        org: uuid.UUID | str | None = None,
+                        pl: bool = False) -> str:
     now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
@@ -48,11 +50,19 @@ def create_access_token(user_id: uuid.UUID, role: str, ver: int = 0,
         # sessions-security §2.1: клейм сеанса — маркировка «текущий» и
         # мгновенный 401 по отзыву сессии (logout-others/revoke)
         payload["sid"] = str(sid)
+    if org is not None:
+        # multitenancy §5.2: контекст организации в токене (не users.company_id
+        # — переключение супер-админа работает без правки пользователя)
+        payload["org"] = str(org)
+    if pl:
+        payload["pl"] = True
     return jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
 
 
 def create_refresh_token(user_id: uuid.UUID, ver: int = 0,
-                         sid: uuid.UUID | str | None = None) -> str:
+                         sid: uuid.UUID | str | None = None,
+                         org: uuid.UUID | str | None = None,
+                         pl: bool = False) -> str:
     now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
@@ -64,6 +74,10 @@ def create_refresh_token(user_id: uuid.UUID, ver: int = 0,
     }
     if sid is not None:
         payload["sid"] = str(sid)
+    if org is not None:
+        payload["org"] = str(org)
+    if pl:
+        payload["pl"] = True
     return jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
 
 
@@ -100,7 +114,16 @@ def get_current_user(
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API token")
         row.last_used_at = datetime.now(UTC)
         db.commit()
-        return ApiPrincipal(row)
+        principal = ApiPrincipal(row)
+        # multitenancy §2 п.2: ApiPrincipal наследует организацию владельца
+        principal.token_org = None
+        principal.token_pl = False
+        if row.owner_user_id:
+            owner = db.get(User, row.owner_user_id)
+            if owner is not None:
+                principal.token_org = str(owner.company_id) if owner.company_id else None
+                principal.token_pl = bool(owner.is_platform_admin)
+        return principal
     if credentials is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
     try:
@@ -123,6 +146,9 @@ def get_current_user(
         session = db.get(AuthSession, uuid.UUID(sid))
         if session is not None and session.revoked_at is not None:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session revoked")
+    # multitenancy: контекст из токена (атрибут, не колонка)
+    user.token_org = payload.get("org")
+    user.token_pl = bool(payload.get("pl"))
     return user
 
 
@@ -157,6 +183,36 @@ require_admin = require_role("admin")
 
 WriteUser = Annotated[User, Depends(require_write)]
 AdminUser = Annotated[User, Depends(require_admin)]
+
+
+# ---------- Мультитенантность (multitenancy-spec §7.2) ----------
+
+def _require_platform_admin(user: CurrentUser) -> User:
+    if not getattr(user, "token_pl", False):
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "Platform admin context required")
+    return user
+
+
+PlatformAdmin = Annotated[User, Depends(_require_platform_admin)]
+"""Платформенный контекст: только is_platform_admin (клейм pl)."""
+
+
+def current_company(user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> uuid.UUID:
+    """Тенант-контекст: org из JWT (не users.company_id!). Нет org —
+    платформенный контекст без выбора → 403; организация неактивна → 403.
+    Этап A — зависимость ядра; этап B переводит модули на неё."""
+    org = getattr(user, "token_org", None)
+    if not org:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "no_company_context")
+    company = db.get(Company, uuid.UUID(str(org)))
+    if company is None or not company.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "organization_disabled")
+    return company.id
+
+
+CompanyScoped = Annotated[uuid.UUID, Depends(current_company)]
+"""company_id контекста для фильтров сервисного слоя (первый рубеж изоляции)."""
 
 
 # ---------- Роли и права (редизайн §6.3) ----------

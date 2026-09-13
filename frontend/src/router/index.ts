@@ -11,6 +11,12 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
+    {
+      // multitenancy: выбор организации супер-админом платформы (§9)
+      path: '/select-org', name: 'select-org',
+      component: () => import('../views/SelectOrgView.vue'),
+      meta: { requiresAuth: true, titleKey: 'mt.selectOrgTitle' },
+    },
     { path: '/no-access', name: 'no-access', component: () => import('../views/NoAccessView.vue') },
     {
       path: '/',
@@ -217,7 +223,15 @@ router.beforeEach(async (to) => {
     return { name: 'login' }
   }
   if (to.name === 'login' && auth.isAuthenticated) {
+    // супер-админ без выбранной организации — сначала экран выбора
+    if (auth.tokenPl && !auth.tokenOrg) return { name: 'select-org' }
     return { path: auth.firstAvailableRoute() }
+  }
+  // платформенный контекст без org: данные недоступны (403 no_company_context)
+  // — единственный рабочий экран супер-админа без организации — выбор/реестр
+  if (auth.isAuthenticated && auth.tokenPl && !auth.tokenOrg
+      && to.name !== 'select-org') {
+    return { name: 'select-org' }
   }
   // заголовок раздела шапки — по meta.title; i18n.global — guard вне setup-контекста
   const titleKey = to.meta.titleKey as string | undefined

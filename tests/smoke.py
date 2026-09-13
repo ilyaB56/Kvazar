@@ -76,9 +76,17 @@ status, data = call("GET", "/api/v1/modules")
 names = [m["name"] for m in data] if status == 200 else []
 check("GET /api/v1/modules (core, integrations)", status == 200 and "core" in names and "integrations" in names, str(names))
 
-# 2. Логин
+# 2. Логин (+ мультитенантность: админ — супер-админ платформы, для работы
+# с данными выбирает организацию «Основная»; sid сеанса сохраняется)
 status, data = call("POST", "/api/v1/auth/login", {"email": "admin@example.com", "password": "admin12345"})
 check("POST /api/v1/auth/login", status == 200 and "access_token" in data, str(data)[:120])
+orgs = data.get("organizations") or []
+if orgs:
+    org_id = next((o["id"] for o in orgs if o.get("name") == "Основная"), orgs[0]["id"])
+    status, sel = call("POST", "/api/v1/auth/select-org",
+                       {"refresh_token": data["refresh_token"], "company_id": org_id})
+    check("POST /api/v1/auth/select-org (pl → Основная)", status == 200, str(sel)[:100])
+    data = sel
 token = data.get("access_token", "")
 
 status, data = call("GET", "/api/v1/auth/me", token=token)
