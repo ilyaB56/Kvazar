@@ -18,6 +18,7 @@ import {
 } from 'lucide-vue-next'
 import QuasarMark from '../components/brand/QuasarMark.vue'
 import Label from '../components/ui/Label.vue'
+import { useToast } from '../components/ui'
 import { useAuthStore, type HttpError } from '../stores/auth'
 
 // Вход-лендинг по эталону login-screen.tsx (редизайн §8.B): сплит
@@ -28,6 +29,7 @@ import { useAuthStore, type HttpError } from '../stores/auth'
 // переносим: под них нет эндпоинтов. Поле кода 2FA — задел P1, скрыто.
 
 const { t } = useI18n()
+const toast = useToast()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
@@ -124,6 +126,21 @@ async function submitCode() {
     } else {
       mfaError.value = t('errors.unknown')
     }
+  } finally {
+    loading.value = false
+  }
+}
+
+async function forgot() {
+  if (!form.email.trim() || loading.value) return
+  loading.value = true
+  try {
+    await auth.forgotPassword(form.email.trim())
+    toast.success(t('recovery.sentToast'))
+  } catch (e) {
+    const http = e as HttpError
+    if (http.status === 429) toast.error(t('recovery.rateLimited'))
+    else toast.apiError(e)
   } finally {
     loading.value = false
   }

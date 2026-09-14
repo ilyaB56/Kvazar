@@ -399,6 +399,23 @@ export default {
   profile: {
     passwordHint: 'Changing the password revokes all active sessions and tokens (security-p0): you will need to sign in again everywhere.',
   },
+  recovery: {
+    title: 'New password',
+    subtitle: 'The link is single-use and valid for 1 hour',
+    newPassword: 'New password',
+    repeat: 'Repeat password',
+    submit: 'Change password',
+    tooShort: 'Password must be at least 8 characters',
+    mismatch: 'Passwords do not match',
+    noToken: 'Link has no token — open the full link from the email',
+    invalidToken: 'Link is invalid or already used',
+    weakPassword: 'Password fails the policy (length/common)',
+    doneTitle: 'Password changed',
+    doneHint: 'All sessions terminated. Redirecting to sign-in…',
+    doneToast: 'Password changed',
+    sentToast: 'If the address exists, the email has been sent',
+    rateLimited: 'Too many attempts. Try again later',
+  },
   mfa: {
     codeLabel: 'Verification code',
     codePlaceholder: '123456 or ABCD-EFGH',

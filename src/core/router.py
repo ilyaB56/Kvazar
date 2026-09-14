@@ -6,7 +6,7 @@ import hashlib
 import secrets
 import string
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from typing import Annotated
 
@@ -24,6 +24,7 @@ from src.core.auth import (
     HumanUser,
     PlatformAdmin,
     WriteUser,
+    current_company,
     create_access_token,
     create_mfa_token,
     create_refresh_token,
@@ -33,6 +34,7 @@ from src.core.auth import (
 )
 from src.core.models import (
     ApiToken,
+    PasswordReset,
     AuditEvent,
     AuthSession,
     Backup,
@@ -47,8 +49,9 @@ from src.core.models import (
 )
 from src.core.passwords import validate_password
 from src.core.rate_limit import (
-    check_login_rate_limit, check_password_confirm_rate_limit,
-    reset_login_rate_limit, reset_password_confirm_rate_limit,
+    check_forgot_password_rate_limit, check_login_rate_limit,
+    check_password_confirm_rate_limit, reset_login_rate_limit,
+    reset_password_confirm_rate_limit,
 )
 from src.db import SessionLocal, get_db
 
@@ -74,8 +77,11 @@ class TokenOut(BaseModel):
     has_2fa: bool = False
     mfa_required: bool = False
     mfa_token: str = ""
-    # руководитель (admin/pl) без включённой 2FA — UI запускает мастер
+    # руководитель (admin/pl) без включённой 2FA — UI запускает мастер;
+    # mfa_setup_required = дедлайн 7 дней прошёл: вход блокируется
+    # до завершения настройки (этап D)
     totp_setup_required: bool = False
+    mfa_setup_required: bool = False
     organizations: list[dict] = []
 
 
@@ -171,6 +177,15 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)):
             access_token="", refresh_token="",
             mfa_required=True, mfa_token=create_mfa_token(user.id))
     setup_recommended = _2fa_required(user) and not totp_core.is_enabled(db, user.id)
+    # дедлайн 2FA (этап D, ревью C): руководитель без 2FA дольше 7 дней —
+    # вход блокируется до настройки (мастер работает по mfa_token)
+    deadline = (user.totp_setup_deadline.date()
+                if user.totp_setup_deadline else None)
+    if setup_recommended and deadline is not None and date.today() > deadline:
+        db.commit()
+        return TokenOut(
+            access_token="", refresh_token="",
+            mfa_setup_required=True, mfa_token=create_mfa_token(user.id))
 
     # sessions-security §2.1: сеанс = sid пары токенов; user_agent/ip —
     # данные для показа самому пользователю (в события шины не идут)
@@ -285,6 +300,95 @@ def logout(body: RefreshIn, db: Session = Depends(get_db)):
         if session is not None and session.revoked_at is None:
             session.revoked_at = datetime.now(UTC)
     db.add(AuditEvent(user_id=user.id, action="logout", entity_type="user", entity_id=str(user.id)))
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- Восстановление пароля (multitenancy §7.5, этап D) ----------
+
+class ForgotPasswordIn(BaseModel):
+    """Всегда 200 {ok}: письмо (если адрес существует) со ссылкой
+    /reset-password?token=… (1 час, одноразовая); лимит 3/час."""
+    model_config = {"json_schema_extra": {"example": {"login": "user@company.ru"}}}
+
+    login: str = Field(max_length=255)
+
+
+class ResetPasswordIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "token": "urlsafe-32-символа из письма",
+        "new_password": "NewStrong1pass",
+    }}}
+
+    token: str = Field(min_length=20, max_length=64)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+@router.post("/auth/forgot-password")
+def forgot_password(body: ForgotPasswordIn, request: Request,
+                    db: Session = Depends(get_db)):
+    """Публичный. ВСЕГДА 200 {ok: true} — не раскрывает существование
+    логина. Существующему активному пользователю: токен (urlsafe-32,
+    sha256-хэш в БД, 1 час, одноразовый) + событие
+    core.password.reset_requested (БЕЗ токена) — письмо шлёт обработчик
+    integrations через платформенный SMTP. Rate limit 3/час (login, ip)."""
+    import hashlib
+    import secrets as _secrets
+
+    ip = (request.headers.get("x-forwarded-for") or "").split(",")[-1].strip()         or (request.client.host if request.client else "")
+    check_forgot_password_rate_limit(f"{body.login.strip().lower()}|{ip}")
+
+    user = db.scalar(select(User).where(User.email == body.login.strip()))
+    if user is not None and user.is_active:
+        token = _secrets.token_urlsafe(32)
+        from src.core.crypto import encrypt_str
+
+        db.add(PasswordReset(
+            user_id=user.id,
+            token_hash=hashlib.sha256(token.encode()).hexdigest(),
+            token_enc=encrypt_str(token),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            created_ip=ip[:64],
+        ))
+        db.add(AuditEvent(user_id=user.id, action="password.reset_requested",
+                          entity_type="user", entity_id=str(user.id)))
+        events.publish(db, "core.password.reset_requested", {
+            "user_id": str(user.id), "email": user.email,
+            "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            # токен в событии НЕТ: обработчик читает живую строку из БД
+        })
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/auth/reset-password")
+def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
+    """Публичный. Политика паролей; успех: hash, token_version+=1, ревок
+    всех сеансов, used_at. Единый ответ за истёкшим/использованным/
+    несуществующим — 410 reset_token_invalid (не раскрывает какой)."""
+    import hashlib
+
+    token_hash = hashlib.sha256(body.token.strip().encode()).hexdigest()
+    row = db.scalar(select(PasswordReset).where(
+        PasswordReset.token_hash == token_hash))
+    if row is None or row.used_at is not None or row.expires_at < datetime.now(UTC):
+        raise HTTPException(410, "reset_token_invalid")
+    violations = validate_password(body.new_password)
+    if violations:
+        raise HTTPException(422, "; ".join(violations))
+    user = db.get(User, row.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(410, "reset_token_invalid")
+    user.password_hash = hash_password(body.new_password)
+    user.token_version += 1
+    row.used_at = datetime.now(UTC)
+    now = datetime.now(UTC)
+    for session in db.scalars(select(AuthSession).where(
+            AuthSession.user_id == user.id,
+            AuthSession.revoked_at.is_(None))).all():
+        session.revoked_at = now
+    db.add(AuditEvent(user_id=user.id, action="password.reset",
+                      entity_type="user", entity_id=str(user.id)))
     db.commit()
     return {"ok": True}
 
@@ -813,6 +917,36 @@ def patch_user(user_id: uuid.UUID, body: UserPatch, admin: AdminUser,
     return user
 
 
+@router.post("/users/{user_id}/reset-password")
+def org_reset_password(user_id: uuid.UUID, admin: AdminUser,
+                       db: Session = Depends(get_db),
+                       scoped: uuid.UUID = Depends(current_company)):
+    """Сброс пароля сотрудника своей организации (§7.4): админ организации,
+    цель — сотрудник своей org и НЕ себя (свой — через email-ссылку или
+    платформу, иначе обнуляется смысл 2FA при захваченной сессии).
+    Временный пароль — показ один раз; token_version+=1, ревок сеансов."""
+    target = db.get(User, user_id)
+    if target is None or target.company_id != scoped or target.id == admin.id:
+        raise HTTPException(404, "User not found")
+    temp_password = _temp_password()
+    target.password_hash = hash_password(temp_password)
+    target.token_version += 1
+    now = datetime.now(UTC)
+    for session in db.scalars(select(AuthSession).where(
+            AuthSession.user_id == target.id,
+            AuthSession.revoked_at.is_(None))).all():
+        session.revoked_at = now
+    db.add(AuditEvent(
+        user_id=admin.id, action="org.password.reset",
+        entity_type="user", entity_id=str(target.id),
+        payload={"email": target.email}))
+    db.add(AuditEvent(
+        user_id=admin.id, action="platform.user.temp_password",
+        entity_type="user", entity_id=str(target.id), payload={}))
+    db.commit()
+    return {"temp_password": temp_password, "must_change_password": True}
+
+
 # ---------- Платформа: организации (multitenancy §7.3, только pl) ----------
 
 def _temp_password() -> str:
@@ -898,7 +1032,7 @@ def platform_create_org(body: OrgCreateIn, admin: PlatformAdmin,
         entity_type="user", entity_id=str(org_admin.id),
         payload={"org_id": str(company.id)}))
     events.publish(db, "platform.org.created", {
-        "org_id": str(company.id), "name": company.name,
+        "company_id": str(company.id), "name": company.name,
         "admin_email": org_admin.email,
     })
     db.commit()
@@ -936,7 +1070,7 @@ def platform_patch_org(company_id: uuid.UUID, body: OrgPatchIn,
         payload=body.model_dump(exclude_none=True)))
     events.publish(db, "platform.org.deactivated" if was_active and not company.is_active
                    else "platform.org.updated",
-                   {"org_id": str(company.id), "name": company.name})
+                   {"company_id": str(company.id), "name": company.name})
     db.commit()
     db.refresh(company)
     users_count = db.scalar(select(func.count()).select_from(User).where(

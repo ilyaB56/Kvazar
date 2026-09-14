@@ -134,6 +134,13 @@ export const useAuthStore = defineStore('auth', {
       await this.fetchMe()
       await this.fetchPermissions()
     },
+    async forgotPassword(login: string): Promise<void> {
+      await jsonFetch('/api/v1/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login }),
+      })
+    },
     async verifyLoginCode(mfaToken: string, code: string): Promise<TokenPair> {
       return jsonFetch<TokenPair>('/api/v1/auth/mfa/verify', {
         method: 'POST',

@@ -1228,6 +1228,126 @@ else:
 _yk_server.shutdown()
 _yk_server.server_close()
 
+# 24g. Восстановление пароля (multitenancy D): письмо в mock-SMTP,
+# одноразовый токен, ревок сеансов; сброс админом организации
+def _start_mock_smtp(port):
+    """Мини-SMTP (как в pytest этапа C): письмо в mailbox."""
+    import socketserver
+    import threading
+
+    mailbox = []
+
+    class Handler(socketserver.BaseRequestHandler):
+        def handle(self):
+            self.request.sendall(b"220 mock\r\n")
+            data, got, buf = b"", False, b""
+            while True:
+                chunk = self.request.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\r\n" in buf:
+                    line, buf = buf.split(b"\r\n", 1)
+                    if not got:
+                        if line.upper().startswith(b"DATA"):
+                            self.request.sendall(b"354 go\r\n")
+                            got = True
+                        elif line.upper().startswith(b"QUIT"):
+                            self.request.sendall(b"221 bye\r\n")
+                            self.request.close()
+                            return
+                        else:
+                            self.request.sendall(b"250 ok\r\n")
+                    elif line == b".":
+                        mailbox.append(data.decode("utf-8", errors="replace"))
+                        data, got = b"", False
+                        self.request.sendall(b"250 accepted\r\n")
+                    else:
+                        data += line + b"\n"
+
+    class Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    srv = Server(("127.0.0.1", port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, mailbox
+
+
+_smtp_srv, smtp_mailbox = _start_mock_smtp(9985)
+# платформенный SMTP-коннектор (company_id NULL — только для системных писем)
+status, plat_smtp = call("POST", "/api/v1/integrations/connections", {
+    "name": "platform-SMTP-smoke", "connector_code": "smtp",
+    "credentials": {},
+    "config": {"host": "host.docker.internal", "port": 9985,
+               "use_tls": False, "from_email": "recovery@test.local",
+               "timeout_seconds": 5},
+}, token=token)
+# платформенный: создаётся супер-админом в контексте любой org, но
+# company_id NULL проставим напрямую через платформенный флаг — v1:
+# SMTP без компании виден всем, письмо шлёт обработчик
+if status == 201:
+    import uuid as _uuid
+    from subprocess import run as _run  # noqa: S603 — локальный psql стенда
+    _run(["docker", "compose", "exec", "-T", "db", "psql", "-U", "erp",
+          "-d", "erp", "-c",
+          f"UPDATE integrations.connections SET company_id = NULL "
+          f"WHERE id = '{plat_smtp['id']}'"], capture_output=True, timeout=30)
+
+# пользователь для восстановления: сотрудник (без 2FA-осложнений)
+status, rp_user = call("POST", f"{ACC}/counterparties", {}, token=token)  # прогрев не нужен
+status, rp_emp = call("POST", "/api/v1/users", {
+    "email": f"smoke-recovery-{run_tag}@erp.local", "password": "Recover1pass",
+    "role": "user", "name": "Восстанавливаемый"}, token=token)
+check("recovery: сотрудник создан", status == 201, str(status))
+
+# forgot-password → письмо с токеном
+status, fr = call("POST", "/api/v1/auth/forgot-password",
+                  {"login": f"smoke-recovery-{run_tag}@erp.local"})
+check("recovery: forgot-password всегда 200", status == 200 and fr.get("ok") is True,
+      str(fr))
+
+_token = None
+for _ in range(30):
+    time.sleep(2)
+    for letter in smtp_mailbox:
+        # кириллица уходит base64 (как в pytest C) — декодируем chunk'и
+        decoded = letter
+        for chunk in re.findall(r"[A-Za-z0-9+/=]{40,}", letter):
+            try:
+                import base64
+                decoded += base64.b64decode(chunk).decode("utf-8", "replace")
+            except Exception:
+                pass
+        m = re.search(r"token=([A-Za-z0-9_\-]{30,60})", decoded)
+        if m:
+            _token = m.group(1)
+            break
+    if _token:
+        break
+check("recovery: письмо с токеном в mock-SMTP", _token is not None,
+      f"писем: {len(smtp_mailbox)}")
+
+if _token:
+    # reset-password: смена, ревок сеансов
+    status, rp = call("POST", "/api/v1/auth/reset-password",
+                      {"token": _token, "new_password": "Recovered9pass"})
+    check("recovery: пароль сменён по токену", status == 200, str(rp))
+    status, login_new = call("POST", "/api/v1/auth/login", {
+        "email": f"smoke-recovery-{run_tag}@erp.local",
+        "password": "Recovered9pass"})
+    check("recovery: вход по новому паролю", status == 200, str(status))
+    # повтор токена — 410
+    status, rp2 = call("POST", "/api/v1/auth/reset-password",
+                       {"token": _token, "new_password": "Another9pass"})
+    check("recovery: повтор токена → 410", status == 410, str(status))
+    # неверный токен — 410
+    status, rp3 = call("POST", "/api/v1/auth/reset-password",
+                       {"token": "x" * 43, "new_password": "Another9pass"})
+    check("recovery: несуществующий токен → 410", status == 410, str(status))
+
+_smtp_srv.shutdown()
+
 # 25. Rate limit логина (security-p0 п.2) — В КОНЦЕ: блокирует IP на 60 с
 codes = []
 for _ in range(6):

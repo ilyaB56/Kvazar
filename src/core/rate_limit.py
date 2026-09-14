@@ -103,6 +103,31 @@ def check_password_confirm_rate_limit(user_id) -> None:
             _warned = True
 
 
+def check_forgot_password_rate_limit(key: str) -> None:
+    """forgot-password (§7.5): 3 запроса/час по (login, ip); 429 c
+    Retry-After. Публичный эндпоинт — счётчик до ответа (не раскрывает
+    существование логина)."""
+    global _warned
+    try:
+        client = _client()
+        k = f"forgot_password:{key}"
+        count = client.incr(k)
+        if count == 1:
+            client.expire(k, 3600)
+        if count > 3:
+            ttl = max(client.ttl(k), 1)
+            raise HTTPException(
+                429, "Too many requests", headers={"Retry-After": str(ttl)}
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        if not _warned:
+            logger.warning("forgot-password rate limit unavailable, fail-open",
+                           exc_info=True)
+            _warned = True
+
+
 def reset_password_confirm_rate_limit(user_id) -> None:
     """Успешное подтверждение: счётчик сбрасывается."""
     global _warned

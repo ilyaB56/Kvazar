@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -37,6 +37,9 @@ class User(Base):
     company_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey(f"{CORE_SCHEMA}.companies.id"))
     is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 2FA-дедлайн (этап D, ревью C): прошёл + 2FA не настроена → вход
+    # руководителя блокируется до настройки (mfa_token вместо пары)
+    totp_setup_deadline: Mapped[date | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -190,6 +193,24 @@ class RevokedToken(Base):
         ForeignKey(f"{CORE_SCHEMA}.users.id"), index=True
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class PasswordReset(Base):
+    """password_resets — токены восстановления пароля (§5.5): sha256-хэш
+    urlsafe-32 (токен в БД не хранится), 1 час, одноразовость (used_at)."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "password_resets"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    token_enc: Mapped[str] = mapped_column(Text)  # Fernet — для письма
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_ip: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class UserTotp(Base):

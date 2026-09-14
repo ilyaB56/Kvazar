@@ -25,10 +25,14 @@ const error = ref('')
 const busy = ref(false)
 const backupCodes = ref<string[]>([])
 
+// «Настроить позже» скрывается после первого нажатия — до следующего входа
+// (localStorage: один отказ за сессию браузера, возврат — новый вход)
+const DISMISS_KEY = 'erp.totp-dismissed'
 const needSetup = computed(() =>
   auth.isAuthenticated
   && (auth.user?.is_platform_admin || auth.user?.role === 'admin')
   && !auth.setupDismissed
+  && !localStorage.getItem(DISMISS_KEY)
   && auth.totpSetupNeeded)
 
 async function startSetup() {
@@ -76,12 +80,14 @@ async function confirmCode() {
 function finish() {
   open.value = false
   auth.totpSetupNeeded = false
+  localStorage.removeItem(DISMISS_KEY)
   toast.success(t('mfa.enabledToast'))
 }
 
 function closeWizard() {
   open.value = false
   auth.setupDismissed = true
+  localStorage.setItem(DISMISS_KEY, '1')
 }
 
 watch(needSetup, (needed) => {

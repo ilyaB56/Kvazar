@@ -23,6 +23,27 @@ pytestmark = pytest.mark.integration
 RUN = uuid.uuid4().hex[:8]
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _teardown_orgs():
+    """Деактивируем тест-организации прогона: реестр платформы не пухнет."""
+    yield
+    try:
+        from sqlalchemy import text
+
+        from src.db import SessionLocal
+
+        db = SessionLocal()
+        try:
+            db.execute(text("UPDATE erp_core.companies SET is_active = false"
+                            " WHERE name LIKE :pat"
+                            ).bindparams(pat="mt-B3-%"))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001 — вне контейнера БД нет
+        pass
+
+
 @pytest.fixture(scope="module")
 def client():
     http = httpx.Client(base_url=BASE_URL, timeout=30,

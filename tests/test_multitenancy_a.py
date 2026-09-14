@@ -72,6 +72,17 @@ def cleanup():
             db.commit()
         finally:
             db.close()
+        # деактивируем тест-организации прогона: реестр платформы
+        # не пухнет от мусора (данные остаются, org скрыта из активных)
+        db2 = SessionLocal()
+        try:
+            db2.execute(text(
+                "UPDATE erp_core.companies SET is_active = false"
+                " WHERE name LIKE :pat"
+            ).bindparams(pat="mt-%"))
+            db2.commit()
+        finally:
+            db2.close()
     except Exception:  # noqa: BLE001 — вне контейнера БД нет
         pass
 

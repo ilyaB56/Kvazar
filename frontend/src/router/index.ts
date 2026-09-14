@@ -12,6 +12,12 @@ const router = createRouter({
   routes: [
     { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
     {
+      // восстановление пароля по email-ссылке (multitenancy §7.5) — публично
+      path: '/reset-password', name: 'reset-password',
+      component: () => import('../views/ResetPasswordView.vue'),
+      meta: { titleKey: 'recovery.title' },
+    },
+    {
       // multitenancy: выбор организации супер-админом платформы (§9)
       path: '/select-org', name: 'select-org',
       component: () => import('../views/SelectOrgView.vue'),
