@@ -25,6 +25,7 @@ from src.core.auth import (
     PlatformAdmin,
     WriteUser,
     create_access_token,
+    create_mfa_token,
     create_refresh_token,
     decode_token,
     hash_password,
@@ -68,9 +69,13 @@ class TokenOut(BaseModel):
     # sessions-security §2.2: активные сеансы ПОСЛЕ этого входа (включая
     # текущий); >1 — UI показывает модалку «в аккаунт уже вошли»
     active_sessions: int = 1
-    # multitenancy §7.1: 2FA включена → вместо пары mfa_token (этап C);
-    # этап A — всегда false. pl-админу здесь же реестр организаций.
+    # multitenancy §7.1: 2FA включена → вместо пары mfa_token (5 минут,
+    # не сеанс). Настройка — мастер UI по флагу totp_setup_required.
     has_2fa: bool = False
+    mfa_required: bool = False
+    mfa_token: str = ""
+    # руководитель (admin/pl) без включённой 2FA — UI запускает мастер
+    totp_setup_required: bool = False
     organizations: list[dict] = []
 
 
@@ -156,6 +161,17 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)):
         company = db.get(Company, user.company_id)
         if company is None or not company.is_active:
             raise HTTPException(403, "organization_disabled")
+    # 2FA (multitenancy §7.1, О1: обязательна для admin И is_platform_admin):
+    # включена → mfa_token вместо пары; обязательна, но не настроена →
+    # mfa_token; настройка — мастер UI (totp_setup_required)
+    from src.core import totp as totp_core
+    if totp_core.is_enabled(db, user.id):
+        db.commit()
+        return TokenOut(
+            access_token="", refresh_token="",
+            mfa_required=True, mfa_token=create_mfa_token(user.id))
+    setup_recommended = _2fa_required(user) and not totp_core.is_enabled(db, user.id)
+
     # sessions-security §2.1: сеанс = sid пары токенов; user_agent/ip —
     # данные для показа самому пользователю (в события шины не идут)
     from src.config import get_settings as _gs
@@ -194,7 +210,10 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)):
         refresh_token=create_refresh_token(user.id, ver=user.token_version,
                                            sid=sid, org=org, pl=pl),
         active_sessions=int(active),
-        has_2fa=False,
+        has_2fa=totp_core.is_enabled(db, user.id),
+        # UI: руководитель без 2FA — мастер настройки при первом входе
+        # (задание этапа C: пару не блокируем, внедрение через мастер)
+        totp_setup_required=setup_recommended,
         organizations=orgs,
     )
 
@@ -268,6 +287,189 @@ def logout(body: RefreshIn, db: Session = Depends(get_db)):
     db.add(AuditEvent(user_id=user.id, action="logout", entity_type="user", entity_id=str(user.id)))
     db.commit()
     return {"ok": True}
+
+
+def _2fa_required(user: User) -> bool:
+    """О1: 2FA обязательна для роли admin И платформенного админа."""
+    return user.is_platform_admin or user.role == "admin"
+
+
+def _decode_mfa_token(db: Session, mfa_token: str) -> User:
+    """mfa_token → пользователь (тип mfa, 5 минут; НЕ сеанс)."""
+    from jwt import PyJWTError
+
+    try:
+        payload = decode_token(mfa_token)
+    except PyJWTError as exc:
+        raise HTTPException(401, "Invalid mfa token") from exc
+    if payload.get("type") != "mfa":
+        raise HTTPException(401, "Wrong token type")
+    user = db.get(User, payload["sub"])
+    if user is None or not user.is_active:
+        raise HTTPException(401, "User not found")
+    if payload.get("ver", 0) != user.token_version:
+        raise HTTPException(401, "Token revoked")
+    return user
+
+
+def _issue_full_pair(db: Session, request: Request, user: User) -> TokenOut:
+    """Полноценная пара + сеанс (после успешного второго фактора)."""
+    from src.config import get_settings as _gs
+    sid = uuid.uuid4()
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[-1].strip()
+    db.add(AuthSession(
+        id=sid, user_id=user.id,
+        user_agent=(request.headers.get("user-agent") or "")[:256],
+        ip=(forwarded or (request.client.host if request.client else ""))[:64],
+    ))
+    db.flush()
+    ttl_cut = datetime.now(UTC) - timedelta(days=_gs().refresh_expire_days)
+    active = db.scalar(select(func.count()).select_from(AuthSession).where(
+        AuthSession.user_id == user.id,
+        AuthSession.revoked_at.is_(None),
+        AuthSession.created_at >= ttl_cut,
+    )) or 1
+    db.commit()
+    from src.core import totp as totp_core
+    pl = bool(user.is_platform_admin)
+    org = None if pl else (str(user.company_id) if user.company_id else None)
+    orgs = [{"id": str(c.id), "name": c.name} for c in db.scalars(
+        select(Company).where(Company.is_active.is_(True))
+        .order_by(Company.created_at)).all()] if pl else []
+    return TokenOut(
+        access_token=create_access_token(user.id, user.role,
+                                         ver=user.token_version, sid=sid,
+                                         org=org, pl=pl),
+        refresh_token=create_refresh_token(user.id, ver=user.token_version,
+                                           sid=sid, org=org, pl=pl),
+        active_sessions=int(active),
+        has_2fa=totp_core.is_enabled(db, user.id),
+        organizations=orgs,
+    )
+
+
+class MfaVerifyIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {"mfa_token": "…", "code": "123456"}}}
+
+    mfa_token: str
+    code: str = Field(min_length=6, max_length=11)  # 6 цифр или XXXX-XXXX
+
+
+@router.post("/auth/mfa/verify", response_model=TokenOut)
+def mfa_verify(body: MfaVerifyIn, request: Request, db: Session = Depends(get_db)):
+    """Второй фактор: код TOTP или резервный (гасится). Успех — полноценная
+    пара + сеанс (для pl — реестр организаций). Сотрудникам без 2FA
+    токен не выдаётся (login сразу даёт пару)."""
+    user = _decode_mfa_token(db, body.mfa_token)
+    check_password_confirm_rate_limit(user.id)  # тот же счётчик 5/60с (§6)
+    from src.core import totp as totp_core
+    if not totp_core.verify_login_code(db, user.id, body.code):
+        db.commit()
+        raise HTTPException(401, "wrong_code")
+    reset_password_confirm_rate_limit(user.id)
+    db.add(AuditEvent(user_id=user.id, action="auth.mfa.verified",
+                      entity_type="user", entity_id=str(user.id)))
+    return _issue_full_pair(db, request, user)
+
+
+class TotpSetupOut(BaseModel):
+    secret: str
+    otpauth_uri: str
+
+
+class TotpSetupIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {"mfa_token": "…"}}}
+
+    mfa_token: str = ""  # пусто — настройка по access-токену (руководитель)
+
+
+@router.post("/auth/totp/setup", response_model=TotpSetupOut)
+def totp_setup(body: TotpSetupIn | None = None, request: Request = None,
+               db: Session = Depends(get_db)):
+    """Настройка 2FA (руководителем): секрет + otpauth-URI. Доступ — по
+    mfa_token (вход с обязательной настройкой) или access-токену;
+    сотруднику (не admin и не pl) — 403: не положено (решение основателя).
+    QR рендерит фронт локальной библиотекой (дух ADR-001, §5.4)."""
+    from src.core import totp as totp_core
+
+    if body and body.mfa_token:
+        target = _decode_mfa_token(db, body.mfa_token)
+    else:
+        target = _user_from_access_header(db, request)
+    if target is None:
+        raise HTTPException(401, "mfa_token or Authorization required")
+    if not _2fa_required(target):
+        raise HTTPException(403, "2fa_not_allowed_for_employee")
+    secret = totp_core.generate_secret()
+    totp_core.store_secret(db, target.id, secret)
+    db.add(AuditEvent(user_id=target.id, action="core.totp.setup_started",
+                      entity_type="user", entity_id=str(target.id)))
+    db.commit()
+    return TotpSetupOut(secret=secret,
+                        otpauth_uri=totp_core.otpauth_uri(secret, target.email))
+
+
+class TotpConfirmIn(BaseModel):
+    mfa_token: str = ""
+    code: str = Field(min_length=6, max_length=6)
+
+
+@router.post("/auth/totp/confirm")
+def totp_confirm(body: TotpConfirmIn, request: Request,
+                 db: Session = Depends(get_db)):
+    """Подтверждение секрета: код из аутентификатора → 2FA включена,
+    резервные коды показываются РОВНО ОДИН РАЗ. Если доступ был по
+    mfa_token (вход с обязательной настройкой) — сразу выдаётся
+    полноценная пара (сеанс создаётся здесь, §6)."""
+    from src.core import totp as totp_core
+
+    via_mfa = bool(body.mfa_token)
+    if via_mfa:
+        target = _decode_mfa_token(db, body.mfa_token)
+    else:
+        target = _user_from_access_header(db, request)
+    if target is None:
+        raise HTTPException(401, "mfa_token or Authorization required")
+    check_password_confirm_rate_limit(target.id)
+    secret = totp_core.load_secret(db, target.id)
+    if secret is None:
+        raise HTTPException(422, "totp_setup_not_started")
+    if not totp_core.verify_code(secret, body.code):
+        db.commit()
+        raise HTTPException(401, "wrong_code")
+    reset_password_confirm_rate_limit(target.id)
+    codes = totp_core.confirm(db, target.id)
+    db.add(AuditEvent(user_id=target.id, action="core.totp.enabled",
+                      entity_type="user", entity_id=str(target.id)))
+    events.publish(db, "core.totp.enabled", {"user_id": str(target.id)})
+    db.commit()
+    result: dict = {"backup_codes": codes, "tokens": None}
+    if via_mfa:
+        pair = _issue_full_pair(db, request, target)
+        result["tokens"] = pair
+    return result
+
+
+def _user_from_access_header(db: Session, request: Request) -> User | None:
+    """Текущий пользователь из заголовка Authorization (для setup/confirm
+    без mfa_token — повторная настройка руководителем)."""
+    from jwt import PyJWTError
+
+    header = request.headers.get("authorization") or ""
+    if not header.startswith("Bearer "):
+        return None
+    try:
+        payload = decode_token(header[7:])
+    except PyJWTError:
+        return None
+    if payload.get("type") != "access":
+        return None
+    user = db.get(User, payload["sub"])
+    if user is None or not user.is_active:
+        return None
+    if payload.get("ver", 0) != user.token_version:
+        return None
+    return user
 
 
 # ---------- Сеансы входа (sessions-security-spec §2.2) ----------
@@ -742,6 +944,27 @@ def platform_patch_org(company_id: uuid.UUID, body: OrgPatchIn,
     return OrgOut(id=company.id, name=company.name, inn=company.inn,
                   is_active=company.is_active, users_count=int(users_count),
                   created_at=company.created_at)
+
+
+@router.post("/platform/users/{user_id}/totp/reset")
+def platform_totp_reset(user_id: uuid.UUID, admin: PlatformAdmin,
+                        db: Session = Depends(get_db)):
+    """Сброс 2FA платформой (потерян телефон): секрет и резервные коды
+    удаляются; обязательность сохраняется — следующий вход руководителя
+    запустит настройку заново. Аудит core.totp.reset."""
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(404, "User not found")
+    from src.core import totp as totp_core
+
+    totp_core.reset(db, target.id)
+    db.add(AuditEvent(
+        user_id=admin.id, action="platform.totp.reset",
+        entity_type="user", entity_id=str(target.id),
+        payload={"email": target.email}))
+    events.publish(db, "core.totp.reset", {"user_id": str(target.id)})
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/platform/users/{user_id}/reset-password")

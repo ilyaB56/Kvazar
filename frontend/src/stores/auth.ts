@@ -3,7 +3,7 @@
 // api-клиент, чтобы работал авто-refresh при 401 (цикл импортов безопасен:
 // оба модуля обращаются друг к другу только во время вызовов).
 import { defineStore } from 'pinia'
-import { get } from '../api/client'
+import { get, post as apiPost } from '../api/client'
 import type { TokenPair, User } from '../api/types'
 
 const ACCESS_KEY = 'erp.access_token'
@@ -42,6 +42,9 @@ export const useAuthStore = defineStore('auth', {
     activeSessions: 0,
     // multitenancy: реестр организаций из логина (для супер-админа)
     organizations: [] as Array<{ id: string; name: string }>,
+    // 2FA (этап C): руководителю без 2FA нужен мастер; закрытие — до входа
+    totpSetupNeeded: false,
+    setupDismissed: false,
   }),
   getters: {
     isAuthenticated: (state) => !!state.accessToken,
@@ -108,17 +111,42 @@ export const useAuthStore = defineStore('auth', {
         localStorage.removeItem(REFRESH_KEY)
       }
     },
-    async login(email: string, password: string, remember = true): Promise<void> {
+    async login(email: string, password: string, remember = true): Promise<TokenPair> {
       const tokens = await jsonFetch<TokenPair>('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       })
+      // 2FA включена → пара не выдана, есть mfa_token: LoginView показывает
+      // второй шаг и вызывает verifyLoginCode; сюда — только полноценные пары
+      if (tokens.mfa_required || tokens.mfa_token) {
+        return tokens
+      }
+      await this.applyLogin(tokens, remember)
+      return tokens
+    },
+    async applyLogin(tokens: TokenPair, remember = true): Promise<void> {
       this.persist(tokens, remember)
       this.activeSessions = tokens.active_sessions ?? 1
       this.organizations = tokens.organizations ?? []
+      this.totpSetupNeeded = !!tokens.totp_setup_required
+      this.setupDismissed = false
       await this.fetchMe()
       await this.fetchPermissions()
+    },
+    async verifyLoginCode(mfaToken: string, code: string): Promise<TokenPair> {
+      return jsonFetch<TokenPair>('/api/v1/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mfa_token: mfaToken, code }),
+      })
+    },
+    // setup/confirm идут с Bearer access-токеном (мастер после входа)
+    async totpSetup(): Promise<{ secret: string; otpauth_uri: string }> {
+      return apiPost('/auth/totp/setup', {})
+    },
+    async totpConfirm(code: string): Promise<{ backup_codes: string[] }> {
+      return apiPost('/auth/totp/confirm', { code })
     },
     async fetchMe(): Promise<void> {
       // через api-клиент: мусорный access-токен вызовет refresh и повтор,

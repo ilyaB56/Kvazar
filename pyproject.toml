@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "pyjwt>=2.8",
+    "pyotp>=2.9",
     "passlib[bcrypt]>=1.7",
     "bcrypt>=3.1,<5",
     "redis>=5.0",
@@ -54,6 +55,8 @@ select = ["E4", "E7", "E9", "F", "TID251"]
 "tests/**" = ["TID251"]
 # Инфраструктурное исключение ADR-001: проверка манифеста обновлений ходит в сеть
 "src/core/update/**" = ["TID251"]
+# TOTP-слой ядра — единая точка pyotp (этап C)
+"src/core/totp.py" = ["TID251"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

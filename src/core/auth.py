@@ -59,6 +59,21 @@ def create_access_token(user_id: uuid.UUID, role: str, ver: int = 0,
     return jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
 
 
+def create_mfa_token(user_id: uuid.UUID) -> str:
+    """Короткоживущий токен второго фактора (multitenancy §7.1): 5 минут,
+    НЕ сеанс (AuthSession не создаётся), без org/pl; выдаётся вместо пары
+    при включённой 2FA и при обязательной незавершённой настройке."""
+    now = datetime.now(UTC)
+    payload = {
+        "sub": str(user_id),
+        "type": "mfa",
+        "jti": str(uuid.uuid4()),
+        "exp": now + timedelta(minutes=5),
+        "iat": now,
+    }
+    return jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
+
+
 def create_refresh_token(user_id: uuid.UUID, ver: int = 0,
                          sid: uuid.UUID | str | None = None,
                          org: uuid.UUID | str | None = None,
@@ -133,6 +148,7 @@ def get_current_user(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token") from exc
     if payload.get("type") != "access":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong token type")
+    # mfa_token — только для /auth/mfa/* эндпоинтов (проверяется там отдельно)
     user = db.get(User, payload["sub"])
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found or disabled")

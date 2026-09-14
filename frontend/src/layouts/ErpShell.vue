@@ -12,6 +12,7 @@ import QuasarMark from '../components/brand/QuasarMark.vue'
 import NotificationCenter from './NotificationCenter.vue'
 import { Avatar, Button, Dialog, DropdownMenu, DropdownMenuItem, Input, Label, ToastHost, useToast } from '../components/ui'
 import ChangePasswordDialog from './ChangePasswordDialog.vue'
+import TotpWizard from './TotpWizard.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -342,6 +343,9 @@ async function logout() {
     </div>
 
     <ChangePasswordDialog v-model="passwordOpen" />
+
+    <!-- Мастер 2FA: руководитель без включённой 2FA (multitenancy §2.3) -->
+    <TotpWizard />
 
     <!-- В аккаунт уже выполнен вход: выбор пользователя, не блокировка;
          завершение — с подтверждением паролем (спека §2.3) -->

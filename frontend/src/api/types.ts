@@ -9,6 +9,11 @@ export interface TokenPair {
   active_sessions?: number
   /** multitenancy: реестр организаций для супер-админа платформы */
   organizations?: Array<{ id: string; name: string }>
+  /** 2FA (этап C): включена → вместо пары mfa_token (второй шаг входа) */
+  mfa_required?: boolean
+  mfa_token?: string
+  /** руководитель без 2FA — UI запускает мастер настройки */
+  totp_setup_required?: boolean
 }
 
 export interface User {

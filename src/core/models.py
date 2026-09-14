@@ -192,6 +192,40 @@ class RevokedToken(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class UserTotp(Base):
+    """user_totp — секрет TOTP (Fernet); confirmed_at NULL = настроен, но не
+    подтверждён; enabled_at — момент включения (multitenancy §5.4).
+    «2FA включена» = enabled_at IS NOT NULL."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "user_totp"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{CORE_SCHEMA}.users.id", ondelete="CASCADE"),
+        primary_key=True)
+    secret_enc: Mapped[str] = mapped_column(Text)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TotpBackupCode(Base):
+    """totp_backup_codes — резервные коды (sha256, как api_tokens); каждый
+    расходуется единожды (used_at)."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "totp_backup_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{CORE_SCHEMA}.users.id", ondelete="CASCADE"),
+        index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AuthSession(Base):
     """auth_sessions — активные сеансы входа (sessions-security-spec §2.1).
 

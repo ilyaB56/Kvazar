@@ -14,6 +14,7 @@ import {
   LogIn,
   Mail,
   PlugZap,
+  ShieldCheck,
 } from 'lucide-vue-next'
 import QuasarMark from '../components/brand/QuasarMark.vue'
 import Label from '../components/ui/Label.vue'
@@ -39,6 +40,10 @@ const features = computed(() => [
 ])
 
 const form = reactive({ email: '', password: '' })
+// 2FA (этап C): второй шаг входа — код из аутентификатора или резервный
+const mfaToken = ref('')
+const mfaCode = ref('')
+const mfaError = ref('')
 const showPassword = ref(false)
 const remember = ref(true)
 const loading = ref(false)
@@ -80,7 +85,11 @@ async function submit() {
   error.value = ''
   loading.value = true
   try {
-    await auth.login(form.email.trim(), form.password, remember.value)
+    const tokens = await auth.login(form.email.trim(), form.password, remember.value)
+    if (tokens.mfa_required && tokens.mfa_token) {
+      mfaToken.value = tokens.mfa_token
+      return
+    }
     await router.push(redirectTarget())
   } catch (e) {
     const http = e as HttpError
@@ -90,6 +99,30 @@ async function submit() {
       error.value = t('login.errorCredentials')
     } else {
       error.value = t('errors.unknown')
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
+async function submitCode() {
+  if (loading.value || !mfaCode.value.trim()) return
+  mfaError.value = ''
+  loading.value = true
+  try {
+    const tokens = await auth.verifyLoginCode(mfaToken.value, mfaCode.value.trim())
+    await auth.applyLogin(tokens, remember.value)
+    mfaToken.value = ''
+    mfaCode.value = ''
+    await router.push(redirectTarget())
+  } catch (e) {
+    const http = e as HttpError
+    if (http.status === 429) {
+      mfaError.value = t('mfa.rateLimited', { n: http.retryAfter ?? 60 })
+    } else if (http.status === 401) {
+      mfaError.value = t('mfa.wrongCode')
+    } else {
+      mfaError.value = t('errors.unknown')
     }
   } finally {
     loading.value = false
@@ -171,11 +204,32 @@ async function submit() {
           <h2 class="text-xl font-bold tracking-tight">{{ t('login.title') }}</h2>
           <p class="mt-1 text-sm text-muted-foreground">{{ t('login.subtitle') }}</p>
 
-          <!-- Задел 2FA (P1): поле «Код из приложения-аутентификатора»
-               появляется здесь, над «Запомнить меня», когда у пользователя
-               включён TOTP; форма отправляет otp-код вместе с паролем. -->
+          <!-- Шаг 2 входа (этап C): код TOTP или резервный после пароля -->
+          <form v-if="mfaToken" class="mt-5 space-y-4" @submit.prevent="submitCode">
+            <div class="space-y-1.5">
+              <Label for="mfa-code" class="text-xs font-medium">{{ t('mfa.codeLabel') }}</Label>
+              <div class="relative">
+                <ShieldCheck class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  id="mfa-code" v-model="mfaCode" inputmode="text" autocomplete="one-time-code"
+                  :placeholder="t('mfa.codePlaceholder')"
+                  class="flex h-10 w-full rounded-lg border border-input bg-transparent py-1 pl-9 pr-3 text-sm uppercase tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  autofocus
+                >
+              </div>
+              <p v-if="mfaError" class="text-xs font-medium text-red-600 dark:text-red-400">{{ mfaError }}</p>
+              <p class="text-xs text-muted-foreground">{{ t('mfa.hint') }}</p>
+            </div>
+            <Button type="submit" class="w-full" :disabled="loading || !mfaCode.trim()">
+              {{ loading ? t('login.pending') : t('mfa.verify') }}
+            </Button>
+            <button
+              type="button" class="w-full text-xs text-muted-foreground underline"
+              @click="mfaToken = ''; mfaCode = ''; mfaError = ''"
+            >{{ t('mfa.backToPassword') }}</button>
+          </form>
 
-          <form class="mt-5 space-y-4" @submit.prevent="submit">
+          <form v-else class="mt-5 space-y-4" @submit.prevent="submit">
             <div class="space-y-1.5">
               <Label for="login-email" class="text-xs font-medium">{{ t('login.email') }}</Label>
               <div class="relative">
