@@ -23,6 +23,8 @@ export interface User {
   role: string
   is_active: boolean
   must_change_password?: boolean
+  must_change_password_by?: string | null
+  username?: string | null
   // multitenancy: контекст из JWT (/auth/me)
   company_id?: string | null
   company_name?: string | null

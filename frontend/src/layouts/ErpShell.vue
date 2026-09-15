@@ -14,7 +14,7 @@ import { Avatar, Button, Dialog, DropdownMenu, DropdownMenuItem, Input, Label, T
 import ChangePasswordDialog from './ChangePasswordDialog.vue'
 import TotpWizard from './TotpWizard.vue'
 
-const { t } = useI18n()
+const { t, d } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
@@ -89,6 +89,12 @@ function isActive(to: string): boolean {
 
 // ---------- Организация (подпись под логотипом, §5; мультитенантность:
 // контекст из /auth/me — у супер-админа меняется выбором организации) ----------
+// дедлайн временного пароля: <24ч или просрочен — жёлтая срочность
+const passwordUrgent = computed(() => {
+  const deadline = auth.passwordDeadline
+  if (!deadline) return false
+  return Date.parse(deadline) - Date.now() < 24 * 3600 * 1000
+})
 const orgName = computed(() =>
   auth.user?.company_name || (auth.tokenPl ? t('mt.platformContext') : ''))
 async function switchOrganization() {
@@ -320,6 +326,23 @@ async function logout() {
         </DropdownMenu>
       </header>
 
+    <!-- Баннер: смените временный пароль до дедлайна (§12.4) -->
+    <div
+      v-if="auth.passwordDeadline"
+      class="flex items-center justify-between gap-3 border-b px-4 py-2 text-sm sm:px-6"
+      :class="passwordUrgent
+        ? 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200'
+        : 'border-zinc-200 bg-zinc-50 text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-300'"
+    >
+      <span class="flex items-center gap-2">
+        <ShieldAlert class="h-4 w-4 shrink-0" />
+        {{ passwordUrgent
+          ? t('shell.passwordDeadlineUrgent', { d: d(auth.passwordDeadline, 'short') })
+          : t('shell.passwordDeadline', { d: d(auth.passwordDeadline, 'short') }) }}
+      </span>
+      <Button variant="outline" size="sm" @click="passwordOpen = true">{{ t('shell.changePassword') }}</Button>
+    </div>
+
       <!-- Контент (появление экрана 0.22s) -->
       <main class="flex-1 px-4 py-6 sm:px-6 lg:px-8">
         <div class="mx-auto w-full max-w-[1400px]">
@@ -343,6 +366,7 @@ async function logout() {
     </div>
 
     <ChangePasswordDialog v-model="passwordOpen" />
+
 
     <!-- Мастер 2FA: руководитель без включённой 2FA (multitenancy §2.3) -->
     <TotpWizard />

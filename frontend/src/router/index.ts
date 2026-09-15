@@ -123,6 +123,14 @@ const router = createRouter({
               component: () => import('../views/PermissionsView.vue'),
               meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'route.settings', crumbKey: 'route.settingsPermsCrumb' },
             },
+            {
+              // Пользователи и делегирование (role-delegation §7): доступ
+              // admin ИЛИ обладатель rw ≥1 модуль; чисто-ro — пустое состояние
+              path: 'delegation',
+              name: 'delegation',
+              component: () => import('../views/DelegationView.vue'),
+              meta: { requiresAuth: true, titleKey: 'route.settings', crumbKey: 'route.settingsDelegCrumb' },
+            },
           ],
         },
         {

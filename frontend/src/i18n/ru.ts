@@ -59,6 +59,7 @@ export default {
     noRuns: 'Прогонов ещё не было'
   },
   settings: {
+    delegation: 'Пользователи',
     organization: 'Организация',
     profile: 'Профиль',
     security: 'Безопасность',
@@ -71,6 +72,9 @@ export default {
     readonly: 'Только чтение',
   },
   shell: {
+    passwordDeadline: 'Смените временный пароль до {d} — после дедлайна изменения будут заблокированы',
+    passwordDeadlineUrgent: 'Срочно смените временный пароль (дедлайн {d}) — изменения заблокированы после него',
+
     changeSeedPassword: 'Вы вошли с паролем по умолчанию — смените его (Настройки → Безопасность)',
 
     openMenu: 'Открыть меню',
@@ -576,6 +580,41 @@ export default {
   profile: {
     passwordHint: 'Смена пароля аннулирует все активные сессии и токены (security-p0): придётся войти заново на всех устройствах.',
   },
+  deleg: {
+    title: 'Пользователи и делегирование',
+    hint: 'Выдавайте права на свои rw-модули без обращения к администратору: не выше собственных полномочий, только активным сотрудникам своей организации.',
+    noGrantable: 'Нет доступных для выдачи модулей (нужен rw хотя бы на один)',
+    colUser: 'Пользователь',
+    colRole: 'Роль',
+    colGrants: 'Личные доступы',
+    grant: 'Выдать',
+    revoke: 'Отозвать',
+    grantTitle: 'Выдача права',
+    module: 'Модуль',
+    modulePlaceholder: 'Выберите модуль…',
+    level: 'Уровень',
+    readonly: 'чтение',
+    readwrite: 'чтение и запись',
+    grantedToast: 'Право выдано',
+    revokedToast: 'Право отозвано',
+    newAccount: 'Новый пользователь',
+    fullName: 'ФИО',
+    loginPreview: 'Логин (предпросмотр)',
+    phone: 'Телефон',
+    accountCreated: 'Учётная запись создана',
+    accountCreatedHint: 'Учётка создана «пустой» — при первом входе пользователь увидит экран «Нет доступа».',
+    login: 'Логин',
+    emptyAccountHint: 'Доступ появится после первой выдачи прав — вместе с временным паролем (передайте его пользователю лично).',
+    activatedHint: 'Учётка активирована. Передайте временный пароль пользователю — он показывается только один раз:',
+    deadline: 'Сменить пароль до',
+  },
+  modules: {
+    accounting: 'Учёт',
+    crm: 'CRM',
+    integrations: 'Интеграции',
+    ai: 'ИИ',
+    system: 'Система',
+  },
   recovery: {
     title: 'Новый пароль',
     subtitle: 'Ссылка одноразовая и действует 1 час',
@@ -840,6 +879,7 @@ export default {
     settingsOrgCrumb: 'Организация',
     settingsProfileCrumb: 'Профиль',
     settingsSecurityCrumb: 'Безопасность',
+    settingsDelegCrumb: 'Пользователи и делегирование',
     settingsPermsCrumb: 'Доступы и роли',
     settingsSystemCrumb: 'Система',
     dashboard: 'Дашборд',

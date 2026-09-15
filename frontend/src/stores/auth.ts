@@ -45,6 +45,8 @@ export const useAuthStore = defineStore('auth', {
     // 2FA (этап C): руководителю без 2FA нужен мастер; закрытие — до входа
     totpSetupNeeded: false,
     setupDismissed: false,
+    // §12.4: дедлайн смены временного пароля (баннер-напоминание)
+    passwordDeadline: null as string | null,
   }),
   getters: {
     isAuthenticated: (state) => !!state.accessToken,
@@ -159,6 +161,7 @@ export const useAuthStore = defineStore('auth', {
       // через api-клиент: мусорный access-токен вызовет refresh и повтор,
       // а не разлогин (см. приёмку спеки фронтенда)
       this.user = await get<User>('/auth/me')
+      this.passwordDeadline = this.user?.must_change_password_by ?? null
     },
     async refreshTokens(): Promise<boolean> {
       if (!this.refreshToken) return false

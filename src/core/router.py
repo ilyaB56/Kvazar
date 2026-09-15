@@ -1143,16 +1143,20 @@ def me(user: HumanUser, db: Annotated[Session, Depends(get_db)] = None):
 # ---------- Users (admin) ----------
 
 @router.get("/users", response_model=list[UserOut])
-def list_users(admin: AdminUser, db: Session = Depends(get_db)):
-    # multitenancy §9: срез своей организации; платформенный админ в контексте
-    # org видит её, без org — всех (реестр платформы)
-    org = getattr(admin, "token_org", None)
-    if getattr(admin, "token_pl", False):
-        if not org:
-            return db.scalars(select(User)).all()
-        return db.scalars(select(User).where(User.company_id == uuid.UUID(str(org)))).all()
+def list_users(user: User = Depends(get_current_user),
+               db: Session = Depends(get_db)):
+    """Срез пользователей своей организации. Доступ (role-delegation §6,
+    Р3): admin ИЛИ обладатель rw хотя бы на один модуль (иначе руководителю
+    некого выбирать при делегировании); platform-админ без org — все."""
+    if user.role != "admin" and not _can_delegate(user, db):
+        raise HTTPException(403, "Requires rw on at least one module")
+    org = getattr(user, "token_org", None) or user.company_id
+    if getattr(user, "token_pl", False) and not org:
+        return db.scalars(select(User)).all()
+    if org is None:
+        raise HTTPException(403, "no_company_context")
     return db.scalars(select(User).where(
-        User.company_id == admin.company_id)).all()
+        User.company_id == uuid.UUID(str(org)))).all()
 
 
 @router.post("/users", response_model=UserOut, status_code=201)

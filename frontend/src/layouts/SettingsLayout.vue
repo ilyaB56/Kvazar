@@ -17,6 +17,9 @@ const tabs = computed(() => [
   { key: 'organization', label: t('settings.organization') },
   { key: 'profile', label: t('settings.profile') },
   { key: 'security', label: t('settings.security') },
+  ...(auth.isAdmin || Object.values(auth.permissions ?? {}).some(l => l === 'rw') ? [
+    { key: 'delegation', label: t('settings.delegation') },
+  ] : []),
   ...(auth.isAdmin ? [
     { key: 'permissions', label: t('settings.permissions') },
     { key: 'system', label: t('settings.system') },
