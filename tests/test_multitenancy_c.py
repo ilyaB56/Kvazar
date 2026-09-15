@@ -54,8 +54,9 @@ def _teardown_orgs():
             db.commit()
         finally:
             db.close()
-    except Exception:  # noqa: BLE001 — вне контейнера БД нет
-        pass
+    except ImportError:
+        pass  # запуск вне api-контейнера (прямой pytest без БД) — убирать нечего
+    # БД доступна, но чистка упала → падаем честно (мусор не копится молча)
 
 
 @pytest.fixture(scope="module")

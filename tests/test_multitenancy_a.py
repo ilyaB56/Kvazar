@@ -59,21 +59,17 @@ def cleanup():
 
         db = SessionLocal()
         try:
+            # сеансы тест-прогона — удаляем (ссылок нет)
             db.execute(text(
                 "DELETE FROM erp_core.auth_sessions WHERE created_at >= :t0"
                 " AND (user_agent LIKE 'python-httpx/%' OR user_agent = 'mt-test')"
             ).bindparams(t0=t0))
-            db.execute(text(
-                "DELETE FROM erp_core.users WHERE email LIKE :pat"
-            ).bindparams(pat=f"%-{RUN}@mt.test"))
-            db.execute(text(
-                "DELETE FROM erp_core.companies WHERE name LIKE :pat"
-            ).bindparams(pat="mt-%-" + RUN))
             db.commit()
         finally:
             db.close()
-        # деактивируем тест-организации прогона: реестр платформы
-        # не пухнет от мусора (данные остаются, org скрыта из активных)
+        # организации/пользователи НЕ удаляем: после этапа B на компании
+        # ссылаются категории/склады/документы (FK) — деактивируем, реестр
+        # платформы не пухнет, данные остаются для истории
         db2 = SessionLocal()
         try:
             db2.execute(text(
@@ -83,8 +79,9 @@ def cleanup():
             db2.commit()
         finally:
             db2.close()
-    except Exception:  # noqa: BLE001 — вне контейнера БД нет
-        pass
+    except ImportError:
+        pass  # запуск вне api-контейнера (прямой pytest без БД) — убирать нечего
+    # БД доступна, но чистка упала → падаем честно (мусор не копится молча)
 
 
 @pytest.fixture(scope="module")
@@ -155,6 +152,19 @@ def test_m3_create_org_with_admin(client):
     body = response.json()
     temp = body["temp_password"]
     assert temp and body["admin"]["must_change_password"] is True
+
+    # дедлайн настройки 2FA проставлен при создании (этап D-ревью):
+    # +7 дней от создания учётки
+    from src.core.models import User as UserModel
+    from src.db import SessionLocal
+    from sqlalchemy import select as _sel
+
+    _db = SessionLocal()
+    try:
+        _row = _db.scalar(_sel(UserModel).where(UserModel.email == email))
+        assert _row is not None and _row.totp_setup_deadline is not None,             "totp_setup_deadline не проставлен при создании админа org"
+    finally:
+        _db.close()
 
     # вход нового админа: полноценная пара, org = его компания, pl=false
     mine = _login(client, email, temp)

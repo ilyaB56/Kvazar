@@ -1020,6 +1020,8 @@ def platform_create_org(body: OrgCreateIn, admin: PlatformAdmin,
         full_name=body.admin_full_name,
         role="admin",
         company_id=company.id,
+        # дедлайн настройки 2FA: 7 дней с создания учётки (этап D-ревью)
+        totp_setup_deadline=datetime.now(UTC) + timedelta(days=7),
     )
     db.add(org_admin)
     db.flush()
