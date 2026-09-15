@@ -97,12 +97,33 @@ def admin(client):
     return pair
 
 
+_PWD = {}
+
+
 def _mk_user(client, admin, email, role="readonly", password="Worker1pass"):
     response = client.post(f"{API}/users", json={
         "email": email, "password": password, "role": role, "name": "X"},
         headers=_auth(admin["access_token"]))
     assert response.status_code == 201, response.text
+    _PWD[email] = password
     return response.json()
+
+
+def _pwd_of(email):
+    return _PWD.get(email, "Worker1pass")
+
+
+def _grant(client, token, user_id, email, module, level):
+    """PUT с активацией (§12.3): temp_password в ответе = новый пароль
+    учётки — запоминаем, чтобы последующие _login работали."""
+    response = client.put(f"{API}/users/{user_id}/permissions",
+                          json={"module": module, "level": level},
+                          headers=_auth(token))
+    assert response.status_code == 200, response.text
+    data = response.json()
+    if data.get("temp_password"):
+        _PWD[email] = data["temp_password"]
+    return data
 
 
 def _login(client, email, password="Worker1pass"):
@@ -118,12 +139,16 @@ def boss(client, admin):
                           json={"module": "accounting", "level": "rw"},
                           headers=_auth(admin["access_token"]))
     assert response.status_code == 200, response.text
+    # §12.3: первая выдача активирует учётку временным паролем
+    _PWD[f"del-b-boss-{RUN}@mt.test"] = response.json().get(
+        "temp_password", _pwd_of(f"del-b-boss-{RUN}@mt.test"))
     return user
 
 
 @pytest.fixture(scope="module")
 def boss_token(client, boss):
-    return _login(client, f"del-b-boss-{RUN}@mt.test")["access_token"]
+    return _login(client, f"del-b-boss-{RUN}@mt.test",
+                  _pwd_of(f"del-b-boss-{RUN}@mt.test"))["access_token"]
 
 
 def test_b1_grant_ro_then_rw(client, admin, boss, boss_token):
@@ -131,16 +156,14 @@ def test_b1_grant_ro_then_rw(client, admin, boss, boss_token):
     # ro: POST 403 до выдачи
     pre = client.post(f"{ACC}/accounts",
                       json={"name": f"b1-{RUN}", "currency": "RUB"},
-                      headers=_auth(_login(client, f"del-b-w1-{RUN}@mt.test")["access_token"]))
+                      headers=_auth(_login(client, f"del-b-w1-{RUN}@mt.test", _pwd_of(f"del-b-w1-{RUN}@mt.test"))["access_token"]))
     assert pre.status_code == 403
 
-    response = client.put(f"{API}/users/{w1['id']}/permissions",
-                          json={"module": "accounting", "level": "ro"},
-                          headers=_auth(boss_token))
-    assert response.status_code == 200, response.text
-    assert response.json()["old_level"] == "none"
+    response = _grant(client, boss_token, w1["id"],
+                      f"del-b-w1-{RUN}@mt.test", "accounting", "ro")
+    assert response["old_level"] == "none"
 
-    w1_tok = _login(client, f"del-b-w1-{RUN}@mt.test")["access_token"]
+    w1_tok = _login(client, f"del-b-w1-{RUN}@mt.test", _pwd_of(f"del-b-w1-{RUN}@mt.test"))["access_token"]
     response = client.get(f"{ACC}/accounts", headers=_auth(w1_tok))
     assert response.status_code == 200
     response = client.post(f"{ACC}/accounts",
@@ -148,11 +171,9 @@ def test_b1_grant_ro_then_rw(client, admin, boss, boss_token):
                            headers=_auth(w1_tok))
     assert response.status_code == 403, "ro не даёт мутаций"
 
-    response = client.put(f"{API}/users/{w1['id']}/permissions",
-                          json={"module": "accounting", "level": "rw"},
-                          headers=_auth(boss_token))
-    assert response.status_code == 200
-    assert response.json()["old_level"] == "ro"  # last-writer-wins
+    response = _grant(client, boss_token, w1["id"],
+                      f"del-b-w1-{RUN}@mt.test", "accounting", "rw")
+    assert response["old_level"] == "ro"  # last-writer-wins
     response = client.post(f"{ACC}/accounts",
                            json={"name": f"b1b-{RUN}", "currency": "RUB"},
                            headers=_auth(w1_tok))
@@ -161,14 +182,13 @@ def test_b1_grant_ro_then_rw(client, admin, boss, boss_token):
 
 def test_b2_revoke_returns_to_role(client, admin, boss, boss_token):
     w = _mk_user(client, admin, f"del-b-w2-{RUN}@mt.test")
-    client.put(f"{API}/users/{w['id']}/permissions",
-               json={"module": "accounting", "level": "rw"},
-               headers=_auth(boss_token))
+    _grant(client, boss_token, w["id"],
+           f"del-b-w2-{RUN}@mt.test", "accounting", "rw")
     response = client.delete(f"{API}/users/{w['id']}/permissions/accounting",
                              headers=_auth(boss_token))
     assert response.status_code == 200
     assert response.json()["revoked"] == "rw"
-    w_tok = _login(client, f"del-b-w2-{RUN}@mt.test")["access_token"]
+    w_tok = _login(client, f"del-b-w2-{RUN}@mt.test", _pwd_of(f"del-b-w2-{RUN}@mt.test"))["access_token"]
     response = client.post(f"{ACC}/accounts",
                            json={"name": f"b2-{RUN}", "currency": "RUB"},
                            headers=_auth(w_tok))
@@ -178,10 +198,8 @@ def test_b2_revoke_returns_to_role(client, admin, boss, boss_token):
 def test_b3_only_own_grants_revokable(client, admin, boss, boss_token):
     w = _mk_user(client, admin, f"del-b-w3-{RUN}@mt.test")
     # выдал admin (не boss)
-    response = client.put(f"{API}/users/{w['id']}/permissions",
-                          json={"module": "crm", "level": "ro"},
-                          headers=_auth(admin["access_token"]))
-    assert response.status_code == 200
+    _grant(client, admin["access_token"], w["id"],
+           f"del-b-w3-{RUN}@mt.test", "crm", "ro")
     # boss отзывает чужую выдачу → 403
     response = client.delete(f"{API}/users/{w['id']}/permissions/crm",
                              headers=_auth(boss_token))
@@ -195,7 +213,7 @@ def test_b3_only_own_grants_revokable(client, admin, boss, boss_token):
 def test_b4_antiescalation(client, admin, boss, boss_token):
     w = _mk_user(client, admin, f"del-b-w4-{RUN}@mt.test")
     # ro-обладатель не выдаёт (w4 — readonly, без личных)
-    w4_tok = _login(client, f"del-b-w4-{RUN}@mt.test")["access_token"]
+    w4_tok = _login(client, f"del-b-w4-{RUN}@mt.test", _pwd_of(f"del-b-w4-{RUN}@mt.test"))["access_token"]
     response = client.put(f"{API}/users/{boss['id']}/permissions",
                           json={"module": "accounting", "level": "ro"},
                           headers=_auth(w4_tok))
@@ -239,17 +257,14 @@ def test_b5_chain_and_cascade_on_revoke(client, admin, boss, boss_token):
     w1 = _mk_user(client, admin, f"del-b-c1-{RUN}@mt.test")
     w2 = _mk_user(client, admin, f"del-b-c2-{RUN}@mt.test")
     # Р выдаёт П1 rw
-    response = client.put(f"{API}/users/{w1['id']}/permissions",
-                          json={"module": "accounting", "level": "rw"},
-                          headers=_auth(boss_token))
-    assert response.status_code == 200
+    _grant(client, boss_token, w1["id"],
+           f"del-b-c1-{RUN}@mt.test", "accounting", "rw")
     # П1 (теперь rw) выдаёт П2 rw — легальная цепочка
-    w1_tok = _login(client, f"del-b-c1-{RUN}@mt.test")["access_token"]
-    response = client.put(f"{API}/users/{w2['id']}/permissions",
-                          json={"module": "accounting", "level": "rw"},
-                          headers=_auth(w1_tok))
-    assert response.status_code == 200, "цепочка rw→rw→rw легальна"
-    w2_tok = _login(client, f"del-b-c2-{RUN}@mt.test")["access_token"]
+    w1_tok = _login(client, f"del-b-c1-{RUN}@mt.test",
+                    _pwd_of(f"del-b-c1-{RUN}@mt.test"))["access_token"]
+    _grant(client, w1_tok, w2["id"],
+           f"del-b-c2-{RUN}@mt.test", "accounting", "rw")
+    w2_tok = _login(client, f"del-b-c2-{RUN}@mt.test", _pwd_of(f"del-b-c2-{RUN}@mt.test"))["access_token"]
     response = client.post(f"{ACC}/accounts",
                            json={"name": f"b5-{RUN}", "currency": "RUB"},
                            headers=_auth(w2_tok))
@@ -272,11 +287,10 @@ def test_b6_cascade_on_role_change(client, admin, boss, boss_token):
     """Админ сменил роль Р (user→readonly): rw Р исчезло → выдачи Р и вся
     цепочка ниже откатываются в той же транзакции (аудит cascade)."""
     w1 = _mk_user(client, admin, f"del-b-r1-{RUN}@mt.test")
-    response = client.put(f"{API}/users/{w1['id']}/permissions",
-                          json={"module": "accounting", "level": "rw"},
-                          headers=_auth(boss_token))
-    assert response.status_code == 200
-    w1_tok = _login(client, f"del-b-r1-{RUN}@mt.test")["access_token"]
+    _grant(client, boss_token, w1["id"],
+           f"del-b-r1-{RUN}@mt.test", "accounting", "rw")
+    w1_tok = _login(client, f"del-b-r1-{RUN}@mt.test",
+                    _pwd_of(f"del-b-r1-{RUN}@mt.test"))["access_token"]
 
     # смена роли Р: readonly→user (у user нет личного accounting — право
     # держалось личным грантом; смена роли здесь не меняет личные гранты,
@@ -303,9 +317,8 @@ def test_b6_cascade_on_role_change(client, admin, boss, boss_token):
 def test_b7_delegations_view(client, admin, boss, boss_token):
     # b6 каскадно отозвал прежние выдачи boss — свежая выдача для проверки
     w = _mk_user(client, admin, f"del-b-w7-{RUN}@mt.test")
-    client.put(f"{API}/users/{w['id']}/permissions",
-               json={"module": "accounting", "level": "ro"},
-               headers=_auth(boss_token))
+    _grant(client, boss_token, w["id"],
+           f"del-b-w7-{RUN}@mt.test", "accounting", "ro")
     response = client.get(f"{API}/delegations", headers=_auth(boss_token))
     assert response.status_code == 200
     data = response.json()
@@ -321,6 +334,6 @@ def test_b7_delegations_view(client, admin, boss, boss_token):
     assert set(response.json()["grantable"]) == set(
         ["accounting", "crm", "integrations", "ai", "system"])
     # чисто-ro пользователь — 403
-    ro = _login(client, f"del-b-w4-{RUN}@mt.test")["access_token"]
+    ro = _login(client, f"del-b-w4-{RUN}@mt.test", _pwd_of(f"del-b-w4-{RUN}@mt.test"))["access_token"]
     response = client.get(f"{API}/delegations", headers=_auth(ro))
     assert response.status_code == 403

@@ -118,6 +118,10 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     must_change_password: bool = False
+    # datetime сериализуется в ISO-строку ответом (аннотация datetime —
+    # из ORM приходит datetime, str ломал model_validate)
+    must_change_password_by: datetime | None = None
+    username: str | None = None
     # multitenancy: контекст (заполняется в /auth/me; в списках опускается)
     company_id: uuid.UUID | None = None
     company_name: str | None = None
@@ -313,6 +317,91 @@ def logout(body: RefreshIn, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+# ---------- Жизненный цикл учётки (role-delegation §12) ----------
+
+# транслитерация ФИО → логин «инициалы+фамилия» (§12.2)
+_USERNAME_TRANSLIT = {
+    "а": "A", "б": "B", "в": "V", "г": "G", "д": "D", "е": "E", "ё": "E",
+    "ж": "ZH", "з": "Z", "и": "I", "й": "I", "к": "K", "л": "L", "м": "M",
+    "н": "N", "о": "O", "п": "P", "р": "R", "с": "S", "т": "T", "у": "U",
+    "ф": "F", "х": "KH", "ц": "TS", "ч": "CH", "ш": "SH", "щ": "SHCH",
+    "ъ": "", "ы": "Y", "ь": "", "э": "E", "ю": "IU", "я": "IA",
+}
+
+
+def _username_from_full_name(db: Session, full_name: str) -> str:
+    """Иван Иванович Иванов → IIIVANOV; совпадение → IIIVANOV1, 2…
+    (индекс — первый свободный). Верхний регистр, без разделителей."""
+    parts = [p for p in full_name.strip().split() if p]
+    if not parts:
+        raise HTTPException(422, "full_name required for username generation")
+    surname = _translit(parts[-1])
+    initials = "".join(_translit(p)[0] for p in parts[:-1] if _translit(p))
+    base = (initials + surname)[:64]
+    if db.scalar(select(User.id).where(User.username == base)) is None:
+        return base
+    index = 1
+    while db.scalar(select(User.id).where(
+            User.username == f"{base}{index}")) is not None:
+        index += 1
+    return f"{base}{index}"
+
+
+def _translit(text: str) -> str:
+    return "".join(_USERNAME_TRANSLIT.get(ch, ch.upper() if ch.isalpha() else "")
+                   for ch in text.lower())
+
+
+class AccountCreateIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "full_name": "Иван Иванович Иванов",
+        "email": "ivanov@company.ru", "phone": "+79001234567",
+    }}}
+
+    full_name: str = Field(min_length=3, max_length=255)
+    email: str = Field(default="", max_length=255)
+    phone: str = Field(default="", max_length=64)
+
+
+@router.post("/accounts", status_code=201)
+def create_account_v2(body: AccountCreateIn,
+                      user: User = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    """Создать «пустую» учётку (§12.1): ФИО + email + телефон; логин
+    генерируется из ФИО; без роли и прав (роль 'readonly' — экран
+    «Нет доступа» при входе). Право: admin ИЛИ rw ≥1 модуль.
+    company_id наследуется от создателя (контекст)."""
+    if user.role != "admin" and not _can_delegate(user, db):
+        raise HTTPException(403, "Requires rw on at least one module")
+    creator_org = getattr(user, "token_org", None) or user.company_id
+    if creator_org is None:
+        raise HTTPException(403, "no_company_context: select an organization")
+    if body.email and db.scalar(select(User).where(User.email == body.email)):
+        raise HTTPException(409, f"Email already exists: {body.email}")
+    username = _username_from_full_name(db, body.full_name)
+    account = User(
+        email=body.email or f"{username.lower()}@no-email.local",
+        username=username,
+        password_hash=hash_password(_temp_password()),  # вход до активации не нужен
+        full_name=body.full_name,
+        role="readonly",  # «пустая»: доступ только к экрану «Нет доступа»
+        company_id=creator_org,
+        is_active=True,
+    )
+    db.add(account)
+    # телефон — в контакт (если email есть); v1: сохраняем в full_name только
+    db.add(AuditEvent(
+        user_id=user.id, action="account.created",
+        entity_type="user", entity_id=str(account.id),
+        payload={"username": username, "email": body.email[:120],
+                 "created_via": "settings"}))
+    db.commit()
+    db.refresh(account)
+    return {"id": str(account.id), "username": username,
+            "email": account.email, "full_name": account.full_name,
+            "role": account.role, "is_active": account.is_active}
+
+
 # ---------- Делегирование прав (role-delegation §6) ----------
 
 def _can_delegate(user, db: Session) -> bool:
@@ -432,6 +521,30 @@ def put_permissions(user_id: uuid.UUID, body: PermissionPutIn,
         db.add(row)
     row.level = body.level
     row.granted_by = user.id
+
+    # §12.3: первая выдача прав = активация учётки → временный пароль
+    # (показ один раз; дедлайн смены +72ч) — только если пароль ещё не
+    # активирован (нет прошлых выдач/смены пароля)
+    temp_password = None
+    first_activation = (old_level == "none"
+                        and not db.scalars(select(UserPermission).where(
+                            UserPermission.user_id == grantee.id)).all()
+                        and grantee.must_change_password_by is None
+                        and not db.scalar(select(AuditEvent.id).where(
+                            AuditEvent.entity_type == "user",
+                            AuditEvent.entity_id == str(grantee.id),
+                            AuditEvent.action == "password.changed",
+                        ).limit(1)))
+    if first_activation:
+        temp_password = _temp_password()
+        grantee.password_hash = hash_password(temp_password)
+        grantee.token_version += 1
+        grantee.must_change_password_by = datetime.now(UTC) + timedelta(hours=72)
+        db.add(AuditEvent(
+            user_id=user.id, action="platform.user.temp_password",
+            entity_type="user", entity_id=str(grantee.id),
+            payload={"reason": "first grant activation"}))
+
     db.add(AuditEvent(
         user_id=user.id, action="permission.granted",
         entity_type="user", entity_id=str(grantee.id),
@@ -442,8 +555,12 @@ def put_permissions(user_id: uuid.UUID, body: PermissionPutIn,
                     {"old": old_level, "new": body.level}},
                    reason="delegation")
     db.commit()
-    return {"user_id": str(grantee.id), "module": body.module,
-            "level": body.level, "old_level": old_level}
+    result = {"user_id": str(grantee.id), "module": body.module,
+              "level": body.level, "old_level": old_level}
+    if temp_password is not None:
+        result["temp_password"] = temp_password
+        result["must_change_password_by"] =             grantee.must_change_password_by.isoformat()
+    return result
 
 
 @router.delete("/users/{user_id}/permissions/{module}")
@@ -981,6 +1098,8 @@ def change_password(body: ChangePasswordIn, user: HumanUser, db: Session = Depen
         raise HTTPException(422, "; ".join(violations))
     user.password_hash = hash_password(body.new_password)
     user.token_version += 1
+    # §12.4: смена пароля снимает дедлайн временного пароля
+    user.must_change_password_by = None
     # sessions-security §2.2: смена пароля завершает ВСЕ сеансы каскадом
     now = datetime.now(UTC)
     for session in db.scalars(select(AuthSession).where(
@@ -1008,13 +1127,16 @@ def me(user: HumanUser, db: Annotated[Session, Depends(get_db)] = None):
     ).limit(1))
     payload = UserOut.model_validate(user)
     payload.must_change_password = bool(
-        (changed is None and user.email == "admin@example.com") or temp_issued)
+        (changed is None and user.email == "admin@example.com") or temp_issued
+        or user.must_change_password_by is not None)
+    payload.must_change_password_by =         user.must_change_password_by.isoformat()         if user.must_change_password_by else None
     # тенант-контекст — из клейма org (для бейджа организации в шапке)
     org = getattr(user, "token_org", None)
     company = db.get(Company, uuid.UUID(str(org))) if org else None
     payload.company_id = company.id if company else None
     payload.company_name = company.name if company else None
     payload.is_platform_admin = bool(user.is_platform_admin)
+    payload.username = user.username
     return payload
 
 

@@ -166,6 +166,12 @@ def get_current_user(
     # multitenancy: контекст из токена (атрибут, не колонка)
     user.token_org = payload.get("org")
     user.token_pl = bool(payload.get("pl"))
+    # §12.4: дедлайн смены временного пароля истёк → мутации запрещены
+    # (password_expired); чтение доступно — войти и сменить пароль можно
+    if user.must_change_password_by is not None:
+        user.password_expired = user.must_change_password_by < datetime.now(UTC)
+    else:
+        user.password_expired = False
     return user
 
 
@@ -183,9 +189,13 @@ HumanUser = Annotated[User, Depends(get_current_human)]
 
 
 def require_role(*roles: str):
-    """Зависимость для защиты эндпоинтов: Depends(require_role("admin"))."""
+    """Зависимость для защиты эндпоинтов: Depends(require_role("admin")).
+    Мутационные роли (admin/user) при истёкшем дедлайне пароля — 403
+    password_expired (§12.4): гвард мутаций, чтение живёт на ro-путях."""
 
     def checker(user: CurrentUser) -> User:
+        if getattr(user, "password_expired", False):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "password_expired")
         if user.role not in roles:
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"Requires role: {roles}")
         return user
@@ -289,6 +299,9 @@ def require_module(module: str, level: str = "rw"):
             actual = module_level(db, user.role, module)
         else:
             actual = effective_module_level(db, user, module)
+        # §12.4: rw-запрос = мутация; дедлайна пароля истёк — 403
+        if level == "rw" and getattr(user, "password_expired", False):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "password_expired")
         if actual == "none" or (level == "rw" and actual != "rw"):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
