@@ -194,7 +194,6 @@ def test_b3_only_own_grants_revokable(client, admin, boss, boss_token):
 
 def test_b4_antiescalation(client, admin, boss, boss_token):
     w = _mk_user(client, admin, f"del-b-w4-{RUN}@mt.test")
-    me = client.get(f"{API}/auth/me", headers=_auth(admin["access_token"])).json()
     # ro-обладатель не выдаёт (w4 — readonly, без личных)
     w4_tok = _login(client, f"del-b-w4-{RUN}@mt.test")["access_token"]
     response = client.put(f"{API}/users/{boss['id']}/permissions",
