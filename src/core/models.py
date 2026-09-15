@@ -40,6 +40,10 @@ class User(Base):
     # 2FA-дедлайн (этап D, ревью C): прошёл + 2FA не настроена → вход
     # руководителя блокируется до настройки (mfa_token вместо пары)
     totp_setup_deadline: Mapped[date | None] = mapped_column(DateTime(timezone=True))
+    # делегирование §12: логин из ФИО (вход username ИЛИ email) и дедлайн
+    # смены временного пароля (+72ч при первой выдаче прав; мутации 403)
+    username: Mapped[str | None] = mapped_column(String(64), unique=True)
+    must_change_password_by: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -193,6 +197,24 @@ class RevokedToken(Base):
         ForeignKey(f"{CORE_SCHEMA}.users.id"), index=True
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class UserPermission(Base):
+    """user_permissions — личные гранты делегирования (role-delegation §5):
+    эффективный уровень = max(роль, личная строка); нет строки = none —
+    симметрично role_permissions. granted_by определяет право отзыва."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "user_permissions"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{CORE_SCHEMA}.users.id", ondelete="CASCADE"),
+        primary_key=True)
+    module: Mapped[str] = mapped_column(String(30), primary_key=True)
+    level: Mapped[str] = mapped_column(String(5))  # rw | ro
+    granted_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{CORE_SCHEMA}.users.id"), index=True)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class PasswordReset(Base):

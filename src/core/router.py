@@ -12,7 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from src.config import get_settings
@@ -35,6 +35,7 @@ from src.core.auth import (
 from src.core.models import (
     ApiToken,
     PasswordReset,
+    UserPermission,
     AuditEvent,
     AuthSession,
     Backup,
@@ -61,7 +62,11 @@ router = APIRouter(tags=["core"])
 # ---------- Schemas ----------
 
 class LoginIn(BaseModel):
-    email: str
+    model_config = {"json_schema_extra": {"example": {
+        "email": "user@company.ru  # или username, например IIIVANOV",
+        "password": "…"}}}
+
+    email: str  # вход по username ИЛИ email (role-delegation §12)
     password: str
 
 
@@ -157,7 +162,9 @@ class SettingIn(BaseModel):
 @router.post("/auth/login", response_model=TokenOut)
 def login(request: Request, body: LoginIn, db: Session = Depends(get_db)):
     check_login_rate_limit(request)
-    user = db.scalar(select(User).where(User.email == body.email))
+    login = body.email.strip()
+    user = db.scalar(select(User).where(
+        or_(User.email == login, User.username == login)))
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "Bad credentials")
     reset_login_rate_limit(request)
@@ -1213,6 +1220,9 @@ def upsert_setting(body: SettingIn, admin: AdminUser, db: Session = Depends(get_
 class PermissionsOut(BaseModel):
     role: dict
     permissions: dict[str, str]
+    # личные выдачи делегирования (role-delegation §6); permissions —
+    # эффективный максимум, granted — только надстройка
+    granted: dict[str, str] = {}
 
     model_config = {
         "json_schema_extra": {
@@ -1298,10 +1308,19 @@ def _role_permissions(db: Session, role_key: str) -> dict[str, str]:
 
 @router.get("/me/permissions", response_model=PermissionsOut)
 def my_permissions(user: CurrentUser, db: Session = Depends(get_db)):
+    """Эффективные права = max(роль, личные выдачи) — ADR-002: payload
+    только расширяется (granted — личная надстройка делегирования)."""
+    from src.core.auth import effective_module_level
+
     role = db.get(Role, user.role)
+    effective = {module: effective_module_level(db, user, module)
+                 for module in MODULES}
+    personal = {row.module: row.level for row in db.scalars(
+        select(UserPermission).where(UserPermission.user_id == user.id)).all()}
     return PermissionsOut(
         role={"key": user.role, "name": role.name if role else user.role},
-        permissions=_role_permissions(db, user.role),
+        permissions=effective,
+        granted=personal,
     )
 
 

@@ -253,17 +253,46 @@ def module_level(db: Session, role_key: str, module: str) -> str:
     return level or "none"
 
 
+_LEVEL_ORDER = {"none": 0, "ro": 1, "rw": 2}
+
+
+def effective_module_level(db: Session, user, module: str) -> str:
+    """Эффективный уровень пользователя на модуль (role-delegation §5):
+    admin → rw; иначе max(уровень роли, личная выдача) по решётке
+    none < ro < rw. Надстройка только добавляет доступ (понижение ниже
+    роли — вне v1). Права читаются из БД — выдача применяется без
+    перелогина."""
+    if user.role == "admin":
+        return "rw"
+    role_level = module_level(db, user.role, module)
+    from src.core.models import UserPermission
+
+    personal = db.scalar(select(UserPermission.level).where(
+        UserPermission.user_id == user.id, UserPermission.module == module))
+    best = role_level
+    if personal is not None and _LEVEL_ORDER[personal] > _LEVEL_ORDER[best]:
+        best = personal
+    return best
+
+
 def require_module(module: str, level: str = "rw"):
     """Зависимость доступа к модулю (§6.3): level 'ro' — только чтение,
-    'rw' — полный; 'none'/нет строки — 403. Право берётся из БД по роли
-    пользователя на каждом запросе — смена прав применяется сразу."""
+    'rw' — полный; 'none'/нет строки — 403. Эффективный уровень =
+    max(роль, личное делегирование) — читается из БД на каждом запросе,
+    смена прав применяется сразу.
+
+    ApiPrincipal (X-API-Token): личных выдач у токена нет — ходит по
+    роли токена (осознанная граница v1, role-delegation §5)."""
 
     def checker(user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> User:
-        actual = module_level(db, user.role, module)
+        if isinstance(user, ApiPrincipal):
+            actual = module_level(db, user.role, module)
+        else:
+            actual = effective_module_level(db, user, module)
         if actual == "none" or (level == "rw" and actual != "rw"):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
-                f"Requires {module}:{level}, role '{user.role}' has '{actual}'",
+                f"Requires {module}:{level}, effective '{actual}'",
             )
         return user
 
