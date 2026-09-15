@@ -25,6 +25,7 @@ from src.core.auth import (
     PlatformAdmin,
     WriteUser,
     current_company,
+    get_current_user,
     create_access_token,
     create_mfa_token,
     create_refresh_token,
@@ -49,6 +50,7 @@ from src.core.models import (
     User,
 )
 from src.core.passwords import validate_password
+from src.core.versioning import record_version
 from src.core.rate_limit import (
     check_forgot_password_rate_limit, check_login_rate_limit,
     check_password_confirm_rate_limit, reset_login_rate_limit,
@@ -309,6 +311,172 @@ def logout(body: RefreshIn, db: Session = Depends(get_db)):
     db.add(AuditEvent(user_id=user.id, action="logout", entity_type="user", entity_id=str(user.id)))
     db.commit()
     return {"ok": True}
+
+
+# ---------- Делегирование прав (role-delegation §6) ----------
+
+def _can_delegate(user, db: Session) -> bool:
+    """admin или обладатель rw хотя бы на один модуль (GET /delegations)."""
+    from src.core.auth import effective_module_level
+
+    if user.role == "admin":
+        return True
+    return any(effective_module_level(db, user, m) == "rw" for m in MODULES)
+
+
+def _same_org(db: Session, a, b) -> bool:
+    """§16: выдающий и получатель — в одной организации. Организация
+    выдающего — из его контекста (token_org — строка из JWT): у
+    платформенного админа users.company_id = NULL, но в контексте org
+    он действует в ней. Сравнение через UUID (строка ≠ UUID в Python)."""
+    org = getattr(a, "token_org", None) or a.company_id
+    if org is None or b.company_id is None:
+        return False
+    return uuid.UUID(str(org)) == b.company_id
+
+
+def _cascade_revoke(db: Session, grantor_id: uuid.UUID, module: str,
+                    reason: str):
+    """Рекурсивный отзыв выдач, опирающихся на утраченное право (§3, Р2):
+    фикс-поинт по granted_by; немедленный, в той же транзакции; каждая —
+    аудит permission.revoked.cascade + record_versions."""
+    from src.core.auth import effective_module_level
+
+    grantor = db.get(User, grantor_id)
+    if grantor is None or grantor.role == "admin":
+        return
+    if effective_module_level(db, grantor, module) == "rw":
+        return
+    rows = db.scalars(select(UserPermission).where(
+        UserPermission.granted_by == grantor_id,
+        UserPermission.module == module)).all()
+    for row in rows:
+        db.delete(row)
+        db.add(AuditEvent(
+            user_id=grantor_id, action="permission.revoked.cascade",
+            entity_type="user", entity_id=str(row.user_id),
+            payload={"module": module, "level": row.level, "reason": reason}))
+        record_version(db, "user", str(row.user_id), grantor_id,
+                       {f"permission.{module}": {"old": row.level, "new": "none"}},
+                       reason=f"cascade: {reason}")
+        _cascade_revoke(db, row.user_id, module, reason)
+
+
+class DelegationsOut(BaseModel):
+    grantable: dict[str, str]
+    grants: list[dict]
+
+
+@router.get("/delegations", response_model=DelegationsOut)
+def my_delegations(user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """«Кого могу наделять»: свои rw-модули как доступные к выдаче + свои
+    выдачи. Доступ: admin или rw хотя бы на один модуль (иначе 403)."""
+    from src.core.auth import effective_module_level
+
+    if not _can_delegate(user, db):
+        raise HTTPException(403, "Requires rw on at least one module")
+    if user.role == "admin":
+        grantable = {m: "rw" for m in MODULES}
+    else:
+        grantable = {m: "rw" for m in MODULES
+                     if effective_module_level(db, user, m) == "rw"}
+    rows = db.scalars(select(UserPermission).where(
+        UserPermission.granted_by == user.id)).all()
+    users = {u.id: u for u in db.scalars(select(User).where(
+        User.id.in_([r.user_id for r in rows]))).all()} if rows else {}
+    grants = [{"user_id": str(r.user_id),
+               "email": users[r.user_id].email if r.user_id in users else "",
+               "full_name": (users[r.user_id].full_name
+                             if r.user_id in users else ""),
+               "module": r.module, "level": r.level,
+               "granted_at": r.granted_at} for r in rows]
+    return DelegationsOut(grantable=grantable, grants=grants)
+
+
+class PermissionPutIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "module": "accounting", "level": "ro"}}}
+
+    module: str
+    level: str
+
+
+@router.put("/users/{user_id}/permissions")
+def put_permissions(user_id: uuid.UUID, body: PermissionPutIn,
+                    user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """Выдать/обновить личное право (§6 иерархия): grantee активен, ≠
+    выдающего и в той же org (§16); module/level валидны; выдающий имеет
+    rw на модуль (анти-эскалация 403); upsert last-writer-wins + аудит
+    permission.granted + record_versions получателя."""
+    from src.core.auth import effective_module_level
+
+    grantee = db.get(User, user_id)
+    if grantee is None or not _same_org(db, user, grantee):
+        raise HTTPException(404, "User not found")
+    if body.module not in MODULES or body.level not in ("rw", "ro"):
+        raise HTTPException(422, "module must be one of MODULES; level rw|ro")
+    if grantee.id == user.id:
+        raise HTTPException(422, "cannot grant to yourself")
+    if not grantee.is_active:
+        raise HTTPException(422, "user is inactive")
+    if user.role != "admin" and \
+            effective_module_level(db, user, body.module) != "rw":
+        raise HTTPException(403, "requires rw on the module to delegate")
+
+    row = db.get(UserPermission, (grantee.id, body.module))
+    old_level = row.level if row is not None else "none"
+    if row is None:
+        row = UserPermission(user_id=grantee.id, module=body.module)
+        db.add(row)
+    row.level = body.level
+    row.granted_by = user.id
+    db.add(AuditEvent(
+        user_id=user.id, action="permission.granted",
+        entity_type="user", entity_id=str(grantee.id),
+        payload={"module": body.module, "level": body.level,
+                 "grantee": grantee.email}))
+    record_version(db, "user", str(grantee.id), user.id,
+                   {f"permission.{body.module}":
+                    {"old": old_level, "new": body.level}},
+                   reason="delegation")
+    db.commit()
+    return {"user_id": str(grantee.id), "module": body.module,
+            "level": body.level, "old_level": old_level}
+
+
+@router.delete("/users/{user_id}/permissions/{module}")
+def delete_permissions(user_id: uuid.UUID, module: str,
+                       user: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
+    """Отозвать личное право: только свои выдачи (admin — любые, чужие —
+    403). Каскад: если после отзыва у получателя нет rw на модуль — его
+    выдачи на модуль откатываются рекурсивно (§3)."""
+    grantee = db.get(User, user_id)
+    if grantee is None or not _same_org(db, user, grantee):
+        raise HTTPException(404, "User not found")
+    if module not in MODULES:
+        raise HTTPException(422, f"Unknown module: {module}")
+    row = db.get(UserPermission, (grantee.id, module))
+    if row is None:
+        raise HTTPException(404, "Permission not found")
+    if user.role != "admin" and row.granted_by != user.id:
+        raise HTTPException(403, "Can revoke only own grants")
+    old_level = row.level
+    db.delete(row)
+    db.add(AuditEvent(
+        user_id=user.id, action="permission.revoked",
+        entity_type="user", entity_id=str(grantee.id),
+        payload={"module": module, "level": old_level,
+                 "grantee": grantee.email}))
+    record_version(db, "user", str(grantee.id), user.id,
+                   {f"permission.{module}": {"old": old_level, "new": "none"}},
+                   reason="delegation revoke")
+    db.flush()  # autoflush=False: без сброса каскад увидит удалённую строку
+    _cascade_revoke(db, grantee.id, module, "revoke")
+    db.commit()
+    return {"user_id": str(grantee.id), "module": module, "revoked": old_level}
 
 
 # ---------- Восстановление пароля (multitenancy §7.5, этап D) ----------
@@ -919,6 +1087,14 @@ def patch_user(user_id: uuid.UUID, body: UserPatch, admin: AdminUser,
             user.token_version += 1  # деактивация убивает выданные токены
     db.add(AuditEvent(action="user.updated", entity_type="user", entity_id=str(user.id),
                       payload=body.model_dump(exclude_none=True)))
+    # делегирование §6: смена роли/деактивация → каскадный отзыв выдач,
+    # опиравшихся на утраченное rw (в той же транзакции)
+    if body.role is not None or body.is_active is not None:
+        db.flush()  # каскад должен видеть изменения роли/строк этой транзакции
+        for module in MODULES:
+            _cascade_revoke(db, user.id, module,
+                            "role change" if body.role is not None
+                            else "deactivation")
     db.commit()
     db.refresh(user)
     return user
