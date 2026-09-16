@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, BeforeValidator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from typing import Annotated
 
@@ -21,8 +21,8 @@ from src.db import get_db
 from src.modules.mini_crm import models as m
 from src.modules.mini_crm import service
 
+from src.core.pagination import Page, PageParams, page_params
 router = APIRouter(tags=["crm"])
-
 MoneyStr = Annotated[str, BeforeValidator(lambda v: str(v) if isinstance(v, Decimal) else v)]
 
 
@@ -190,9 +190,10 @@ def _enrich(db: Session, deals: list[m.Deal]) -> list[dict]:
     ]
 
 
-@router.get("/deals", response_model=list[DealOut])
+@router.get("/deals", response_model=list[DealOut] | Page[DealOut])
 def list_deals(user: User = Depends(require_module("crm", "ro")), q: str | None = None, stage_id: uuid.UUID | None = None,
-               db: Session = Depends(get_db), scoped: CompanyScoped = None):
+               db: Session = Depends(get_db), scoped: CompanyScoped = None,
+    page: PageParams = Depends(page_params)):
     query = select(m.Deal).where(m.Deal.is_deleted.is_(False),
                                  m.Deal.company_id == scoped).order_by(m.Deal.created_at.desc())
     if stage_id:
@@ -200,6 +201,13 @@ def list_deals(user: User = Depends(require_module("crm", "ro")), q: str | None 
     if q:
         # ILIKE по части названия; GIN pg_trgm (gin_trgm_ops) ускоряет и ILIKE
         query = query.where(m.Deal.title.ilike(f"%{q}%"))
+    if page.paginated:
+        total = db.scalar(select(func.count()).select_from(
+            query.order_by(None).subquery())) or 0
+        paged = query.offset(page.offset or 0)
+        if page.limit:
+            paged = paged.limit(page.limit)
+        return {"items": _enrich(db, db.scalars(paged).all()), "total": int(total)}
     return _enrich(db, db.scalars(query).all())
 
 
@@ -333,12 +341,13 @@ class ActivityOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-@router.get("/deals/{deal_id}/communications", response_model=list[CommunicationOut])
+@router.get("/deals/{deal_id}/communications", response_model=list[CommunicationOut] | Page[CommunicationOut])
 def list_communications(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")),
-                        db: Session = Depends(get_db), scoped: CompanyScoped = None):
+                        db: Session = Depends(get_db), scoped: CompanyScoped = None,
+    page: PageParams = Depends(page_params)):
     _get_deal(db, deal_id, scoped)
-    return db.scalars(select(m.Communication).where(m.Communication.deal_id == deal_id)
-                      .order_by(m.Communication.occurred_at.desc())).all()
+    return page.apply(db, select(m.Communication).where(m.Communication.deal_id == deal_id)
+                      .order_by(m.Communication.occurred_at.desc()))
 
 
 @router.post("/deals/{deal_id}/communications", response_model=CommunicationOut, status_code=201)
@@ -360,12 +369,13 @@ def create_communication(deal_id: uuid.UUID, body: CommunicationIn, user: User =
     return row
 
 
-@router.get("/deals/{deal_id}/activities", response_model=list[ActivityOut])
+@router.get("/deals/{deal_id}/activities", response_model=list[ActivityOut] | Page[ActivityOut])
 def list_deal_activities(deal_id: uuid.UUID, user: User = Depends(require_module("crm", "ro")),
-                        db: Session = Depends(get_db), scoped: CompanyScoped = None):
+                        db: Session = Depends(get_db), scoped: CompanyScoped = None,
+    page: PageParams = Depends(page_params)):
     _get_deal(db, deal_id, scoped)
-    return db.scalars(select(m.Activity).where(m.Activity.deal_id == deal_id)
-                      .order_by(m.Activity.due_at)).all()
+    return page.apply(db, select(m.Activity).where(m.Activity.deal_id == deal_id)
+                      .order_by(m.Activity.due_at))
 
 
 def _create_activity(db: Session, deal_id: uuid.UUID, body: ActivityIn,
@@ -425,11 +435,12 @@ def patch_activity(activity_id: uuid.UUID, body: ActivityPatch, user: User = Dep
     return row
 
 
-@router.get("/activities", response_model=list[ActivityOut])
+@router.get("/activities", response_model=list[ActivityOut] | Page[ActivityOut])
 def list_activities(user: User = Depends(require_module("crm", "ro")), db: Session = Depends(get_db),
                     due_before: object = None, status: str | None = None,
                     responsible_id: uuid.UUID | None = None,
-                    scoped: CompanyScoped = None):
+                    scoped: CompanyScoped = None,
+    page: PageParams = Depends(page_params)):
     """Общий список задач: свои + все для админа; фильтры due_before/status/responsible."""
     from datetime import date as date_type
 
@@ -447,7 +458,7 @@ def list_activities(user: User = Depends(require_module("crm", "ro")), db: Sessi
         query = query.where(m.Activity.done.is_(False))
     elif status == "done":
         query = query.where(m.Activity.done.is_(True))
-    return db.scalars(query.order_by(m.Activity.due_at)).all()
+    return page.apply(db, query.order_by(m.Activity.due_at))
 
 
 # ---------- Отчёт pipeline (этап C) ----------

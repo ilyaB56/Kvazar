@@ -17,6 +17,7 @@ from src.core.auth import AdminUser, CompanyScoped, require_module
 from src.core import models as core_m
 from src.core.models import AuditEvent, User
 from src.core.models import RecordVersion
+from src.core.pagination import Page, PageParams, page_params
 from src.db import get_db
 from src.modules.mgmt_accounting import models as m
 from src.modules.mgmt_accounting import service
@@ -213,13 +214,14 @@ def _own(db: Session, model, entity_id: uuid.UUID, scoped: uuid.UUID):
 
 # ---------- Справочники ----------
 
-@router.get("/accounts", response_model=list[AccountOut])
+@router.get("/accounts", response_model=list[AccountOut] | Page[AccountOut])
 def list_accounts(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db),
-                  q: str | None = None, scoped: CompanyScoped = None):
+                  q: str | None = None, scoped: CompanyScoped = None,
+        page: PageParams = Depends(page_params)):
     query = select(m.Account).where(m.Account.company_id == scoped).order_by(m.Account.name)
     if q:
         query = query.where(m.Account.name.ilike(f"%{q}%"))  # GIN pg_trgm
-    return db.scalars(query).all()
+    return page.apply(db, query)
 
 
 @router.post("/accounts", response_model=AccountOut, status_code=201)
@@ -247,13 +249,14 @@ def patch_account(
     return account
 
 
-@router.get("/categories", response_model=list[CategoryOut])
+@router.get("/categories", response_model=list[CategoryOut] | Page[CategoryOut])
 def list_categories(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db),
-                    q: str | None = None, scoped: CompanyScoped = None):
+                    q: str | None = None, scoped: CompanyScoped = None,
+        page: PageParams = Depends(page_params)):
     query = select(m.Category).where(m.Category.company_id == scoped).order_by(m.Category.name)
     if q:
         query = query.where(m.Category.name.ilike(f"%{q}%"))
-    return db.scalars(query).all()
+    return page.apply(db, query)
 
 
 @router.post("/categories", response_model=CategoryOut, status_code=201)
@@ -271,14 +274,15 @@ def create_category(body: CategoryIn, user: User = Depends(require_module("accou
     return category
 
 
-@router.get("/counterparties", response_model=list[CounterpartyOut])
+@router.get("/counterparties", response_model=list[CounterpartyOut] | Page[CounterpartyOut])
 def list_counterparties(user: User = Depends(require_module("accounting", "ro")), db: Session = Depends(get_db),
-                        q: str | None = None, scoped: CompanyScoped = None):
+                        q: str | None = None, scoped: CompanyScoped = None,
+        page: PageParams = Depends(page_params)):
     query = select(m.Counterparty).where(
         m.Counterparty.company_id == scoped).order_by(m.Counterparty.name)
     if q:
         query = query.where(m.Counterparty.name.ilike(f"%{q}%"))
-    return db.scalars(query).all()
+    return page.apply(db, query)
 
 
 @router.post("/counterparties", response_model=CounterpartyOut, status_code=201)
@@ -345,7 +349,7 @@ def find_or_create_counterparty(body: FindOrCreateIn,
 
 # ---------- Транзакции ----------
 
-@router.get("/transactions", response_model=list[TransactionOut])
+@router.get("/transactions", response_model=list[TransactionOut] | Page[TransactionOut])
 def list_transactions(
     user: User = Depends(require_module("accounting", "ro")),
     db: Session = Depends(get_db),
@@ -356,7 +360,7 @@ def list_transactions(
     status: str | None = None,
     kind: str | None = None,
     scoped: CompanyScoped = None,
-):
+    page: PageParams = Depends(page_params)):
     query = select(m.Transaction).where(
         m.Transaction.company_id == scoped
     ).order_by(m.Transaction.operated_at, m.Transaction.created_at)
@@ -375,7 +379,7 @@ def list_transactions(
         query = query.where(m.Transaction.status == status)
     if kind is not None:
         query = query.where(m.Transaction.kind == kind)
-    return db.scalars(query).all()
+    return page.apply(db, query)
 
 
 def _get_transaction(db: Session, txn_id: uuid.UUID, scoped: uuid.UUID | None = None) -> m.Transaction:
@@ -517,14 +521,14 @@ def export_client_bank(
 
 # ---------- Курсы ----------
 
-@router.get("/rates", response_model=list[RateOut])
+@router.get("/rates", response_model=list[RateOut] | Page[RateOut])
 def list_rates(
     user: User = Depends(require_module("accounting", "ro")),
     db: Session = Depends(get_db),
     currency: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
-):
+        page: PageParams = Depends(page_params)):
     query = select(m.Rate).order_by(m.Rate.date.desc(), m.Rate.currency)
     if currency is not None:
         query = query.where(m.Rate.currency == currency)
@@ -532,7 +536,7 @@ def list_rates(
         query = query.where(m.Rate.date >= date_from)
     if date_to is not None:
         query = query.where(m.Rate.date <= date_to)
-    return db.scalars(query).all()
+    return page.apply(db, query)
 
 
 @router.post("/rates", response_model=RateOut)
@@ -545,11 +549,12 @@ def upsert_rate(body: RateIn, user: User = Depends(require_module("accounting"))
 
 # ---------- Периоды ----------
 
-@router.get("/periods", response_model=list[PeriodOut])
+@router.get("/periods", response_model=list[PeriodOut] | Page[PeriodOut])
 def list_periods(user: User = Depends(require_module("accounting", "ro")),
-                 db: Session = Depends(get_db), scoped: CompanyScoped = None):
-    return db.scalars(select(m.Period).where(
-        m.Period.company_id == scoped).order_by(m.Period.year, m.Period.month)).all()
+                 db: Session = Depends(get_db), scoped: CompanyScoped = None,
+        page: PageParams = Depends(page_params)):
+    return page.apply(db, select(m.Period).where(
+        m.Period.company_id == scoped).order_by(m.Period.year, m.Period.month))
 
 
 def _check_month(year: int, month: int) -> None:

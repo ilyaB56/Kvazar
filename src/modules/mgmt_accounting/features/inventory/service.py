@@ -725,15 +725,15 @@ def _adjust_serial_line(
 
 # ---------- Журнал движений ----------
 
-def stock_moves(
-    db: Session,
+def stock_moves_query(
     *,
     item_id: uuid.UUID | None = None,
     location_id: uuid.UUID | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     company_id: uuid.UUID | None = None,
-) -> list[m.StockMove]:
+):
+    """Select журнала движений (общий для list и count при пагинации)."""
     query = select(m.StockMove).order_by(m.StockMove.moved_at, m.StockMove.created_at)
     if company_id is not None:
         query = query.where(m.StockMove.company_id == company_id)
@@ -748,7 +748,22 @@ def stock_moves(
         query = query.where(m.StockMove.moved_at >= date_from)
     if date_to is not None:
         query = query.where(m.StockMove.moved_at <= date_to)
-    return db.scalars(query).all()
+    return query
+
+
+def stock_moves(
+    db: Session,
+    *,
+    item_id: uuid.UUID | None = None,
+    location_id: uuid.UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    company_id: uuid.UUID | None = None,
+) -> list[m.StockMove]:
+    return db.scalars(stock_moves_query(
+        item_id=item_id, location_id=location_id, date_from=date_from,
+        date_to=date_to, company_id=company_id,
+    )).all()
 
 
 def move_payload(move: m.StockMove) -> dict[str, Any]:

@@ -9,7 +9,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from src.core import events
@@ -21,8 +21,8 @@ from src.modules.integrations import models as m
 from src.modules.integrations.connectors.builtin import registry as connector_registry
 from src.modules.integrations.crypto import decrypt_dict, encrypt_dict
 
+from src.core.pagination import Page, PageParams, page_params
 router = APIRouter(tags=["integrations"])
-
 
 # ---------- Schemas ----------
 
@@ -121,15 +121,16 @@ def list_connectors(user: User = Depends(require_module("integrations", "ro"))):
 
 # ---------- Connections ----------
 
-@router.get("/connections", response_model=list[ConnectionOut])
+@router.get("/connections", response_model=list[ConnectionOut] | Page[ConnectionOut])
 def list_connections(user: User = Depends(require_module("integrations", "ro")),
-                    db: Session = Depends(get_db), scoped: CompanyScoped = None):
+                    db: Session = Depends(get_db), scoped: CompanyScoped = None,
+                    page: PageParams = Depends(page_params)):
     query = select(m.Connection).where(m.Connection.company_id == scoped)
     if getattr(user, "token_pl", False):
         # платформенный админ видит и платформенные коннекторы (NULL)
         query = select(m.Connection).where(or_(
             m.Connection.company_id == scoped, m.Connection.company_id.is_(None)))
-    return db.scalars(query).all()
+    return page.apply(db, query)
 
 
 @router.post("/connections", response_model=ConnectionOut, status_code=201)
@@ -169,18 +170,18 @@ def test_connection(connection_id: uuid.UUID, user: User = Depends(require_modul
 
 # ---------- Webhooks (входящие) ----------
 
-@router.get("/webhooks", response_model=list[WebhookOut])
+@router.get("/webhooks", response_model=list[WebhookOut] | Page[WebhookOut])
 def list_webhooks(user: User = Depends(require_module("integrations", "ro")),
-                  db: Session = Depends(get_db), scoped: CompanyScoped = None):
-    endpoints = db.scalars(select(m.WebhookEndpoint).where(
-        m.WebhookEndpoint.company_id == scoped)).all()
-    return [
-        WebhookOut(
+                  db: Session = Depends(get_db), scoped: CompanyScoped = None,
+                  page: PageParams = Depends(page_params)):
+    return page.apply(
+        db,
+        select(m.WebhookEndpoint).where(m.WebhookEndpoint.company_id == scoped),
+        transform=lambda e: WebhookOut(
             id=e.id, name=e.name, target_module=e.target_module,
             url_path=f"/api/v1/integrations/hooks/{e.id}",
-        )
-        for e in endpoints
-    ]
+        ),
+    )
 
 
 @router.post("/webhooks", status_code=201)
@@ -439,9 +440,10 @@ def create_mapping(body: MappingIn, user: User = Depends(require_module("integra
 
 @router.get("/sync-jobs")
 def list_sync_jobs(user: User = Depends(require_module("integrations", "ro")),
-                  db: Session = Depends(get_db), scoped: CompanyScoped = None):
-    return db.scalars(select(m.SyncJob).where(
-        m.SyncJob.company_id == scoped).order_by(m.SyncJob.created_at)).all()
+                  db: Session = Depends(get_db), scoped: CompanyScoped = None,
+                  page: PageParams = Depends(page_params)):
+    return page.apply(db, select(m.SyncJob).where(
+        m.SyncJob.company_id == scoped).order_by(m.SyncJob.created_at))
 
 
 @router.post("/sync-jobs", status_code=201)
@@ -480,17 +482,14 @@ def patch_sync_job(job_id: uuid.UUID, body: SyncJobPatch, user: User = Depends(r
 
 @router.get("/sync-runs")
 def list_runs(sync_job_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")),
-              db: Session = Depends(get_db), scoped: CompanyScoped = None):
+              db: Session = Depends(get_db), scoped: CompanyScoped = None,
+              page: PageParams = Depends(page_params)):
     job = db.get(m.SyncJob, sync_job_id)
     if job is None or job.company_id != scoped:
         raise HTTPException(404, "Sync job not found")
-    runs = db.scalars(
-        select(m.SyncRun)
-        .where(m.SyncRun.sync_job_id == sync_job_id)
-        .order_by(m.SyncRun.id.desc())
-        .limit(50)
-    ).all()
-    return runs
+    return page.apply(db, select(m.SyncRun)
+                      .where(m.SyncRun.sync_job_id == sync_job_id)
+                      .order_by(m.SyncRun.id.desc()))
 
 
 
@@ -555,11 +554,12 @@ def _payment_out(payment: m.OnlinePayment, rw: bool) -> PaymentOut:
     return out
 
 
-@router.get("/payments", response_model=list[PaymentOut])
+@router.get("/payments", response_model=list[PaymentOut] | Page[PaymentOut])
 def list_payments(user: User = Depends(require_module("integrations", "ro")),
                   db: Session = Depends(get_db),
                   status: str | None = None, provider: str | None = None,
-                  scoped: CompanyScoped = None):
+                  scoped: CompanyScoped = None,
+                  page: PageParams = Depends(page_params)):
     rw = module_level(db, user.role, "integrations") == "rw"
     query = select(m.OnlinePayment).where(
         m.OnlinePayment.company_id == scoped).order_by(m.OnlinePayment.created_at.desc())
@@ -567,6 +567,14 @@ def list_payments(user: User = Depends(require_module("integrations", "ro")),
         query = query.where(m.OnlinePayment.status == status)
     if provider is not None:
         query = query.where(m.OnlinePayment.provider == provider)
+    if page.paginated:
+        total = db.scalar(select(func.count()).select_from(
+            query.order_by(None).subquery())) or 0
+        paged = query.offset(page.offset or 0)
+        if page.limit:
+            paged = paged.limit(page.limit)
+        return {"items": [_payment_out(p, rw) for p in db.scalars(paged).all()],
+                "total": int(total)}
     return [_payment_out(p, rw) for p in db.scalars(query.limit(200)).all()]
 
 
@@ -663,11 +671,12 @@ class ItemMappingOut(ItemMappingIn):
     model_config = {**ItemMappingIn.model_config, "from_attributes": True}
 
 
-@router.get("/item-mappings", response_model=list[ItemMappingOut])
+@router.get("/item-mappings", response_model=list[ItemMappingOut] | Page[ItemMappingOut])
 def list_item_mappings(user: User = Depends(require_module("integrations", "ro")),
-                       db: Session = Depends(get_db), scoped: CompanyScoped = None):
-    return db.scalars(select(m.ItemMapping).where(
-        m.ItemMapping.company_id == scoped).order_by(m.ItemMapping.created_at.desc())).all()
+                       db: Session = Depends(get_db), scoped: CompanyScoped = None,
+                       page: PageParams = Depends(page_params)):
+    return page.apply(db, select(m.ItemMapping).where(
+        m.ItemMapping.company_id == scoped).order_by(m.ItemMapping.created_at.desc()))
 
 
 @router.post("/item-mappings", response_model=ItemMappingOut, status_code=201)
@@ -738,12 +747,13 @@ class NotificationRuleOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-@router.get("/notification-rules", response_model=list[NotificationRuleOut])
+@router.get("/notification-rules", response_model=list[NotificationRuleOut] | Page[NotificationRuleOut])
 def list_notification_rules(user: User = Depends(require_module("integrations")),
-                           db: Session = Depends(get_db), scoped: CompanyScoped = None):
-    return db.scalars(select(m.NotificationRule).where(
+                           db: Session = Depends(get_db), scoped: CompanyScoped = None,
+                           page: PageParams = Depends(page_params)):
+    return page.apply(db, select(m.NotificationRule).where(
         m.NotificationRule.company_id == scoped
-    ).order_by(m.NotificationRule.created_at)).all()
+    ).order_by(m.NotificationRule.created_at))
 
 
 @router.post("/notification-rules", response_model=NotificationRuleOut, status_code=201)

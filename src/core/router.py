@@ -49,6 +49,7 @@ from src.core.models import (
     Setting,
     User,
 )
+from src.core.pagination import Page, PageParams, page_params
 from src.core.passwords import validate_password
 from src.core.versioning import record_version
 from src.core.rate_limit import (
@@ -1021,8 +1022,9 @@ class AuthSessionOut(BaseModel):
     is_current: bool = False
 
 
-@router.get("/auth/sessions", response_model=list[AuthSessionOut])
-def list_auth_sessions(request: Request, user: HumanUser, db: Session = Depends(get_db)):
+@router.get("/auth/sessions", response_model=list[AuthSessionOut] | Page[AuthSessionOut])
+def list_auth_sessions(request: Request, user: HumanUser, db: Session = Depends(get_db),
+                      page: PageParams = Depends(page_params)):
     """Свои активные сеансы; текущий помечен is_current (по sid access-токена).
     Заодно — уборка: протухшие по TTL помечаются revoked_at (§2.1)."""
     from jwt import PyJWTError
@@ -1042,17 +1044,24 @@ def list_auth_sessions(request: Request, user: HumanUser, db: Session = Depends(
             current_sid = decode_token(auth_header[7:]).get("sid")
         except PyJWTError:
             current_sid = None
-    rows = db.scalars(select(AuthSession).where(
-        AuthSession.user_id == user.id,
-        AuthSession.revoked_at.is_(None),
-        AuthSession.created_at >= _session_cutoff(),
-    ).order_by(AuthSession.created_at.desc())).all()
+    def _to_out(row: AuthSession) -> AuthSessionOut:
+        return AuthSessionOut(
+            id=row.id, user_agent=row.user_agent, ip=row.ip,
+            created_at=row.created_at, last_used_at=row.last_used_at,
+            is_current=current_sid is not None and str(row.id) == current_sid,
+        )
+
+    result = page.apply(
+        db,
+        select(AuthSession).where(
+            AuthSession.user_id == user.id,
+            AuthSession.revoked_at.is_(None),
+            AuthSession.created_at >= _session_cutoff(),
+        ).order_by(AuthSession.created_at.desc()),
+        transform=_to_out,
+    )
     db.commit()
-    return [AuthSessionOut(
-        id=row.id, user_agent=row.user_agent, ip=row.ip,
-        created_at=row.created_at, last_used_at=row.last_used_at,
-        is_current=current_sid is not None and str(row.id) == current_sid,
-    ) for row in rows]
+    return result
 
 
 @router.post("/auth/sessions/{session_id}/revoke")
@@ -1142,9 +1151,10 @@ def me(user: HumanUser, db: Annotated[Session, Depends(get_db)] = None):
 
 # ---------- Users (admin) ----------
 
-@router.get("/users", response_model=list[UserOut])
+@router.get("/users", response_model=list[UserOut] | Page[UserOut])
 def list_users(user: User = Depends(get_current_user),
-               db: Session = Depends(get_db)):
+               db: Session = Depends(get_db),
+               page: PageParams = Depends(page_params)):
     """Срез пользователей своей организации. Доступ (role-delegation §6,
     Р3): admin ИЛИ обладатель rw хотя бы на один модуль (иначе руководителю
     некого выбирать при делегировании); platform-админ без org — все."""
@@ -1152,11 +1162,11 @@ def list_users(user: User = Depends(get_current_user),
         raise HTTPException(403, "Requires rw on at least one module")
     org = getattr(user, "token_org", None) or user.company_id
     if getattr(user, "token_pl", False) and not org:
-        return db.scalars(select(User)).all()
+        return page.apply(db, select(User))
     if org is None:
         raise HTTPException(403, "no_company_context")
-    return db.scalars(select(User).where(
-        User.company_id == uuid.UUID(str(org)))).all()
+    return page.apply(db, select(User).where(
+        User.company_id == uuid.UUID(str(org))))
 
 
 @router.post("/users", response_model=UserOut, status_code=201)
@@ -1296,15 +1306,25 @@ class OrgPatchIn(BaseModel):
     is_active: bool | None = None
 
 
-@router.get("/platform/orgs", response_model=list[OrgOut])
-def platform_list_orgs(admin: PlatformAdmin, db: Session = Depends(get_db)):
+@router.get("/platform/orgs", response_model=list[OrgOut] | Page[OrgOut])
+def platform_list_orgs(admin: PlatformAdmin, db: Session = Depends(get_db),
+                       page: PageParams = Depends(page_params)):
     counts = dict(db.execute(
         select(User.company_id, func.count(User.id))
         .where(User.company_id.is_not(None))
         .group_by(User.company_id)).all())
+    rows = db.scalars(select(Company).order_by(Company.created_at)).all()
+    if page.paginated:
+        total = len(rows)
+        start = page.offset or 0
+        end = start + page.limit if page.limit else None
+        rows = rows[start:end]
+        return {"items": [OrgOut(id=c.id, name=c.name, inn=c.inn, is_active=c.is_active,
+                                 users_count=int(counts.get(c.id, 0)), created_at=c.created_at)
+                          for c in rows], "total": total}
     return [OrgOut(id=c.id, name=c.name, inn=c.inn, is_active=c.is_active,
                    users_count=int(counts.get(c.id, 0)), created_at=c.created_at)
-            for c in db.scalars(select(Company).order_by(Company.created_at)).all()]
+            for c in rows]
 
 
 @router.post("/platform/orgs", status_code=201)

@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, BeforeValidator, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.core.auth import CurrentUser, WriteUser
@@ -25,8 +25,8 @@ from src.modules.mgmt_accounting.features.purchasing import service
 from src.modules.mgmt_accounting.router import TransactionOut
 from src.modules.mgmt_accounting.service import AccountingError
 
+from src.core.pagination import Page, PageParams, page_params
 router = APIRouter(tags=["purchasing"])
-
 MoneyStr = Annotated[str, BeforeValidator(lambda v: str(v) if isinstance(v, Decimal) else v)]
 
 
@@ -175,13 +175,14 @@ def _get_order(db: Session, order_id: uuid.UUID,
     return order
 
 
-@router.get("/purchase-orders", response_model=list[OrderOut])
+@router.get("/purchase-orders", response_model=list[OrderOut] | Page[OrderOut])
 def list_orders(
     user: CurrentUser,
     db: Session = Depends(get_db),
     status: str | None = None,
     counterparty_id: uuid.UUID | None = None,
     scoped: CompanyScoped = None,
+    page: PageParams = Depends(page_params),
 ):
     query = select(m.PurchaseOrder).where(
         m.PurchaseOrder.company_id == scoped).order_by(m.PurchaseOrder.created_at.desc())
@@ -189,6 +190,14 @@ def list_orders(
         query = query.where(m.PurchaseOrder.status == status)
     if counterparty_id is not None:
         query = query.where(m.PurchaseOrder.counterparty_id == counterparty_id)
+    if page.paginated:
+        total = db.scalar(select(func.count()).select_from(
+            query.order_by(None).subquery())) or 0
+        paged = query.offset(page.offset or 0)
+        if page.limit:
+            paged = paged.limit(page.limit)
+        return {"items": [_order_with_lines(db, o) for o in db.scalars(paged).all()],
+                "total": int(total)}
     return [
         _order_with_lines(db, order) for order in db.scalars(query).all()
     ]
@@ -265,13 +274,14 @@ def _get_receipt(db: Session, receipt_id: uuid.UUID,
     return receipt
 
 
-@router.get("/receipts", response_model=list[ReceiptOut])
+@router.get("/receipts", response_model=list[ReceiptOut] | Page[ReceiptOut])
 def list_receipts(
     user: CurrentUser,
     db: Session = Depends(get_db),
     status: str | None = None,
     purchase_order_id: uuid.UUID | None = None,
     scoped: CompanyScoped = None,
+    page: PageParams = Depends(page_params),
 ):
     query = select(m.Receipt).where(
         m.Receipt.company_id == scoped).order_by(m.Receipt.created_at.desc())
@@ -279,6 +289,14 @@ def list_receipts(
         query = query.where(m.Receipt.status == status)
     if purchase_order_id is not None:
         query = query.where(m.Receipt.purchase_order_id == purchase_order_id)
+    if page.paginated:
+        total = db.scalar(select(func.count()).select_from(
+            query.order_by(None).subquery())) or 0
+        paged = query.offset(page.offset or 0)
+        if page.limit:
+            paged = paged.limit(page.limit)
+        return {"items": [_receipt_with_lines(db, r) for r in db.scalars(paged).all()],
+                "total": int(total)}
     return [
         _receipt_with_lines(db, receipt) for receipt in db.scalars(query).all()
     ]

@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, BeforeValidator, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.core import events
@@ -30,8 +30,8 @@ from src.modules.mgmt_accounting.router import TransactionOut
 from src.modules.mgmt_accounting.features.inventory import models as inv
 from src.modules.mgmt_accounting.features.inventory import service as inv_service
 
+from src.core.pagination import Page, PageParams, page_params
 router = APIRouter(tags=["sales"])
-
 MoneyStr = Annotated[str, BeforeValidator(lambda v: str(v) if isinstance(v, Decimal) else v)]
 
 
@@ -181,7 +181,7 @@ def _get_order(db: Session, order_id: uuid.UUID,
     return order
 
 
-@router.get("/sales-orders", response_model=list[OrderOut])
+@router.get("/sales-orders", response_model=list[OrderOut] | Page[OrderOut])
 def list_orders(
     user: CurrentUser,
     db: Session = Depends(get_db),
@@ -189,6 +189,7 @@ def list_orders(
     counterparty_id: uuid.UUID | None = None,
     crm_deal_id: uuid.UUID | None = None,
     scoped: CompanyScoped = None,
+    page: PageParams = Depends(page_params),
 ):
     query = select(m.SalesOrder).where(
         m.SalesOrder.company_id == scoped).order_by(m.SalesOrder.created_at.desc())
@@ -198,6 +199,14 @@ def list_orders(
         query = query.where(m.SalesOrder.counterparty_id == counterparty_id)
     if crm_deal_id is not None:
         query = query.where(m.SalesOrder.crm_deal_id == crm_deal_id)
+    if page.paginated:
+        total = db.scalar(select(func.count()).select_from(
+            query.order_by(None).subquery())) or 0
+        paged = query.offset(page.offset or 0)
+        if page.limit:
+            paged = paged.limit(page.limit)
+        return {"items": [_order_with_lines(db, o) for o in db.scalars(paged).all()],
+                "total": int(total)}
     return [_order_with_lines(db, order) for order in db.scalars(query).all()]
 
 
@@ -287,13 +296,14 @@ def _get_shipment(db: Session, shipment_id: uuid.UUID,
     return shipment
 
 
-@router.get("/shipments", response_model=list[ShipmentOut])
+@router.get("/shipments", response_model=list[ShipmentOut] | Page[ShipmentOut])
 def list_shipments(
     user: CurrentUser,
     db: Session = Depends(get_db),
     status: str | None = None,
     sales_order_id: uuid.UUID | None = None,
     scoped: CompanyScoped = None,
+    page: PageParams = Depends(page_params),
 ):
     reveal = module_level(db, user.role, "accounting") == "rw"
     query = select(m.Shipment).where(
@@ -302,6 +312,14 @@ def list_shipments(
         query = query.where(m.Shipment.status == status)
     if sales_order_id is not None:
         query = query.where(m.Shipment.sales_order_id == sales_order_id)
+    if page.paginated:
+        total = db.scalar(select(func.count()).select_from(
+            query.order_by(None).subquery())) or 0
+        paged = query.offset(page.offset or 0)
+        if page.limit:
+            paged = paged.limit(page.limit)
+        return {"items": [_shipment_with_lines(db, s, reveal) for s in db.scalars(paged).all()],
+                "total": int(total)}
     return [_shipment_with_lines(db, shipment, reveal) for shipment in db.scalars(query).all()]
 
 

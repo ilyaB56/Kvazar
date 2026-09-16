@@ -16,8 +16,8 @@ from src.db import get_db
 from src.modules.ai_agent import models as m
 from src.modules.ai_agent import rag
 
+from src.core.pagination import Page, PageParams, page_params
 router = APIRouter(tags=["ai"])
-
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
 
@@ -50,12 +50,13 @@ async def upload_document(file: UploadFile = File(...), user: User = Depends(req
                               company_id=scoped)
 
 
-@router.get("/documents", response_model=list[DocumentOut])
+@router.get("/documents", response_model=list[DocumentOut] | Page[DocumentOut])
 def list_documents(user: User = Depends(require_module("ai", "ro")),
-                  db: Session = Depends(get_db), scoped: CompanyScoped = None):
-    return db.scalars(select(m.Document).where(m.Document.is_deleted.is_(False),
+                  db: Session = Depends(get_db), scoped: CompanyScoped = None,
+                  page: PageParams = Depends(page_params)):
+    return page.apply(db, select(m.Document).where(m.Document.is_deleted.is_(False),
                                                m.Document.company_id == scoped)
-                      .order_by(m.Document.created_at.desc())).all()
+                      .order_by(m.Document.created_at.desc()))
 
 
 @router.get("/documents/{document_id}/download")
@@ -145,10 +146,11 @@ def ai_chat(body: ChatIn, user: User = Depends(require_module("ai")),
         raise HTTPException(403, str(exc)) from exc
 
 
-@router.get("/sessions", response_model=list[SessionOut])
-def list_sessions(user: User = Depends(require_module("ai", "ro")), db: Session = Depends(get_db)):
-    return db.scalars(select(m.ChatSession).where(m.ChatSession.user_id == user.id)
-                      .order_by(m.ChatSession.created_at.desc())).all()
+@router.get("/sessions", response_model=list[SessionOut] | Page[SessionOut])
+def list_sessions(user: User = Depends(require_module("ai", "ro")), db: Session = Depends(get_db),
+                 page: PageParams = Depends(page_params)):
+    return page.apply(db, select(m.ChatSession).where(m.ChatSession.user_id == user.id)
+                      .order_by(m.ChatSession.created_at.desc()))
 
 
 def _own_session(db, session_id: uuid.UUID, user) -> m.ChatSession:
@@ -199,14 +201,15 @@ class SettingsOut(BaseModel):
     autopapply: bool
 
 
-@router.get("/proposals", response_model=list[ProposalOut])
+@router.get("/proposals", response_model=list[ProposalOut] | Page[ProposalOut])
 def list_proposals(status: str | None = None, user: User = Depends(require_module("ai", "ro")),
-                   db: Session = Depends(get_db), scoped: CompanyScoped = None):
+                   db: Session = Depends(get_db), scoped: CompanyScoped = None,
+                   page: PageParams = Depends(page_params)):
     query = select(m.Proposal).where(m.Proposal.company_id == scoped
-                                      ).order_by(m.Proposal.created_at.desc()).limit(100)
+                                      ).order_by(m.Proposal.created_at.desc())
     if status:
         query = query.where(m.Proposal.status == status)
-    return db.scalars(query).all()
+    return page.apply(db, query)
 
 
 @router.post("/proposals/{proposal_id}/approve", response_model=ProposalOut)

@@ -14,11 +14,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, BeforeValidator, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from src.core.auth import CurrentUser, WriteUser, require_module
 from src.core.auth import CompanyScoped
+from src.core.pagination import Page, PageParams, page_params
 from src.core.models import User
 from src.db import get_db
 from src.modules.mgmt_accounting.features.inventory import models as m
@@ -181,7 +182,7 @@ class BalanceOut(BaseModel):
 
 # ---------- НСИ ----------
 
-@router.get("/items", response_model=list[ItemOut])
+@router.get("/items", response_model=list[ItemOut] | Page[ItemOut])
 def list_items(
     user: CurrentUser,
     db: Session = Depends(get_db),
@@ -189,6 +190,7 @@ def list_items(
     is_active: bool | None = None,
     q: str | None = None,
     scoped: CompanyScoped = None,
+    page: PageParams = Depends(page_params),
 ):
     # q — поиск по артикулу/имени (GIN pg_trgm, миграция 0021)
     query = select(m.Item).where(
@@ -199,7 +201,7 @@ def list_items(
         query = query.where(m.Item.is_active == is_active)
     if q:
         query = query.where(or_(m.Item.sku.ilike(f"%{q}%"), m.Item.name.ilike(f"%{q}%")))
-    return db.scalars(query).all()
+    return page.apply(db, query)
 
 
 @router.get("/units", response_model=list[UnitOut])
@@ -255,11 +257,12 @@ def delete_item(item_id: uuid.UUID, user: WriteUser, db: Session = Depends(get_d
     return {"ok": True}
 
 
-@router.get("/locations", response_model=list[LocationOut])
+@router.get("/locations", response_model=list[LocationOut] | Page[LocationOut])
 def list_locations(user: CurrentUser, db: Session = Depends(get_db),
-                   scoped: CompanyScoped = None):
-    return db.scalars(select(m.Location).where(
-        m.Location.company_id == scoped).order_by(m.Location.name)).all()
+                   scoped: CompanyScoped = None,
+                   page: PageParams = Depends(page_params)):
+    return page.apply(db, select(m.Location).where(
+        m.Location.company_id == scoped).order_by(m.Location.name))
 
 
 @router.post("/locations", response_model=LocationOut, status_code=201)
@@ -295,7 +298,7 @@ def void_serial(body: SerialVoidIn, user: User = Depends(require_module("account
     return service.move_payload(move)
 
 
-@router.get("/stock/balances", response_model=list[BalanceOut])
+@router.get("/stock/balances", response_model=list[BalanceOut] | Page[BalanceOut])
 def stock_balances(
     user: CurrentUser,
     db: Session = Depends(get_db),
@@ -303,14 +306,21 @@ def stock_balances(
     location_id: uuid.UUID | None = None,
     item_id: uuid.UUID | None = None,
     scoped: CompanyScoped = None,
+    page: PageParams = Depends(page_params),
 ):
-    return service.stock_balances(
+    rows = service.stock_balances(
         db, on_date=on_date, location_id=location_id, item_id=item_id,
         company_id=scoped,
     )
+    if not page.paginated:
+        return rows
+    total = len(rows)
+    start = page.offset or 0
+    end = start + page.limit if page.limit else None
+    return {"items": rows[start:end], "total": total}
 
 
-@router.get("/stock/moves", response_model=list[MoveOut])
+@router.get("/stock/moves", response_model=list[MoveOut] | Page[MoveOut])
 def stock_moves(
     user: CurrentUser,
     db: Session = Depends(get_db),
@@ -319,12 +329,21 @@ def stock_moves(
     date_from: date | None = None,
     date_to: date | None = None,
     scoped: CompanyScoped = None,
+    page: PageParams = Depends(page_params),
 ):
-    moves = service.stock_moves(
-        db, item_id=item_id, location_id=location_id,
+    query = service.stock_moves_query(
+        item_id=item_id, location_id=location_id,
         date_from=date_from, date_to=date_to, company_id=scoped,
     )
-    return [service.move_payload(move) for move in moves]
+    if page.paginated:
+        total = db.scalar(select(func.count()).select_from(
+            query.order_by(None).subquery())) or 0
+        paged = query.offset(page.offset or 0)
+        if page.limit:
+            paged = paged.limit(page.limit)
+        return {"items": [service.move_payload(mv) for mv in db.scalars(paged).all()],
+                "total": int(total)}
+    return [service.move_payload(mv) for mv in db.scalars(query).all()]
 
 
 @router.post("/stock/transfer", response_model=MoveOut, status_code=201)
