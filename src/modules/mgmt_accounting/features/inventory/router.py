@@ -165,6 +165,12 @@ class MoveOut(BaseModel):
     source_type: str | None
     moved_at: date
     note: str
+    # имена в payload (батч-lookup в _moves_payloads): клиенту не нужен
+    # полный справочник номенклатуры/локаций ради расшифровки id
+    item_sku: str | None = None
+    item_name: str | None = None
+    from_location_name: str | None = None
+    to_location_name: str | None = None
 
 
 class BalanceOut(BaseModel):
@@ -178,6 +184,7 @@ class BalanceOut(BaseModel):
     qty: MoneyStr
     avg_cost: MoneyStr | None
     value: MoneyStr | None
+    low_stock_threshold: MoneyStr | None = None
 
 
 # ---------- НСИ ----------
@@ -320,6 +327,28 @@ def stock_balances(
     return {"items": rows[start:end], "total": total}
 
 
+def _moves_payloads(db: Session, moves: list) -> list[dict]:
+    """move_payload + имена номенклатуры/локаций одним батч-запросом."""
+    item_ids = {mv.item_id for mv in moves}
+    loc_ids = {loc for mv in moves for loc in (mv.from_location_id, mv.to_location_id)}
+    items = {row[0]: (row[1], row[2]) for row in db.execute(
+        select(m.Item.id, m.Item.sku, m.Item.name).where(m.Item.id.in_(item_ids))
+    ).all()} if item_ids else {}
+    locs = {row[0]: row[1] for row in db.execute(
+        select(m.Location.id, m.Location.name).where(m.Location.id.in_(loc_ids))
+    ).all()} if loc_ids else {}
+    out = []
+    for mv in moves:
+        row = service.move_payload(mv)
+        sku, name = items.get(mv.item_id, (None, None))
+        row["item_sku"] = sku
+        row["item_name"] = name
+        row["from_location_name"] = locs.get(mv.from_location_id)
+        row["to_location_name"] = locs.get(mv.to_location_id)
+        out.append(row)
+    return out
+
+
 @router.get("/stock/moves", response_model=list[MoveOut] | Page[MoveOut])
 def stock_moves(
     user: CurrentUser,
@@ -341,9 +370,9 @@ def stock_moves(
         paged = query.offset(page.offset or 0)
         if page.limit:
             paged = paged.limit(page.limit)
-        return {"items": [service.move_payload(mv) for mv in db.scalars(paged).all()],
+        return {"items": _moves_payloads(db, db.scalars(paged).all()),
                 "total": int(total)}
-    return [service.move_payload(mv) for mv in db.scalars(query).all()]
+    return _moves_payloads(db, db.scalars(query).all())
 
 
 @router.post("/stock/transfer", response_model=MoveOut, status_code=201)

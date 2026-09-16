@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from src.core.auth import CurrentUser, WriteUser
 from src.core.auth import CompanyScoped
 from src.db import get_db
+from src.modules.mgmt_accounting import models as acc
 from src.modules.mgmt_accounting.features.purchasing import models as m
 from src.modules.mgmt_accounting.features.purchasing import service
 from src.modules.mgmt_accounting.router import TransactionOut
@@ -81,6 +82,7 @@ class OrderOut(BaseModel):
     note: str
     created_at: datetime
     lines: list[OrderLineOut] = []
+    counterparty_name: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -136,6 +138,8 @@ class ReceiptOut(BaseModel):
     moved_at: date
     created_at: datetime
     lines: list[ReceiptLineOut] = []
+    counterparty_name: str | None = None
+    purchase_order_number: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -157,6 +161,21 @@ class ReasonIn(BaseModel):
 
 
 # ---------- Заказы ----------
+
+def _cp_names(db: Session, ids: set) -> dict:
+    """id контрагента -> имя (батч)."""
+    if not ids:
+        return {}
+    return {row[0]: row[1] for row in db.execute(
+        select(acc.Counterparty.id, acc.Counterparty.name)
+        .where(acc.Counterparty.id.in_(ids))
+    ).all()}
+
+def _orders_with_lines(db: Session, orders: list) -> list[OrderOut]:
+    names = _cp_names(db, {o.counterparty_id for o in orders})
+    return [_order_with_lines(db, o).model_copy(
+        update={"counterparty_name": names.get(o.counterparty_id)}) for o in orders]
+
 
 def _order_with_lines(db: Session, order: m.PurchaseOrder) -> OrderOut:
     lines = db.scalars(
@@ -196,11 +215,9 @@ def list_orders(
         paged = query.offset(page.offset or 0)
         if page.limit:
             paged = paged.limit(page.limit)
-        return {"items": [_order_with_lines(db, o) for o in db.scalars(paged).all()],
+        return {"items": _orders_with_lines(db, db.scalars(paged).all()),
                 "total": int(total)}
-    return [
-        _order_with_lines(db, order) for order in db.scalars(query).all()
-    ]
+    return _orders_with_lines(db, db.scalars(query).all())
 
 
 @router.post("/purchase-orders", response_model=OrderOut, status_code=201)
@@ -257,6 +274,23 @@ def pay_order(order_id: uuid.UUID, body: PayIn, user: WriteUser,
 
 # ---------- Приёмки ----------
 
+def _receipts_with_lines(db: Session, receipts: list) -> list[ReceiptOut]:
+    names = _cp_names(db, {r.counterparty_id for r in receipts})
+    order_ids = {r.purchase_order_id for r in receipts if r.purchase_order_id}
+    numbers = {row[0]: row[1] for row in db.execute(
+        select(m.PurchaseOrder.id, m.PurchaseOrder.number)
+        .where(m.PurchaseOrder.id.in_(order_ids))
+    ).all()} if order_ids else {}
+    out = []
+    for r in receipts:
+        item = _receipt_with_lines(db, r).model_copy(update={
+            "counterparty_name": names.get(r.counterparty_id),
+            "purchase_order_number": numbers.get(r.purchase_order_id),
+        })
+        out.append(item)
+    return out
+
+
 def _receipt_with_lines(db: Session, receipt: m.Receipt) -> ReceiptOut:
     lines = db.scalars(
         select(m.ReceiptLine).where(m.ReceiptLine.receipt_id == receipt.id)
@@ -295,7 +329,7 @@ def list_receipts(
         paged = query.offset(page.offset or 0)
         if page.limit:
             paged = paged.limit(page.limit)
-        return {"items": [_receipt_with_lines(db, r) for r in db.scalars(paged).all()],
+        return {"items": _receipts_with_lines(db, db.scalars(paged).all()),
                 "total": int(total)}
     return [
         _receipt_with_lines(db, receipt) for receipt in db.scalars(query).all()

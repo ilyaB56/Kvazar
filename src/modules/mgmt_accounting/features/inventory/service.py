@@ -270,6 +270,10 @@ def stock_balances(
             "qty": str(quantize4(qty)),
             "avg_cost": str(item.avg_cost) if item.avg_cost is not None else None,
             "value": str(quantize4(qty * item.avg_cost)) if item.avg_cost is not None else None,
+            # порог в payload: клиенту не нужен полный список номенклатуры
+            "low_stock_threshold": (
+                str(item.low_stock_threshold)
+                if item.low_stock_threshold is not None else None),
         })
     return rows
 

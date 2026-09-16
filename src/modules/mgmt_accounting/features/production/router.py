@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from src.core.auth import CurrentUser, WriteUser
 from src.core.auth import CompanyScoped
 from src.db import get_db
+from src.modules.mgmt_accounting.features.inventory import models as inv
 from src.modules.mgmt_accounting.features.production import models as m
 from src.modules.mgmt_accounting.features.production import service
 from src.modules.mgmt_accounting.service import AccountingError
@@ -67,6 +68,9 @@ class TechCardOut(BaseModel):
     components: list[dict]
     is_active: bool
     created_at: datetime
+    # имена в payload: клиенту не нужен полный справочник номенклатуры
+    product_name: str | None = None
+    component_names: dict[str, str] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -93,6 +97,7 @@ class ProductionOrderOut(BaseModel):
     moved_at: date
     note: str
     created_at: datetime
+    tech_card_name: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -102,6 +107,26 @@ class ReasonIn(BaseModel):
 
 
 # ---------- Тех.карты ----------
+
+def _card_payload(db: Session, card) -> dict:
+    """TechCard как dict + имена продукта/компонентов (батч-lookup)."""
+    ids = {card.product_item_id}
+    for component in card.components or []:
+        ids.add(uuid.UUID(str(component["item_id"])))
+    names = {row[0]: row[1] for row in db.execute(
+        select(inv.Item.id, inv.Item.name).where(inv.Item.id.in_(ids))
+    ).all()} if ids else {}
+    return {
+        "id": card.id, "name": card.name,
+        "product_item_id": card.product_item_id,
+        "qty_out": str(card.qty_out),
+        "components": card.components or [],
+        "is_active": card.is_active,
+        "created_at": card.created_at,
+        "product_name": names.get(card.product_item_id),
+        "component_names": {str(k): v for k, v in names.items()},
+    }
+
 
 @router.get("/tech-cards", response_model=list[TechCardOut])
 def list_tech_cards(
@@ -114,7 +139,7 @@ def list_tech_cards(
         m.TechCard.company_id == scoped).order_by(m.TechCard.created_at.desc())
     if is_active is not None:
         query = query.where(m.TechCard.is_active == is_active)
-    return db.scalars(query).all()
+    return [_card_payload(db, card) for card in db.scalars(query).all()]
 
 
 @router.post("/tech-cards", response_model=TechCardOut, status_code=201)
@@ -152,7 +177,19 @@ def list_orders(
         query = query.where(m.ProductionOrder.status == status)
     if tech_card_id is not None:
         query = query.where(m.ProductionOrder.tech_card_id == tech_card_id)
-    return db.scalars(query).all()
+    orders = db.scalars(query).all()
+    card_names = {row[0]: row[1] for row in db.execute(
+        select(m.TechCard.id, m.TechCard.name)
+        .where(m.TechCard.id.in_({o.tech_card_id for o in orders}))
+    ).all()} if orders else {}
+    return [{
+        "id": o.id, "number": o.number, "tech_card_id": o.tech_card_id,
+        "qty_planned": str(o.qty_planned), "status": o.status,
+        "is_stornoed": o.is_stornoed,
+        "material_cost": str(o.material_cost) if o.material_cost is not None else None,
+        "moved_at": o.moved_at, "note": o.note, "created_at": o.created_at,
+        "tech_card_name": card_names.get(o.tech_card_id),
+    } for o in orders]
 
 
 @router.post("/production-orders", response_model=ProductionOrderOut, status_code=201)

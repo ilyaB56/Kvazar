@@ -23,6 +23,7 @@ from src.core.auth import CompanyScoped
 from src.core.models import AuditEvent
 from src.core.versioning import record_version
 from src.db import get_db
+from src.modules.mgmt_accounting import models as acc
 from src.modules.mgmt_accounting.features.sales import models as m
 from src.modules.mgmt_accounting.features.sales import service
 from src.modules.mgmt_accounting.service import AccountingError
@@ -91,6 +92,7 @@ class OrderOut(BaseModel):
     note: str
     created_at: datetime
     lines: list[OrderLineOut] = []
+    counterparty_name: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -143,6 +145,8 @@ class ShipmentOut(BaseModel):
     moved_at: date
     created_at: datetime
     lines: list[ShipmentLineOut] = []
+    sales_order_number: str | None = None
+    counterparty_name: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -163,6 +167,22 @@ class ReasonIn(BaseModel):
 
 
 # ---------- Заказы ----------
+
+def _cp_names(db: Session, ids: set) -> dict:
+    """id контрагента -> имя (батч)."""
+    if not ids:
+        return {}
+    return {row[0]: row[1] for row in db.execute(
+        select(acc.Counterparty.id, acc.Counterparty.name)
+        .where(acc.Counterparty.id.in_(ids))
+    ).all()}
+
+
+def _orders_with_lines(db: Session, orders: list) -> list[OrderOut]:
+    names = _cp_names(db, {o.counterparty_id for o in orders})
+    return [_order_with_lines(db, o).model_copy(
+        update={"counterparty_name": names.get(o.counterparty_id)}) for o in orders]
+
 
 def _order_with_lines(db: Session, order: m.SalesOrder) -> OrderOut:
     lines = db.scalars(
@@ -205,9 +225,9 @@ def list_orders(
         paged = query.offset(page.offset or 0)
         if page.limit:
             paged = paged.limit(page.limit)
-        return {"items": [_order_with_lines(db, o) for o in db.scalars(paged).all()],
+        return {"items": _orders_with_lines(db, db.scalars(paged).all()),
                 "total": int(total)}
-    return [_order_with_lines(db, order) for order in db.scalars(query).all()]
+    return _orders_with_lines(db, db.scalars(query).all())
 
 
 @router.post("/sales-orders", response_model=OrderOut, status_code=201)
@@ -264,6 +284,25 @@ def pay_order(order_id: uuid.UUID, body: PayIn, user: WriteUser,
 
 # ---------- Отгрузки ----------
 
+def _shipments_with_lines(db: Session, shipments: list,
+                           reveal_codes: bool = True) -> list[ShipmentOut]:
+    order_ids = {sh.sales_order_id for sh in shipments}
+    orders = {row[0]: row for row in db.execute(
+        select(m.SalesOrder.id, m.SalesOrder.number, m.SalesOrder.counterparty_id)
+        .where(m.SalesOrder.id.in_(order_ids))
+    ).all()} if order_ids else {}
+    names = _cp_names(db, {o[2] for o in orders.values()})
+    out = []
+    for sh in shipments:
+        order = orders.get(sh.sales_order_id)
+        item = _shipment_with_lines(db, sh, reveal_codes).model_copy(update={
+            "sales_order_number": order[1] if order else None,
+            "counterparty_name": names.get(order[2]) if order else None,
+        })
+        out.append(item)
+    return out
+
+
 def _shipment_with_lines(db: Session, shipment: m.Shipment,
                          reveal_codes: bool = True) -> ShipmentOut:
     """Строки отгрузки: rw получает расшифрованные коды, ro — отпечатки."""
@@ -318,9 +357,9 @@ def list_shipments(
         paged = query.offset(page.offset or 0)
         if page.limit:
             paged = paged.limit(page.limit)
-        return {"items": [_shipment_with_lines(db, s, reveal) for s in db.scalars(paged).all()],
+        return {"items": _shipments_with_lines(db, db.scalars(paged).all(), reveal),
                 "total": int(total)}
-    return [_shipment_with_lines(db, shipment, reveal) for shipment in db.scalars(query).all()]
+    return _shipments_with_lines(db, db.scalars(query).all(), reveal)
 
 
 @router.post("/shipments", response_model=ShipmentOut, status_code=201)
