@@ -3,15 +3,18 @@
 // платформы — список организаций + «Открыть»; экран сам и есть платформенный
 // режим: реестр с созданием организации (админ + временный пароль один раз)
 // и переключением активности. Обычный пользователь сюда не попадает (guard).
-import { onMounted, reactive, ref } from 'vue'
+// Реестр пагинирован (по 50 + infinite scroll) — организаций сотни, полный
+// список подвешивал экран.
+import { reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { Building2, Plus, Power, PowerOff } from 'lucide-vue-next'
 import { get, patch, post } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  Skeleton, useToast,
+  PaginatedList, Skeleton, useToast,
 } from '../components/ui'
+import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 
 interface Org {
@@ -27,18 +30,13 @@ const router = useRouter()
 const auth = useAuthStore()
 const toast = useToast()
 
-const orgs = ref<Org[] | null>(null)
-const opening = ref<string | null>(null)
+const list = ref<{ reload: () => Promise<void> } | null>(null)
 
-async function loadOrgs() {
-  try {
-    orgs.value = await get<Org[]>('/platform/orgs')
-  } catch (error) {
-    toast.apiError(error)
-    orgs.value = []
-  }
+function fetchOrgPage(offset: number, limit: number) {
+  return get<PageOf<Org>>(`/platform/orgs?limit=${limit}&offset=${offset}`)
 }
-onMounted(loadOrgs)
+
+const opening = ref<string | null>(null)
 
 async function openOrg(org: Org) {
   if (opening.value || !org.is_active) return
@@ -58,7 +56,7 @@ async function openOrg(org: Org) {
 async function toggleOrg(org: Org) {
   try {
     await patch(`/platform/orgs/${org.id}`, { is_active: !org.is_active })
-    await loadOrgs()
+    await list.value?.reload()
   } catch (error) {
     toast.apiError(error)
   }
@@ -83,7 +81,7 @@ async function createOrg() {
       admin_email: form.admin_email.trim(), admin_full_name: form.admin_full_name.trim(),
     })
     created.value = response
-    await loadOrgs()
+    await list.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -113,50 +111,52 @@ function closeCreate() {
       </Button>
     </div>
 
-    <Skeleton v-if="orgs === null" class="h-40 w-full" />
-    <Card v-else-if="!orgs.length" class="border-zinc-200 shadow-sm dark:border-zinc-800">
-      <CardContent class="py-10">
-        <EmptyState :title="t('ui.emptyTitle')" :description="t('mt.noOrgs')" />
-      </CardContent>
-    </Card>
-    <div v-else class="space-y-2">
-      <Card
-        v-for="org in orgs" :key="org.id"
-        class="border-zinc-200 shadow-sm transition-colors dark:border-zinc-800"
-        :class="!org.is_active && 'opacity-60'"
-      >
-        <CardContent class="flex flex-wrap items-center gap-3 p-4">
-          <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400">
-            <Building2 class="h-5 w-5" />
-          </span>
-          <div class="min-w-0 flex-1">
-            <p class="flex items-center gap-2 text-sm font-semibold">
-              {{ org.name }}
-              <Badge v-if="!org.is_active" variant="secondary" class="text-[10px]">
-                {{ t('mt.deactivated') }}
-              </Badge>
-            </p>
-            <p class="mt-0.5 text-xs text-muted-foreground">
-              {{ t('mt.usersCount', { n: org.users_count }) }}<span v-if="org.inn"> · ИНН {{ org.inn }}</span>
-            </p>
-          </div>
-          <Button
-            v-if="org.is_active" variant="emerald" size="sm"
-            :disabled="opening === org.id" @click="openOrg(org)"
-          >
-            {{ opening === org.id ? t('mt.opening') : t('mt.open') }}
-          </Button>
-          <Button
-            variant="ghost" size="sm"
-            :title="org.is_active ? t('mt.deactivate') : t('mt.activate')"
-            @click="toggleOrg(org)"
-          >
-            <PowerOff v-if="org.is_active" class="h-4 w-4 text-amber-500" />
-            <Power v-else class="h-4 w-4 text-emerald-500" />
-          </Button>
+    <PaginatedList ref="list" :fetch-page="fetchOrgPage" v-slot="{ items: orgs, loading }">
+      <Skeleton v-if="loading" class="h-40 w-full" />
+      <Card v-else-if="!orgs.length" class="border-zinc-200 shadow-sm dark:border-zinc-800">
+        <CardContent class="py-10">
+          <EmptyState :title="t('ui.emptyTitle')" :description="t('mt.noOrgs')" />
         </CardContent>
       </Card>
-    </div>
+      <div v-else class="space-y-2">
+        <Card
+          v-for="org in orgs" :key="org.id"
+          class="border-zinc-200 shadow-sm transition-colors dark:border-zinc-800"
+          :class="!org.is_active && 'opacity-60'"
+        >
+          <CardContent class="flex flex-wrap items-center gap-3 p-4">
+            <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400">
+              <Building2 class="h-5 w-5" />
+            </span>
+            <div class="min-w-0 flex-1">
+              <p class="flex items-center gap-2 text-sm font-semibold">
+                {{ org.name }}
+                <Badge v-if="!org.is_active" variant="secondary" class="text-[10px]">
+                  {{ t('mt.deactivated') }}
+                </Badge>
+              </p>
+              <p class="mt-0.5 text-xs text-muted-foreground">
+                {{ t('mt.usersCount', { n: org.users_count }) }}<span v-if="org.inn"> · ИНН {{ org.inn }}</span>
+              </p>
+            </div>
+            <Button
+              v-if="org.is_active" variant="emerald" size="sm"
+              :disabled="opening === org.id" @click="openOrg(org)"
+            >
+              {{ opening === org.id ? t('mt.opening') : t('mt.open') }}
+            </Button>
+            <Button
+              variant="ghost" size="sm"
+              :title="org.is_active ? t('mt.deactivate') : t('mt.activate')"
+              @click="toggleOrg(org)"
+            >
+              <PowerOff v-if="org.is_active" class="h-4 w-4 text-amber-500" />
+              <Power v-else class="h-4 w-4 text-emerald-500" />
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    </PaginatedList>
 
     <!-- Создание организации -->
     <Dialog :open="createOpen" :title="created ? t('mt.orgCreatedTitle') : t('mt.createOrg')"

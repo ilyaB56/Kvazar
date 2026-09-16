@@ -1,12 +1,17 @@
 <script setup lang="ts">
 // Синхронизации (этап G — переприход на ui-библиотеку): задания, запуск
 // вручную, журнал прогонов выбранного задания с автоповтором после запуска.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+// Оба списка пагинированы (PaginatedList по 50); журнал прогонов
+// сбрасывается при смене задания через reset-key.
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Play, RefreshCw } from 'lucide-vue-next'
 import { get, post } from '../api/client'
 import type { SyncJob, SyncRun } from '../api/types'
-import { Badge, Button, Card, CardContent, EmptyState, Skeleton, useToast } from '../components/ui'
+import {
+  Badge, Button, Card, CardContent, EmptyState, Input, PaginatedList, Skeleton, useToast,
+} from '../components/ui'
+import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 
 const { t, d } = useI18n()
@@ -14,51 +19,50 @@ const auth = useAuthStore()
 const toast = useToast()
 const canWrite = computed(() => auth.moduleLevel('integrations') === 'rw')
 
-const loading = ref(true)
-const jobs = ref<SyncJob[]>([])
 const jobSearch = ref('')
-const filteredJobs = computed(() => {
+function filterJobs(rows: SyncJob[]): SyncJob[] {
   const q = jobSearch.value.trim().toLowerCase()
-  return q ? jobs.value.filter((j) => j.name.toLowerCase().includes(q) || (j.endpoint || '').toLowerCase().includes(q)) : jobs.value
-})
-const selected = ref<SyncJob | null>(null)
-const runs = ref<SyncRun[]>([])
-const runsLoading = ref(false)
-const running = ref<Record<string, boolean>>({})
-
-// автоповтор журнала: раз в 5 с в течение 30 с после «Запустить сейчас»
-let autoTimer: number | null = null
-let autoAttempts = 0
-
-async function loadJobs() {
-  jobs.value = await get<SyncJob[]>('/integrations/sync-jobs')
-  if (!selected.value && jobs.value.length) {
-    selectJob(jobs.value[0])
-  }
+  return q ? rows.filter((j) => j.name.toLowerCase().includes(q) || (j.endpoint || '').toLowerCase().includes(q)) : rows
 }
 
-async function loadRuns() {
-  if (!selected.value) return
-  runsLoading.value = true
-  try {
-    runs.value = await get<SyncRun[]>(`/integrations/sync-runs?sync_job_id=${selected.value.id}`)
-  } finally {
-    runsLoading.value = false
+const selected = ref<SyncJob | null>(null)
+const running = ref<Record<string, boolean>>({})
+
+// ----- Задания (пагинировано) -----
+const jobsList = ref<{ reload: () => Promise<void> } | null>(null)
+
+// как и раньше, первое задание выбирается автоматически
+async function fetchJobsPage(offset: number, limit: number) {
+  const page = await get<PageOf<SyncJob>>(`/integrations/sync-jobs?limit=${limit}&offset=${offset}`)
+  if (offset === 0 && !selected.value && page.items.length) {
+    selected.value = page.items[0]
   }
+  return page
+}
+
+// ----- Прогоны выбранного задания (пагинировано, reset-key = задание) -----
+const runsList = ref<{ reload: () => Promise<void> } | null>(null)
+
+function fetchRunsPage(offset: number, limit: number) {
+  if (!selected.value) return Promise.resolve({ items: [], total: 0 } as PageOf<SyncRun>)
+  return get<PageOf<SyncRun>>(
+    `/integrations/sync-runs?sync_job_id=${selected.value.id}&limit=${limit}&offset=${offset}`)
 }
 
 function selectJob(job: SyncJob) {
   selected.value = job
-  runs.value = []
-  void loadRuns()
 }
+
+// автоповтор журнала: раз в 5 с в течение 30 с после «Запустить сейчас»
+let autoTimer: number | null = null
+let autoAttempts = 0
 
 function scheduleRunsAutoRefresh() {
   stopAutoRefresh()
   autoAttempts = 0
   autoTimer = window.setInterval(() => {
     autoAttempts += 1
-    void loadRuns()
+    void runsList.value?.reload()
     if (autoAttempts >= 6) stopAutoRefresh()
   }, 5000)
 }
@@ -83,18 +87,12 @@ async function runNow(job: SyncJob) {
   }
 }
 
-onMounted(async () => {
-  try {
-    await loadJobs()
-  } finally {
-    loading.value = false
-  }
-})
 onBeforeUnmount(stopAutoRefresh)
 </script>
 
 <template>
   <div class="space-y-4">
+  <PaginatedList ref="jobsList" :fetch-page="fetchJobsPage" v-slot="{ items: jobRows, loading }">
     <div class="flex items-center justify-between gap-3 flex-wrap">
         <p class="text-base font-semibold min-w-0 truncate">{{ t('sync.title') }}</p>
         <Input v-model="jobSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px] shrink-0" />
@@ -106,7 +104,7 @@ onBeforeUnmount(stopAutoRefresh)
           <Skeleton class="h-10 w-full" />
           <Skeleton class="h-10 w-full" />
         </div>
-        <div v-else-if="jobs.length === 0" class="p-6">
+        <div v-else-if="jobRows.length === 0" class="p-6">
           <EmptyState :title="t('ui.emptyTitle')" :description="t('sync.empty')" />
         </div>
         <div v-else class="overflow-x-auto">
@@ -123,7 +121,7 @@ onBeforeUnmount(stopAutoRefresh)
             </thead>
             <tbody>
               <tr
-                v-for="job in jobs" :key="job.id"
+                v-for="job in filterJobs(jobRows)" :key="job.id"
                 class="cursor-pointer border-t border-zinc-100 transition-colors hover:bg-zinc-50/60 dark:border-zinc-800/70 dark:hover:bg-zinc-800/40"
                 :class="selected?.id === job.id && 'bg-emerald-50/50 dark:bg-emerald-950/20'"
                 @click="selectJob(job)"
@@ -151,52 +149,58 @@ onBeforeUnmount(stopAutoRefresh)
         </div>
       </CardContent>
     </Card>
+  </PaginatedList>
 
-    <Card v-if="selected" class="border-zinc-200 shadow-sm dark:border-zinc-800">
-      <CardContent class="p-0">
-        <div class="flex items-center justify-between px-4 py-3">
-          <p class="text-sm font-semibold">
-            {{ t('sync.runs') }} — {{ selected.name }}
-            <span class="ml-1 text-xs font-normal text-muted-foreground">{{ selected.endpoint }}</span>
-          </p>
-          <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('sync.refresh')" @click="loadRuns">
-            <RefreshCw :class="['h-3.5 w-3.5', runsLoading && 'animate-spin']" />
-          </Button>
-        </div>
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                <th class="px-3 py-2 font-medium">{{ t('sync.status') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('sync.itemsIn') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('sync.itemsOut') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('sync.error') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('sync.time') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="run in runs" :key="run.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
-                <td class="px-3 py-2">
-                  <Badge :class="run.status === 'success'
-                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
-                    : 'bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300'">
-                    {{ run.status === 'success' ? t('sync.statusSuccess') : t('sync.statusError') }}
-                  </Badge>
-                </td>
-                <td class="px-3 py-2">{{ run.items_in }}</td>
-                <td class="px-3 py-2">{{ run.items_out }}</td>
-                <td class="max-w-[280px] px-3 py-2 text-xs text-red-600 dark:text-red-400">
-                  <span class="break-all">{{ run.error || '—' }}</span>
-                </td>
-                <td class="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">{{ d(run.started_at, 'short') }}</td>
-              </tr>
-              <tr v-if="runs.length === 0">
-                <td colspan="5" class="px-3 py-6 text-center text-sm text-muted-foreground">{{ t('sync.runsEmpty') }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </CardContent>
-    </Card>
+    <PaginatedList
+      v-if="selected" ref="runsList" :fetch-page="fetchRunsPage" :reset-key="selected.id"
+      v-slot="{ items: runRows, loading: runsLoading }"
+    >
+      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+        <CardContent class="p-0">
+          <div class="flex items-center justify-between px-4 py-3">
+            <p class="text-sm font-semibold">
+              {{ t('sync.runs') }} — {{ selected.name }}
+              <span class="ml-1 text-xs font-normal text-muted-foreground">{{ selected.endpoint }}</span>
+            </p>
+            <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('sync.refresh')" @click="runsList?.reload()">
+              <RefreshCw :class="['h-3.5 w-3.5', runsLoading && 'animate-spin']" />
+            </Button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                  <th class="px-3 py-2 font-medium">{{ t('sync.status') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('sync.itemsIn') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('sync.itemsOut') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('sync.error') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('sync.time') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="run in runRows" :key="run.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                  <td class="px-3 py-2">
+                    <Badge :class="run.status === 'success'
+                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
+                      : 'bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300'">
+                      {{ run.status === 'success' ? t('sync.statusSuccess') : t('sync.statusError') }}
+                    </Badge>
+                  </td>
+                  <td class="px-3 py-2">{{ run.items_in }}</td>
+                  <td class="px-3 py-2">{{ run.items_out }}</td>
+                  <td class="max-w-[280px] px-3 py-2 text-xs text-red-600 dark:text-red-400">
+                    <span class="break-all">{{ run.error || '—' }}</span>
+                  </td>
+                  <td class="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">{{ d(run.started_at, 'short') }}</td>
+                </tr>
+                <tr v-if="runRows.length === 0">
+                  <td colspan="5" class="px-3 py-6 text-center text-sm text-muted-foreground">{{ t('sync.runsEmpty') }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </PaginatedList>
   </div>
 </template>

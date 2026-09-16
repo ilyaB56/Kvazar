@@ -2,6 +2,8 @@
 // Подключения и вебхуки (этап G — переприход со старого Element Plus экрана
 // на собственную ui-библиотеку; функциональность прежняя: реестр, проверка
 // связи, создание по config_schema, вебхуки с одноразовым токеном).
+// Списки подключений/вебхуков пагинированы (PaginatedList, по 50 + infinite
+// scroll); поиск — локальный по загруженным строкам.
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Copy, Link2, Plus } from 'lucide-vue-next'
@@ -9,39 +11,39 @@ import { get, post } from '../api/client'
 import type { Connection, ConnectorType, TestResult, Webhook, WebhookCreated } from '../api/types'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  Select, Skeleton, Tabs, useToast,
+  PaginatedList, Select, Skeleton, Tabs, useToast,
 } from '../components/ui'
+import type { PageOf } from '../components/ui'
 
 const { t, d } = useI18n()
 const toast = useToast()
 
 const tab = ref('connections')
-const loading = ref(true)
-// локальный поиск по справочникам (гейт 1.1a)
+// локальный поиск по загруженным строкам (гейт 1.1a); списки пагинированы
 const connSearch = ref('')
 const hookSearch = ref('')
-const filteredConnections = computed(() => {
+function filterConnections(rows: Connection[]): Connection[] {
   const q = connSearch.value.trim().toLowerCase()
   return q
-    ? connections.value.filter((c) => c.name.toLowerCase().includes(q) || c.connector_code.toLowerCase().includes(q))
-    : connections.value
-})
-const filteredWebhooks = computed(() => {
+    ? rows.filter((c) => c.name.toLowerCase().includes(q) || c.connector_code.toLowerCase().includes(q))
+    : rows
+}
+function filterWebhooks(rows: Webhook[]): Webhook[] {
   const q = hookSearch.value.trim().toLowerCase()
   return q
-    ? webhooks.value.filter((w) => w.name.toLowerCase().includes(q) || fullUrl(w).toLowerCase().includes(q))
-    : webhooks.value
-})
+    ? rows.filter((w) => w.name.toLowerCase().includes(q) || fullUrl(w).toLowerCase().includes(q))
+    : rows
+}
 
 // ----- Подключения -----
-const connections = ref<Connection[]>([])
+const connectionsList = ref<{ reload: () => Promise<void> } | null>(null)
 const connectors = ref<ConnectorType[]>([])
 const connectorNames = computed(() =>
   Object.fromEntries(connectors.value.map((c) => [c.code, c.display_name])))
 const testing = ref<Record<string, boolean>>({})
 
-async function loadConnections() {
-  connections.value = await get<Connection[]>('/integrations/connections')
+function fetchConnectionsPage(offset: number, limit: number) {
+  return get<PageOf<Connection>>(`/integrations/connections?limit=${limit}&offset=${offset}`)
 }
 
 async function testConnection(row: Connection) {
@@ -50,7 +52,7 @@ async function testConnection(row: Connection) {
     const result = await post<TestResult>(`/integrations/connections/${row.id}/test`)
     if (result.ok) toast.success(t('connections.testOk'))
     else toast.error(`${t('connections.testFailed')}: ${result.error}`)
-    await loadConnections()
+    await connectionsList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -94,7 +96,7 @@ async function createConnection() {
     })
     toast.success(t('connections.created'))
     dialogVisible.value = false
-    await loadConnections()
+    await connectionsList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -103,13 +105,13 @@ async function createConnection() {
 }
 
 // ----- Webhooks -----
-const webhooks = ref<Webhook[]>([])
+const webhooksList = ref<{ reload: () => Promise<void> } | null>(null)
 const webhookName = ref('')
 const creatingWebhook = ref(false)
 const createdWebhook = ref<WebhookCreated | null>(null)
 
-async function loadWebhooks() {
-  webhooks.value = await get<Webhook[]>('/integrations/webhooks')
+function fetchWebhooksPage(offset: number, limit: number) {
+  return get<PageOf<Webhook>>(`/integrations/webhooks?limit=${limit}&offset=${offset}`)
 }
 
 function fullUrl(hook: Webhook | WebhookCreated): string {
@@ -137,7 +139,7 @@ async function createWebhook() {
       name: webhookName.value.trim(),
     })
     webhookName.value = ''
-    await loadWebhooks()
+    await webhooksList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -147,13 +149,9 @@ async function createWebhook() {
 
 onMounted(async () => {
   try {
-    await Promise.all([
-      loadConnections(),
-      get<ConnectorType[]>('/integrations/connectors').then((data) => { connectors.value = data }),
-      loadWebhooks(),
-    ])
-  } finally {
-    loading.value = false
+    connectors.value = await get<ConnectorType[]>('/integrations/connectors')
+  } catch (error) {
+    toast.apiError(error)
   }
 })
 </script>
@@ -171,117 +169,121 @@ onMounted(async () => {
 
     <!-- Подключения -->
     <div v-if="tab === 'connections'" class="space-y-4">
-      <div class="flex items-center justify-between gap-3 flex-wrap">
-        <p class="text-base font-semibold min-w-0 truncate">{{ t('connections.title') }}</p>
-        <Input v-model="connSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px] shrink-0" />
-        <Button variant="emerald" size="sm" class="gap-1.5" @click="dialogVisible = true">
-          <Plus class="h-4 w-4" /> {{ t('connections.create') }}
-        </Button>
-      </div>
-      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
-        <CardContent class="p-0">
-          <div v-if="loading" class="space-y-2 p-4">
-            <Skeleton class="h-10 w-full" />
-            <Skeleton class="h-10 w-full" />
-          </div>
-          <div v-else-if="connections.length === 0" class="p-6">
-            <EmptyState :title="t('ui.emptyTitle')" :description="t('connections.empty')" />
-          </div>
-          <div v-else class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <thead>
-                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                  <th class="px-3 py-2 font-medium">{{ t('connections.name') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('connections.type') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('connections.status') }}</th>
-                  <th class="hidden px-3 py-2 font-medium sm:table-cell">{{ t('connections.active') }}</th>
-                  <th class="px-3 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in filteredConnections" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
-                  <td class="px-3 py-2 font-medium">{{ row.name }}</td>
-                  <td class="px-3 py-2 text-muted-foreground">{{ connectorNames[row.connector_code] ?? row.connector_code }}</td>
-                  <td class="px-3 py-2">
-                    <Badge v-if="row.last_check_ok === true" class="bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
-                      {{ t('connections.statusOk') }}
-                    </Badge>
-                    <Badge v-else-if="row.last_check_ok === false" class="bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300">
-                      {{ t('connections.statusError') }}
-                    </Badge>
-                    <span v-else class="text-muted-foreground">{{ t('connections.statusUnknown') }}</span>
-                  </td>
-                  <td class="hidden px-3 py-2 text-muted-foreground sm:table-cell">
-                    {{ row.is_active ? t('connections.yes') : t('connections.no') }}
-                  </td>
-                  <td class="px-3 py-2 text-right">
-                    <Button
-                      variant="outline" size="sm" :disabled="testing[row.id]"
-                      @click="testConnection(row)"
-                    >
-                      {{ testing[row.id] ? t('connections.testing') : t('connections.test') }}
-                    </Button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      <PaginatedList ref="connectionsList" :fetch-page="fetchConnectionsPage" v-slot="{ items: connRows, loading }">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <p class="text-base font-semibold min-w-0 truncate">{{ t('connections.title') }}</p>
+          <Input v-model="connSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px] shrink-0" />
+          <Button variant="emerald" size="sm" class="gap-1.5" @click="dialogVisible = true">
+            <Plus class="h-4 w-4" /> {{ t('connections.create') }}
+          </Button>
+        </div>
+        <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+          <CardContent class="p-0">
+            <div v-if="loading" class="space-y-2 p-4">
+              <Skeleton class="h-10 w-full" />
+              <Skeleton class="h-10 w-full" />
+            </div>
+            <div v-else-if="connRows.length === 0" class="p-6">
+              <EmptyState :title="t('ui.emptyTitle')" :description="t('connections.empty')" />
+            </div>
+            <div v-else class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                    <th class="px-3 py-2 font-medium">{{ t('connections.name') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('connections.type') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('connections.status') }}</th>
+                    <th class="hidden px-3 py-2 font-medium sm:table-cell">{{ t('connections.active') }}</th>
+                    <th class="px-3 py-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in filterConnections(connRows)" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                    <td class="px-3 py-2 font-medium">{{ row.name }}</td>
+                    <td class="px-3 py-2 text-muted-foreground">{{ connectorNames[row.connector_code] ?? row.connector_code }}</td>
+                    <td class="px-3 py-2">
+                      <Badge v-if="row.last_check_ok === true" class="bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
+                        {{ t('connections.statusOk') }}
+                      </Badge>
+                      <Badge v-else-if="row.last_check_ok === false" class="bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300">
+                        {{ t('connections.statusError') }}
+                      </Badge>
+                      <span v-else class="text-muted-foreground">{{ t('connections.statusUnknown') }}</span>
+                    </td>
+                    <td class="hidden px-3 py-2 text-muted-foreground sm:table-cell">
+                      {{ row.is_active ? t('connections.yes') : t('connections.no') }}
+                    </td>
+                    <td class="px-3 py-2 text-right">
+                      <Button
+                        variant="outline" size="sm" :disabled="testing[row.id]"
+                        @click="testConnection(row)"
+                      >
+                        {{ testing[row.id] ? t('connections.testing') : t('connections.test') }}
+                      </Button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      </PaginatedList>
     </div>
 
     <!-- Вебхуки -->
     <div v-else class="space-y-4">
-      <div class="flex items-center justify-between gap-3 flex-wrap">
-        <p class="text-base font-semibold min-w-0 truncate">{{ t('connections.webhooks') }}</p>
-        <Input v-model="hookSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px] shrink-0" />
-      </div>
-      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
-        <CardContent class="flex flex-col gap-2 p-4 sm:flex-row">
-          <Input
-            v-model="webhookName" :placeholder="t('connections.webhookName')"
-            class="flex-1" @keyup.enter="createWebhook"
-          />
-          <Button variant="emerald" size="sm" :disabled="creatingWebhook" @click="createWebhook">
-            {{ t('connections.createWebhook') }}
-          </Button>
-        </CardContent>
-      </Card>
-      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
-        <CardContent class="p-0">
-          <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
-          <div v-else-if="webhooks.length === 0" class="p-6">
-            <EmptyState :title="t('ui.emptyTitle')" :description="t('connections.empty')" />
-          </div>
-          <div v-else class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <thead>
-                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                  <th class="px-3 py-2 font-medium">{{ t('connections.webhookName') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('connections.url') }}</th>
-                  <th class="px-3 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in filteredWebhooks" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
-                  <td class="px-3 py-2 font-medium">{{ row.name }}</td>
-                  <td class="max-w-[340px] px-3 py-2 font-mono text-xs text-muted-foreground">{{ fullUrl(row) }}</td>
-                  <td class="px-3 py-2 text-right">
-                    <div class="flex justify-end gap-1">
-                      <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('connections.copyUrl')" @click="copyToClipboard(fullUrl(row))">
-                        <Copy class="h-3.5 w-3.5" />
-                      </Button>
-                      <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('connections.tokenOnce')" @click="toast.success(t('connections.tokenHintTitle'), t('connections.tokenHint'))">
-                        <Link2 class="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      <PaginatedList ref="webhooksList" :fetch-page="fetchWebhooksPage" v-slot="{ items: hookRows, loading }">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <p class="text-base font-semibold min-w-0 truncate">{{ t('connections.webhooks') }}</p>
+          <Input v-model="hookSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px] shrink-0" />
+        </div>
+        <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+          <CardContent class="flex flex-col gap-2 p-4 sm:flex-row">
+            <Input
+              v-model="webhookName" :placeholder="t('connections.webhookName')"
+              class="flex-1" @keyup.enter="createWebhook"
+            />
+            <Button variant="emerald" size="sm" :disabled="creatingWebhook" @click="createWebhook">
+              {{ t('connections.createWebhook') }}
+            </Button>
+          </CardContent>
+        </Card>
+        <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+          <CardContent class="p-0">
+            <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
+            <div v-else-if="hookRows.length === 0" class="p-6">
+              <EmptyState :title="t('ui.emptyTitle')" :description="t('connections.empty')" />
+            </div>
+            <div v-else class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                    <th class="px-3 py-2 font-medium">{{ t('connections.webhookName') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('connections.url') }}</th>
+                    <th class="px-3 py-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in filterWebhooks(hookRows)" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                    <td class="px-3 py-2 font-medium">{{ row.name }}</td>
+                    <td class="max-w-[340px] px-3 py-2 font-mono text-xs text-muted-foreground">{{ fullUrl(row) }}</td>
+                    <td class="px-3 py-2 text-right">
+                      <div class="flex justify-end gap-1">
+                        <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('connections.copyUrl')" @click="copyToClipboard(fullUrl(row))">
+                          <Copy class="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('connections.tokenOnce')" @click="toast.success(t('connections.tokenHintTitle'), t('connections.tokenHint'))">
+                          <Link2 class="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      </PaginatedList>
     </div>
 
     <!-- Диалог создания подключения -->

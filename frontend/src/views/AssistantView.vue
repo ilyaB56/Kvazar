@@ -2,14 +2,17 @@
 // ИИ-ассистент (этап G — новый дизайн на ui-библиотеке): чаты с сессиями
 // и источниками RAG, документы (загрузка/удаление), предложения с
 // подтвердить/отклонить и автоприменением. Функциональность прежняя.
+// Списки сессий/документов/предложений пагинированы (PaginatedList, по 50);
+// сообщения чата грузятся целиком по открытой сессии.
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Bot, Check, Download, FileText, Plus, Send, Trash2, Upload, X } from 'lucide-vue-next'
 import { del, get, post, put } from '../api/client'
 import {
-  Badge, Button, Card, CardContent, EmptyState, Input, Skeleton, Switch,
+  Badge, Button, Card, CardContent, EmptyState, Input, PaginatedList, Skeleton, Switch,
   Tabs, useToast,
 } from '../components/ui'
+import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 
 const { t, d } = useI18n()
@@ -24,23 +27,17 @@ interface Session { id: string; title: string; created_at: string }
 interface Source { document_id: string; document_name: string; text: string }
 interface Message { role: string; content: string; meta?: { sources?: Source[] } }
 
-const sessions = ref<Session[]>([])
+const sessionsList = ref<{ reload: () => Promise<void> } | null>(null)
 const activeId = ref<string | null>(null)
 const messages = ref<Message[]>([])
 const input = ref('')
 const sending = ref(false)
 // ответ ещё может прийти поллингом после обрыва запроса (медленная LLM)
 const polling = ref(false)
-const loadingSessions = ref(true)
 const bottom = ref<HTMLElement>()
 
-async function loadSessions() {
-  loadingSessions.value = true
-  try {
-    sessions.value = await get<Session[]>('/ai/sessions')
-  } finally {
-    loadingSessions.value = false
-  }
+function fetchSessionsPage(offset: number, limit: number) {
+  return get<PageOf<Session>>(`/ai/sessions?limit=${limit}&offset=${offset}`)
 }
 
 async function openSession(id: string) {
@@ -65,7 +62,7 @@ async function sendMessage() {
       content: result.answer,
       meta: { sources: result.sources },
     })
-    await loadSessions()
+    await sessionsList.value?.reload()
   } catch (error) {
     toast.apiError(error)
     // Генерация на локальной LLM идёт минуты: прокси/сеть могли оборвать
@@ -91,7 +88,7 @@ async function pollForAnswer() {
         const fresh = await get<Message[]>(`/ai/sessions/${sessionId}`)
         if (fresh.length > known) {
           messages.value = fresh
-          await loadSessions()
+          await sessionsList.value?.reload()
           return
         }
       } catch { /* сеть моргнула — попробуем на следующей итерации */ }
@@ -108,7 +105,7 @@ async function removeSession(id: string) {
       activeId.value = null
       messages.value = []
     }
-    await loadSessions()
+    await sessionsList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   }
@@ -125,16 +122,12 @@ function scrollToBottom(behavior: ScrollBehavior = 'smooth') {
 
 // ---------- Документы ----------
 interface Document { id: string; name: string; created_at: string }
-const documents = ref<Document[]>([])
+const documentsList = ref<{ reload: () => Promise<void> } | null>(null)
 const uploading = ref(false)
 const fileInput = ref<HTMLInputElement>()
 
-async function loadDocuments() {
-  try {
-    documents.value = await get<Document[]>('/ai/documents')
-  } catch {
-    documents.value = []
-  }
+function fetchDocumentsPage(offset: number, limit: number) {
+  return get<PageOf<Document>>(`/ai/documents?limit=${limit}&offset=${offset}`)
 }
 
 async function downloadSource(documentId: string) {
@@ -175,7 +168,7 @@ async function uploadFile(event: Event) {
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     toast.success(t('ai.uploaded'))
-    await loadDocuments()
+    await documentsList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -187,7 +180,7 @@ async function uploadFile(event: Event) {
 async function removeDocument(id: string) {
   try {
     await del(`/ai/documents/${id}`)
-    await loadDocuments()
+    await documentsList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   }
@@ -203,16 +196,12 @@ interface Proposal {
   result: Record<string, unknown>
   created_at: string
 }
-const proposals = ref<Proposal[]>([])
+const proposalsList = ref<{ reload: () => Promise<void> } | null>(null)
 const autopapply = ref(false)
 const deciding = ref<Record<string, boolean>>({})
 
-async function loadProposals() {
-  try {
-    proposals.value = await get<Proposal[]>('/ai/proposals')
-  } catch {
-    proposals.value = []
-  }
+function fetchProposalsPage(offset: number, limit: number) {
+  return get<PageOf<Proposal>>(`/ai/proposals?limit=${limit}&offset=${offset}`)
 }
 
 async function loadSettings() {
@@ -236,7 +225,7 @@ async function decide(row: Proposal, action: 'approve' | 'reject') {
   try {
     await post(`/ai/proposals/${row.id}/${action}`)
     toast.success(action === 'approve' ? t('ai.approved') : t('ai.rejected'))
-    await loadProposals()
+    await proposalsList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -255,9 +244,6 @@ function proposalTone(status: string): string {
 }
 
 onMounted(() => {
-  void loadSessions()
-  void loadDocuments()
-  void loadProposals()
   void loadSettings()
 })
 </script>
@@ -282,28 +268,33 @@ onMounted(() => {
           <Button v-if="canWrite" variant="outline" size="sm" class="mb-2 w-full shrink-0 gap-1.5" @click="newSession">
             <Plus class="h-3.5 w-3.5" /> {{ t('ai.newSession') }}
           </Button>
-          <div v-if="loadingSessions" class="space-y-2">
-            <Skeleton class="h-8 w-full" />
-            <Skeleton class="h-8 w-full" />
-          </div>
-          <ul v-else class="erp-scroll min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-0.5">
-            <li
-              v-for="session in sessions" :key="session.id"
-              class="group flex cursor-pointer items-center justify-between gap-1 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-accent"
-              :class="session.id === activeId && 'bg-emerald-50/70 text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300'"
-              @click="openSession(session.id)"
-            >
-              <span class="min-w-0 flex-1 truncate">{{ session.title || t('ai.untitled') }}</span>
-              <button
-                v-if="canWrite" type="button"
-                class="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-red-500"
-                :title="t('ai.deleteSession')" @click.stop="removeSession(session.id)"
+          <PaginatedList
+            ref="sessionsList" :fetch-page="fetchSessionsPage"
+            class="flex min-h-0 flex-1 flex-col" v-slot="{ items: sessionRows, loading: sessionsLoading }"
+          >
+            <div v-if="sessionsLoading" class="space-y-2">
+              <Skeleton class="h-8 w-full" />
+              <Skeleton class="h-8 w-full" />
+            </div>
+            <ul v-else class="erp-scroll min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-0.5">
+              <li
+                v-for="session in sessionRows" :key="session.id"
+                class="group flex cursor-pointer items-center justify-between gap-1 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-accent"
+                :class="session.id === activeId && 'bg-emerald-50/70 text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300'"
+                @click="openSession(session.id)"
               >
-                <Trash2 class="h-3.5 w-3.5" />
-              </button>
-            </li>
-            <li v-if="!sessions.length" class="px-2 py-1 text-xs text-muted-foreground">{{ t('ai.noSessions') }}</li>
-          </ul>
+                <span class="min-w-0 flex-1 truncate">{{ session.title || t('ai.untitled') }}</span>
+                <button
+                  v-if="canWrite" type="button"
+                  class="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-red-500"
+                  :title="t('ai.deleteSession')" @click.stop="removeSession(session.id)"
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                </button>
+              </li>
+              <li v-if="!sessionRows.length" class="px-2 py-1 text-xs text-muted-foreground">{{ t('ai.noSessions') }}</li>
+            </ul>
+          </PaginatedList>
         </CardContent>
       </Card>
 
@@ -376,42 +367,48 @@ onMounted(() => {
     <!-- Документы -->
     <Card v-else-if="tab === 'documents'" class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
-        <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3">
-          <p class="text-sm font-semibold min-w-0 truncate">{{ t('ai.documents') }}</p>
-          <div v-if="canWrite">
-            <input ref="fileInput" type="file" class="hidden shrink-0" @change="uploadFile">
-            <Button variant="emerald" size="sm" class="gap-1.5" :disabled="uploading" @click="pickFile">
-              <Upload class="h-3.5 w-3.5" /> {{ uploading ? t('ai.uploading') : t('ai.upload') }}
-            </Button>
+        <PaginatedList
+          ref="documentsList" :fetch-page="fetchDocumentsPage"
+          v-slot="{ items: documentRows, loading: documentsLoading }"
+        >
+          <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3">
+            <p class="text-sm font-semibold min-w-0 truncate">{{ t('ai.documents') }}</p>
+            <div v-if="canWrite">
+              <input ref="fileInput" type="file" class="hidden shrink-0" @change="uploadFile">
+              <Button variant="emerald" size="sm" class="gap-1.5" :disabled="uploading" @click="pickFile">
+                <Upload class="h-3.5 w-3.5" /> {{ uploading ? t('ai.uploading') : t('ai.upload') }}
+              </Button>
+            </div>
           </div>
-        </div>
-        <div v-if="documents.length === 0" class="p-6">
-          <EmptyState :title="t('ui.emptyTitle')" :description="t('ai.noDocuments')" />
-        </div>
-        <div v-else class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                <th class="px-3 py-2 font-medium">{{ t('ai.documentName') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('ai.documentDate') }}</th>
-                <th v-if="canWrite" class="px-3 py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="doc in documents" :key="doc.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
-                <td class="px-3 py-2 font-medium">
-                  <span class="flex items-center gap-2"><FileText class="h-3.5 w-3.5 text-muted-foreground" /> {{ doc.name }}</span>
-                </td>
-                <td class="px-3 py-2 text-xs text-muted-foreground">{{ d(doc.created_at, 'short') }}</td>
-                <td v-if="canWrite" class="px-3 py-2 text-right">
-                  <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('ai.deleteDocument')" @click="removeDocument(doc.id)">
-                    <Trash2 class="h-3.5 w-3.5 text-red-500" />
-                  </Button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+          <div v-if="documentsLoading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
+          <div v-else-if="documentRows.length === 0" class="p-6">
+            <EmptyState :title="t('ui.emptyTitle')" :description="t('ai.noDocuments')" />
+          </div>
+          <div v-else class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                  <th class="px-3 py-2 font-medium">{{ t('ai.documentName') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('ai.documentDate') }}</th>
+                  <th v-if="canWrite" class="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="doc in documentRows" :key="doc.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                  <td class="px-3 py-2 font-medium">
+                    <span class="flex items-center gap-2"><FileText class="h-3.5 w-3.5 text-muted-foreground" /> {{ doc.name }}</span>
+                  </td>
+                  <td class="px-3 py-2 text-xs text-muted-foreground">{{ d(doc.created_at, 'short') }}</td>
+                  <td v-if="canWrite" class="px-3 py-2 text-right">
+                    <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('ai.deleteDocument')" @click="removeDocument(doc.id)">
+                      <Trash2 class="h-3.5 w-3.5 text-red-500" />
+                    </Button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </PaginatedList>
       </CardContent>
     </Card>
 
@@ -426,57 +423,63 @@ onMounted(() => {
               <p class="text-xs text-muted-foreground">{{ t('ai.autopapplyHint') }}</p>
             </div>
           </div>
-          <Button variant="ghost" size="sm" @click="loadProposals">{{ t('sync.refresh') }}</Button>
+          <Button variant="ghost" size="sm" @click="proposalsList?.reload()">{{ t('sync.refresh') }}</Button>
         </CardContent>
       </Card>
-      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
-        <CardContent class="p-0">
-          <div v-if="proposals.length === 0" class="p-6">
-            <EmptyState :title="t('ui.emptyTitle')" :description="t('ai.noProposals')" />
-          </div>
-          <div v-else class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <thead>
-                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                  <th class="px-3 py-2 font-medium">{{ t('ai.proposalType') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('ai.proposalPayload') }}</th>
-                  <th class="hidden px-3 py-2 font-medium md:table-cell">{{ t('ai.proposalReason') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('ai.proposalStatus') }}</th>
-                  <th v-if="canWrite" class="px-3 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in proposals" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
-                  <td class="whitespace-nowrap px-3 py-2 font-medium">{{ t(`ai.action.${row.action_type}`) }}</td>
-                  <td class="max-w-[260px] px-3 py-2 text-xs text-muted-foreground">
-                    {{ row.payload.kind }} · {{ row.payload.amount }} {{ row.payload.currency }} · {{ row.payload.description }}
-                  </td>
-                  <td class="hidden max-w-[200px] truncate px-3 py-2 text-xs text-muted-foreground md:table-cell">{{ row.reason }}</td>
-                  <td class="px-3 py-2">
-                    <Badge :class="proposalTone(row.status)">{{ t(`ai.status.${row.status}`) }}</Badge>
-                  </td>
-                  <td v-if="canWrite" class="px-3 py-2 text-right">
-                    <div v-if="row.status === 'pending'" class="flex justify-end gap-1">
-                      <Button
-                        variant="outline" size="icon" class="h-7 w-7 border-emerald-300 text-emerald-600 dark:border-emerald-800 dark:text-emerald-400"
-                        :disabled="deciding[row.id]" :title="t('ai.approve')" @click="decide(row, 'approve')"
-                      >
-                        <Check class="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="outline" size="icon" class="h-7 w-7 border-red-300 text-red-600 dark:border-red-900 dark:text-red-400"
-                        :disabled="deciding[row.id]" :title="t('ai.reject')" @click="decide(row, 'reject')"
-                      >
-                        <X class="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      <PaginatedList
+        ref="proposalsList" :fetch-page="fetchProposalsPage"
+        v-slot="{ items: proposalRows, loading: proposalsLoading }"
+      >
+        <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+          <CardContent class="p-0">
+            <div v-if="proposalsLoading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
+            <div v-else-if="proposalRows.length === 0" class="p-6">
+              <EmptyState :title="t('ui.emptyTitle')" :description="t('ai.noProposals')" />
+            </div>
+            <div v-else class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                    <th class="px-3 py-2 font-medium">{{ t('ai.proposalType') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('ai.proposalPayload') }}</th>
+                    <th class="hidden px-3 py-2 font-medium md:table-cell">{{ t('ai.proposalReason') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('ai.proposalStatus') }}</th>
+                    <th v-if="canWrite" class="px-3 py-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in proposalRows" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                    <td class="whitespace-nowrap px-3 py-2 font-medium">{{ t(`ai.action.${row.action_type}`) }}</td>
+                    <td class="max-w-[260px] px-3 py-2 text-xs text-muted-foreground">
+                      {{ row.payload.kind }} · {{ row.payload.amount }} {{ row.payload.currency }} · {{ row.payload.description }}
+                    </td>
+                    <td class="hidden max-w-[200px] truncate px-3 py-2 text-xs text-muted-foreground md:table-cell">{{ row.reason }}</td>
+                    <td class="px-3 py-2">
+                      <Badge :class="proposalTone(row.status)">{{ t(`ai.status.${row.status}`) }}</Badge>
+                    </td>
+                    <td v-if="canWrite" class="px-3 py-2 text-right">
+                      <div v-if="row.status === 'pending'" class="flex justify-end gap-1">
+                        <Button
+                          variant="outline" size="icon" class="h-7 w-7 border-emerald-300 text-emerald-600 dark:border-emerald-800 dark:text-emerald-400"
+                          :disabled="deciding[row.id]" :title="t('ai.approve')" @click="decide(row, 'approve')"
+                        >
+                          <Check class="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="outline" size="icon" class="h-7 w-7 border-red-300 text-red-600 dark:border-red-900 dark:text-red-400"
+                          :disabled="deciding[row.id]" :title="t('ai.reject')" @click="decide(row, 'reject')"
+                        >
+                          <X class="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      </PaginatedList>
     </div>
   </div>
 </template>

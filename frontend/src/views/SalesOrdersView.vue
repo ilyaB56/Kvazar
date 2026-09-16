@@ -10,8 +10,9 @@ import { Ban, Check, Plus, Truck, Wallet } from 'lucide-vue-next'
 import { get, post } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  Select, SearchSelect, Skeleton, useToast,
+  PaginatedList, Select, SearchSelect, Skeleton, useToast,
 } from '../components/ui'
+import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 import { formatMoney2, isPositiveDecimalString } from '../utils/money'
 
@@ -27,6 +28,7 @@ interface SalesOrder {
   rate: string | null; amount: string; amount_base: string | null
   note: string; created_at: string
   lines?: Array<{ id: string; item_id: string; qty: string; unit_price: string; amount: string; reserved_qty: string }>
+  counterparty_name?: string | null
 }
 interface Shipment {
   id: string; number: string | null; sales_order_id: string; status: string
@@ -42,39 +44,46 @@ interface HistoryRow {
   diff: Record<string, { old: unknown; new: unknown }>
 }
 
-const loading = ref(true)
-const orders = ref<SalesOrder[]>([])
+// список заказов пагинирован (по 50 + infinite scroll); имена
+// контрагентов приходят в payload; справочники для диалогов/карточки —
+// лениво, экран по умолчанию их не грузит
+const ordersList = ref<{ reload: () => Promise<void> } | null>(null)
+const fetchOrdersPage = (offset: number, limit: number) =>
+  get<PageOf<SalesOrder>>(`/accounting/sales-orders?limit=${limit}&offset=${offset}`)
+
 const counterparties = ref<Counterparty[]>([])
 const items = ref<Item[]>([])
 const locations = ref<Location[]>([])
 const accounts = ref<Account[]>([])
+const refsLoading = ref(false)
+
+async function ensureDialogRefs() {
+  if (counterparties.value.length || refsLoading.value) return
+  refsLoading.value = true
+  try {
+    const [cp, it, loc, acc] = await Promise.all([
+      get<Counterparty[]>('/accounting/counterparties'),
+      get<Item[]>('/accounting/items?is_active=true'),
+      get<Location[]>('/accounting/locations'),
+      get<Account[]>('/accounting/accounts'),
+    ])
+    counterparties.value = cp
+    items.value = it
+    locations.value = loc
+    accounts.value = acc
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    refsLoading.value = false
+  }
+}
 
 const cpName = (id: string | null) =>
   id ? (counterparties.value.find((c) => c.id === id)?.name ?? '…') : '—'
 const itemName = (id: string) => items.value.find((i) => i.id === id)?.name ?? '…'
 const activeLocations = computed(() => locations.value.filter((l) => l.is_active && !l.kind.startsWith('transit')))
 
-async function load() {
-  const [o, cp, it, loc, acc] = await Promise.all([
-    get<SalesOrder[]>('/accounting/sales-orders'),
-    get<Counterparty[]>('/accounting/counterparties'),
-    get<Item[]>('/accounting/items'),
-    get<Location[]>('/accounting/locations'),
-    get<Account[]>('/accounting/accounts'),
-  ])
-  orders.value = o
-  counterparties.value = cp
-  items.value = it
-  locations.value = loc
-  accounts.value = acc
-}
-
 onMounted(async () => {
-  try {
-    await load()
-  } finally {
-    loading.value = false
-  }
   // создание из выигранной сделки: /crm/orders?deal=<id>&counterparty=<id>
   const deal = route.query.deal
   if (deal && canWrite.value) void openCreate(String(deal), route.query.counterparty ? String(route.query.counterparty) : '')
@@ -99,6 +108,7 @@ const createForm = reactive({
 })
 
 function openCreate(dealId?: string, counterpartyId?: string) {
+  void ensureDialogRefs()
   createForm.dealId = dealId ?? ''
   createForm.counterpartyId = counterpartyId ?? ''
   createForm.note = ''
@@ -124,7 +134,7 @@ async function saveOrder() {
     })
     toast.success(t('sal.orderCreated'))
     createOpen.value = false
-    await load()
+    await ordersList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -136,7 +146,7 @@ async function confirmOrder(order: SalesOrder) {
   try {
     await post(`/accounting/sales-orders/${order.id}/confirm`)
     toast.success(t('sal.orderConfirmed'))
-    await load()
+    await ordersList.value?.reload()
     if (card.value?.id === order.id) await openCard(order.id)
   } catch (error) {
     toast.apiError(error)
@@ -149,6 +159,7 @@ const payOrder = ref<SalesOrder | null>(null)
 const payForm = reactive({ accountId: '', amount: '' })
 
 function openPay(order: SalesOrder) {
+  void ensureDialogRefs()
   payOrder.value = order
   payForm.accountId = accounts.value.find((a) => a.currency === 'RUB')?.id ?? ''
   payForm.amount = order.amount_base ?? order.amount
@@ -164,7 +175,7 @@ async function savePay() {
     })
     toast.success(t('sal.paid'))
     payOpen.value = false
-    await load()
+    await ordersList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   }
@@ -176,13 +187,14 @@ const cardShipments = ref<Shipment[]>([])
 const cardHistory = ref<HistoryRow[]>([])
 
 async function openCard(id: string) {
+  void ensureDialogRefs()
   const [order, shipments, history] = await Promise.all([
     get<SalesOrder>(`/accounting/sales-orders/${id}`),
-    get<Shipment[]>('/accounting/shipments'),
+    get<PageOf<Shipment>>(`/accounting/shipments?sales_order_id=${id}&limit=0`),
     get<HistoryRow[]>(`/accounting/history/acc.sales.order/${id}`),
   ])
   card.value = order
-  cardShipments.value = shipments.filter((s) => s.sales_order_id === id)
+  cardShipments.value = shipments.items
   cardHistory.value = history
 }
 
@@ -194,6 +206,7 @@ const shipForm = reactive({
 })
 
 function openShip(order: SalesOrder) {
+  void ensureDialogRefs()
   const lines = order.lines ?? []
   shipForm.lines = lines.map((line) => ({
     itemId: line.item_id, qty: line.qty,
@@ -234,7 +247,7 @@ async function saveShipment() {
     })
     toast.success(t('sal.shipmentCreated'))
     shipOpen.value = false
-    await Promise.all([load(), openCard(card.value.id)])
+    await Promise.all([ordersList.value?.reload() ?? Promise.resolve(), openCard(card.value.id)])
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -246,7 +259,7 @@ async function postShipment(shipment: Shipment) {
   try {
     await post(`/accounting/shipments/${shipment.id}/post`)
     toast.success(t('sal.shipmentPosted'))
-    if (card.value) await Promise.all([load(), openCard(card.value.id)])
+    if (card.value) await Promise.all([ordersList.value?.reload() ?? Promise.resolve(), openCard(card.value.id)])
   } catch (error) {
     toast.apiError(error)
   }
@@ -256,7 +269,7 @@ async function unpostShipment(shipment: Shipment) {
   try {
     await post(`/accounting/shipments/${shipment.id}/unpost`, { reason: t('sal.stornoReason') })
     toast.success(t('sal.shipmentUnposted'))
-    if (card.value) await Promise.all([load(), openCard(card.value.id)])
+    if (card.value) await Promise.all([ordersList.value?.reload() ?? Promise.resolve(), openCard(card.value.id)])
   } catch (error) {
     toast.apiError(error)
   }
@@ -281,12 +294,13 @@ function historyLine(diff: Record<string, { old: unknown; new: unknown }>): stri
       </Button>
     </div>
 
+    <PaginatedList ref="ordersList" :fetch-page="fetchOrdersPage" v-slot="{ items: orderRows, loading }">
     <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
         <div v-if="loading" class="space-y-2 p-4">
           <Skeleton class="h-10 w-full" /><Skeleton class="h-10 w-full" /><Skeleton class="h-10 w-full" />
         </div>
-        <div v-else-if="orders.length === 0" class="p-6">
+        <div v-else-if="orderRows.length === 0" class="p-6">
           <EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" />
         </div>
         <div v-else class="overflow-x-auto">
@@ -303,13 +317,13 @@ function historyLine(diff: Record<string, { old: unknown; new: unknown }>): stri
             </thead>
             <tbody>
               <tr
-                v-for="order in orders.slice(0, 80).reverse()" :key="order.id"
+                v-for="order in orderRows" :key="order.id"
                 class="cursor-pointer border-t border-zinc-100 transition-colors hover:bg-zinc-50/60 dark:border-zinc-800/70 dark:hover:bg-zinc-800/40"
                 @click="openCard(order.id)"
               >
                 <td class="whitespace-nowrap px-3 py-2 font-medium text-emerald-700 dark:text-emerald-400">{{ order.number ?? '—' }}</td>
                 <td class="px-3 py-2">
-                  {{ cpName(order.counterparty_id) }}
+                  {{ order.counterparty_name ?? '…' }}
                   <Badge v-if="order.crm_deal_id" variant="outline" class="ml-1.5 text-[10px]">CRM</Badge>
                 </td>
                 <td class="whitespace-nowrap px-3 py-2 text-right font-semibold">
@@ -334,6 +348,7 @@ function historyLine(diff: Record<string, { old: unknown; new: unknown }>): stri
         </div>
       </CardContent>
     </Card>
+    </PaginatedList>
 
     <!-- Карточка заказа -->
     <Dialog

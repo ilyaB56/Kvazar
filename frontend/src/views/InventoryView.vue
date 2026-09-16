@@ -1,19 +1,23 @@
 <script setup lang="ts">
 // Склад (этап I, стр. 8 макета): номенклатура с видами (товар/цифровой/
 // услуга) и порогами low_stock, остатки по локациям с суммами, журнал
-// движений, перемещение, инвентаризация (полный факт-список; для серийных —
-// список кодов), сборка — тех.карты и заказы. Кнопки проведения — только
-// при accounting: rw.
+// движений, перемещение, инвентаризация, сборка. Кнопки проведения —
+// только при accounting: rw.
+// Пагинация: номенклатура/остатки/движения — порциями по 50 (infinite
+// scroll); имена в payload'ах с сервера, полные справочники на клиенте
+// не грузятся. Список номенклатуры для пикеров диалогов — лениво, при
+// первом открытии диалога.
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  ArrowLeftRight, Boxes, ClipboardCheck, Cog, Package, Play, Plus,
+  ArrowLeftRight, ClipboardCheck, Cog, Package, Play, Plus,
 } from 'lucide-vue-next'
 import { get, post } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  Select, SearchSelect, Skeleton, Tabs, useToast,
+  PaginatedList, Select, SearchSelect, Skeleton, Tabs, useToast,
 } from '../components/ui'
+import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 import { formatMoney2, isPositiveDecimalString } from '../utils/money'
 
@@ -35,64 +39,80 @@ interface Balance {
   item_id: string; sku: string; item_name: string; item_kind: string
   location_id: string; location_name: string; location_kind: string
   qty: string; avg_cost: string; value: string
+  low_stock_threshold: string | null
 }
 interface Move {
   id: string; item_id: string; qty: string; unit_cost: string | null
   from_location_id: string | null; to_location_id: string | null
   counterparty_id: string | null; source_type: string; moved_at: string; note: string
+  item_sku: string | null; item_name: string | null
+  from_location_name: string | null; to_location_name: string | null
 }
 interface TechCard {
   id: string; name: string; product_item_id: string; qty_out: string
   components: Array<{ item_id: string; qty: string }>; is_active: boolean
+  product_name: string | null; component_names: Record<string, string> | null
 }
 interface ProductionOrder {
   id: string; number: string | null; tech_card_id: string; qty_planned: string
   status: string; is_stornoed: boolean; material_cost: string; moved_at: string | null
+  tech_card_name: string | null
 }
 
-const items = ref<Item[]>([])
 const locations = ref<Location[]>([])
-const balances = ref<Balance[]>([])
-const moves = ref<Move[]>([])
 const techCards = ref<TechCard[]>([])
 const prodOrders = ref<ProductionOrder[]>([])
 
-const itemSearch = ref('')
-const balanceLocation = ref('')
-const movesLocation = ref('')
+// ---------- Пагинированные списки ----------
+const itemsList = ref<{ reload: () => Promise<void> } | null>(null)
+const balancesList = ref<{ reload: () => Promise<void> } | null>(null)
+const movesList = ref<{ reload: () => Promise<void> } | null>(null)
 
-// поиск уходит на сервер (ILIKE + GIN pg_trgm по sku/имени, миграция 0021)
+const itemSearch = ref('')
+const itemSearchKey = ref('')
 let itemSearchTimer: number | undefined
 watch(itemSearch, () => {
   window.clearTimeout(itemSearchTimer)
-  itemSearchTimer = window.setTimeout(async () => {
-    const q = itemSearch.value.trim()
-    const suffix = q ? `?q=${encodeURIComponent(q)}` : ''
-    items.value = await get<Item[]>(`/accounting/items${suffix}`)
+  itemSearchTimer = window.setTimeout(() => {
+    itemSearchKey.value = itemSearch.value.trim()
   }, 300)
 })
-const filteredItems = computed(() => items.value.slice(0, 100))
-const filteredBalances = computed(() => {
-  const src = balanceLocation.value
-    ? balances.value.filter((b) => b.location_id === balanceLocation.value)
-    : balances.value
-  return src.slice(0, 120)
-})
-const filteredMoves = computed(() => {
-  const src = movesLocation.value
-    ? moves.value.filter((m) => m.from_location_id === movesLocation.value || m.to_location_id === movesLocation.value)
-    : moves.value
-  return src.slice(0, 60)
-})
-const totalValue = computed(() =>
-  filteredBalances.value.reduce((sum, b) => sum + Number(b.value), 0))
+
+// поиск уходит на сервер (ILIKE + GIN pg_trgm по sku/имени, миграция 0021)
+function fetchItemsPage(offset: number, limit: number) {
+  const qs = itemSearchKey.value ? `&q=${encodeURIComponent(itemSearchKey.value)}` : ''
+  return get<PageOf<Item>>(`/accounting/items?limit=${limit}&offset=${offset}${qs}`)
+}
+
+const balanceLocation = ref('')
+const balancesKey = ref('')
+watch(balanceLocation, () => { balancesKey.value = balanceLocation.value })
+
+function fetchBalancesPage(offset: number, limit: number) {
+  const qs = balanceLocation.value ? `&location_id=${balanceLocation.value}` : ''
+  return get<PageOf<Balance>>(`/accounting/stock/balances?limit=${limit}&offset=${offset}${qs}`)
+}
+
+const movesLocation = ref('')
+const movesKey = ref('')
+watch(movesLocation, () => { movesKey.value = movesLocation.value })
+
+function fetchMovesPage(offset: number, limit: number) {
+  const qs = movesLocation.value ? `&location_id=${movesLocation.value}` : ''
+  return get<PageOf<Move>>(`/accounting/stock/moves?limit=${limit}&offset=${offset}${qs}`)
+}
+
+// суммарная стоимость видимых остатков (KPI честен, только когда
+// показаны все строки фильтра)
+function sumValue(rows: Balance[]): number {
+  return rows.reduce((sum, b) => sum + Number(b.value ?? 0), 0)
+}
 
 // ---------- 1.3: уровень остатка по порогу low_stock ----------
-// itemById для порога (остатки не несут threshold)
-const itemById = computed(() => new Map(items.value.map((i) => [i.id, i])))
+// порог приходит в строке остатка с сервера
 type StockLevel = 'ok' | 'low' | 'crit'
 function stockLevel(balance: Balance): StockLevel {
-  const threshold = Number(itemById.value.get(balance.item_id)?.low_stock_threshold ?? 0)
+  const threshold = Number(balance.low_stock_threshold ?? 0)
   const qty = Number(balance.qty)
   if (threshold <= 0) return 'ok'
   if (qty <= 0 || qty * 2 <= threshold) return 'crit'
@@ -114,57 +134,67 @@ const levelBadge = computed<Record<StockLevel, { label: string; cls: string }>>(
   },
 }))
 
-// дефицит: позиции (агрегировано по item), где суммарный остаток ниже порога
-const deficitItems = computed(() => {
-  const totals = new Map<string, number>()
-  for (const b of balances.value) {
-    totals.set(b.item_id, (totals.get(b.item_id) ?? 0) + Number(b.qty))
-  }
-  let count = 0
-  for (const [id, qty] of totals) {
-    const threshold = Number(itemById.value.get(id)?.low_stock_threshold ?? 0)
-    if (threshold > 0 && qty <= threshold) count += 1
-  }
-  return count
-})
-
 // ---------- карточка товара (клик по строке номенклатуры) ----------
 const detailItem = ref<Item | null>(null)
-const detailBalances = computed(() =>
-  detailItem.value ? balances.value.filter((b) => b.item_id === detailItem.value?.id) : [])
-const detailMoves = computed(() =>
-  detailItem.value ? moves.value.filter((m) => m.item_id === detailItem.value?.id).slice(0, 10) : [])
+const detailLoading = ref(false)
+const detailBalances = ref<Balance[]>([])
+const detailMoves = ref<Move[]>([])
 
-function openItemCard(item: Item) {
+async function openItemCard(item: Item) {
   detailItem.value = item
+  detailLoading.value = true
+  try {
+    const [balances, moves] = await Promise.all([
+      get<PageOf<Balance>>(`/accounting/stock/balances?item_id=${item.id}&limit=0`),
+      get<PageOf<Move>>(`/accounting/stock/moves?item_id=${item.id}&limit=10`),
+    ])
+    detailBalances.value = balances.items
+    detailMoves.value = moves.items
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    detailLoading.value = false
+  }
 }
 
 // Д13 UI: испортить код прямо из карточки товара
 const voidCode = ref('')
 const voidWorking = ref(false)
 async function voidSerial() {
-  if (voidWorking.value || !voidCode.value.trim()) return
+  if (voidWorking.value || !voidCode.value.trim() || !detailItem.value) return
   voidWorking.value = true
   try {
     await post('/accounting/serials/void', { code: voidCode.value.trim() })
     toast.success(t('inv.codeVoided'))
     voidCode.value = ''
     detailItem.value = null
-    await loadAll()
+    await reloadStock()
   } catch (error) {
     toast.apiError(error)
   } finally {
     voidWorking.value = false
   }
 }
-const itemName = (id: string) => items.value.find((i) => i.id === id)?.name ?? '…'
-const locationName = (id: string | null) =>
-  id ? (locations.value.find((l) => l.id === id)?.name ?? '…') : '—'
 const activeLocations = computed(() => locations.value.filter((l) => l.is_active && !l.is_transit))
 
-const kindMeta: Record<string, { label: string; cls: string }> = {
-  physical: { label: '', cls: '' }, digital: { label: '', cls: '' }, service: { label: '', cls: '' },
+// пикеры номенклатуры в диалогах: полный список грузится лениво при
+// первом открытии диалога (на экране по умолчанию не нужен)
+const dialogItems = ref<Item[]>([])
+const dialogItemsLoading = ref(false)
+async function ensureDialogItems() {
+  if (dialogItems.value.length || dialogItemsLoading.value) return
+  dialogItemsLoading.value = true
+  try {
+    dialogItems.value = (await get<PageOf<Item>>('/accounting/items?limit=0&is_active=true')).items
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    dialogItemsLoading.value = false
+  }
 }
+const itemOptions = computed(() =>
+  dialogItems.value.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` })))
+
 function kindCls(kind: string): string {
   return {
     physical: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300',
@@ -173,21 +203,17 @@ function kindCls(kind: string): string {
   }[kind] ?? ''
 }
 
-async function loadAll() {
+// лёгкие справочники экрана (локации для фильтров, сборка); тяжёлые
+// списки (номенклатура/остатки/движения) живут в PaginatedList
+async function loadRefData() {
   loading.value = true
   try {
-    const [it, loc, bal, mv, tc, po] = await Promise.all([
-      get<Item[]>('/accounting/items'),
+    const [loc, tc, po] = await Promise.all([
       get<Location[]>('/accounting/locations'),
-      get<Balance[]>('/accounting/stock/balances'),
-      get<Move[]>('/accounting/stock/moves'),
       get<TechCard[]>('/accounting/tech-cards'),
       get<ProductionOrder[]>('/accounting/production-orders'),
     ])
-    items.value = it
     locations.value = loc
-    balances.value = bal
-    moves.value = mv
     techCards.value = tc
     prodOrders.value = po
   } catch {
@@ -196,7 +222,16 @@ async function loadAll() {
     loading.value = false
   }
 }
-onMounted(loadAll)
+onMounted(loadRefData)
+
+async function reloadStock() {
+  await Promise.all([
+    itemsList.value?.reload() ?? Promise.resolve(),
+    balancesList.value?.reload() ?? Promise.resolve(),
+    movesList.value?.reload() ?? Promise.resolve(),
+    loadRefData(),
+  ])
+}
 
 // ---------- Номенклатура ----------
 const itemOpen = ref(false)
@@ -214,7 +249,8 @@ async function saveItem() {
     })
     toast.success(t('inv.itemCreated'))
     itemOpen.value = false
-    await loadAll()
+    dialogItems.value = [] // кэш пикеров устарел — перезагрузим при следующем открытии
+    await itemsList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -226,6 +262,11 @@ async function saveItem() {
 const transferOpen = ref(false)
 const transferSaving = ref(false)
 const transferForm = reactive({ itemId: '', qty: '', from: '', to: '', note: '' })
+
+function openTransfer() {
+  void ensureDialogItems()
+  transferOpen.value = true
+}
 
 async function saveTransfer() {
   if (transferSaving.value || !transferForm.itemId || !isPositiveDecimalString(transferForm.qty)
@@ -239,7 +280,7 @@ async function saveTransfer() {
     })
     toast.success(t('inv.moved'))
     transferOpen.value = false
-    await loadAll()
+    await reloadStock()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -253,6 +294,13 @@ const adjustSaving = ref(false)
 const adjustLocation = ref('')
 const adjustLines = ref<Array<{ itemId: string; qtyFact: string; codes: string }>>([])
 
+function openAdjust() {
+  void ensureDialogItems()
+  adjustOpen.value = true
+  adjustLines.value = []
+  addAdjustLine()
+}
+
 function addAdjustLine() {
   adjustLines.value.push({ itemId: '', qtyFact: '', codes: '' })
 }
@@ -265,7 +313,7 @@ async function saveAdjustment() {
   const lines = adjustLines.value
     .filter((line) => line.itemId)
     .map((line) => {
-      const item = items.value.find((i) => i.id === line.itemId)
+      const item = dialogItems.value.find((i) => i.id === line.itemId)
       if (item?.tracking === 'serial') {
         return {
           item_id: line.itemId,
@@ -284,7 +332,7 @@ async function saveAdjustment() {
     toast.success(t('inv.adjusted'))
     adjustOpen.value = false
     adjustLines.value = []
-    await loadAll()
+    await reloadStock()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -296,6 +344,11 @@ async function saveAdjustment() {
 const cardOpen = ref(false)
 const cardSaving = ref(false)
 const cardForm = reactive({ name: '', productItemId: '', qtyOut: '', components: [] as Array<{ itemId: string; qty: string }> })
+
+function openCard() {
+  void ensureDialogItems()
+  cardOpen.value = true
+}
 
 function addComponent() {
   cardForm.components.push({ itemId: '', qty: '' })
@@ -316,7 +369,7 @@ async function saveTechCard() {
     toast.success(t('inv.cardCreated'))
     cardOpen.value = false
     cardForm.components = []
-    await loadAll()
+    await loadRefData()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -339,7 +392,7 @@ async function saveProduction() {
     })
     toast.success(t('inv.productionCreated'))
     prodOpen.value = false
-    await loadAll()
+    await reloadStock()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -351,7 +404,7 @@ async function postProduction(order: ProductionOrder) {
   try {
     await post(`/accounting/production-orders/${order.id}/post`)
     toast.success(t('inv.productionPosted'))
-    await loadAll()
+    await reloadStock()
   } catch (error) {
     toast.apiError(error)
   }
@@ -391,156 +444,169 @@ function statusCls(status: string): string {
 
     <!-- Номенклатура -->
     <div v-if="tab === 'items'" class="space-y-3">
-      <div class="flex flex-wrap items-center gap-2">
-        <Input v-model="itemSearch" :placeholder="t('inv.searchItems')" class="max-w-xs" />
-        <span class="text-xs text-muted-foreground">{{ t('inv.shownOf', { shown: filteredItems.length, total: items.length }) }}</span>
-        <Button v-if="canWrite" variant="emerald" size="sm" class="ml-auto gap-1.5" @click="itemOpen = true">
-          <Plus class="h-3.5 w-3.5" /> {{ t('inv.newItem') }}
-        </Button>
-      </div>
-      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
-        <CardContent class="p-0">
-          <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /><Skeleton class="h-10 w-full" /></div>
-          <div v-else-if="filteredItems.length === 0" class="p-6"><EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" /></div>
-          <div v-else class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <thead>
-                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                  <th class="px-3 py-2 font-medium">{{ t('inv.colSku') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('inv.colName') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('inv.colKind') }}</th>
-                  <th class="hidden px-3 py-2 font-medium sm:table-cell">{{ t('inv.colUnit') }}</th>
-                  <th class="hidden px-3 py-2 font-medium md:table-cell">{{ t('inv.colTracking') }}</th>
-                  <th class="px-3 py-2 text-right font-medium">{{ t('inv.colAvgCost') }}</th>
-                  <th class="hidden px-3 py-2 text-right font-medium lg:table-cell">{{ t('inv.colLowStock') }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="item in filteredItems" :key="item.id"
-                  class="cursor-pointer border-t border-zinc-100 transition-colors hover:bg-zinc-50/60 dark:border-zinc-800/70 dark:hover:bg-zinc-800/40"
-                  @click="openItemCard(item)"
-                >
-                  <td class="px-3 py-2 font-mono text-xs text-emerald-700 dark:text-emerald-400">{{ item.sku }}</td>
-                  <td class="px-3 py-2 font-medium">{{ item.name }}</td>
-                  <td class="px-3 py-2"><Badge :class="kindCls(item.kind)">{{ t(`inv.kind.${item.kind}`) }}</Badge></td>
-                  <td class="hidden px-3 py-2 text-muted-foreground sm:table-cell">{{ item.unit_code }}</td>
-                  <td class="hidden px-3 py-2 text-xs text-muted-foreground md:table-cell">{{ item.tracking === 'serial' ? t('inv.serial') : '—' }}</td>
-                  <td class="whitespace-nowrap px-3 py-2 text-right text-muted-foreground">{{ formatMoney2(item.avg_cost) }}</td>
-                  <td class="hidden px-3 py-2 text-right lg:table-cell">
-                    <Badge v-if="item.low_stock_threshold" class="bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
-                      ≥ {{ item.low_stock_threshold }}
-                    </Badge>
-                    <span v-else class="text-muted-foreground">—</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      <PaginatedList
+        ref="itemsList" :fetch-page="fetchItemsPage" :reset-key="`i:${itemSearchKey}`"
+        v-slot="{ items: itemRows, loading }"
+      >
+        <div class="flex flex-wrap items-center gap-2">
+          <Input v-model="itemSearch" :placeholder="t('inv.searchItems')" class="max-w-xs" />
+          <Button v-if="canWrite" variant="emerald" size="sm" class="ml-auto gap-1.5" @click="itemOpen = true">
+            <Plus class="h-3.5 w-3.5" /> {{ t('inv.newItem') }}
+          </Button>
+        </div>
+        <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+          <CardContent class="p-0">
+            <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /><Skeleton class="h-10 w-full" /></div>
+            <div v-else-if="itemRows.length === 0" class="p-6"><EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" /></div>
+            <div v-else class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                    <th class="px-3 py-2 font-medium">{{ t('inv.colSku') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('inv.colName') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('inv.colKind') }}</th>
+                    <th class="hidden px-3 py-2 font-medium sm:table-cell">{{ t('inv.colUnit') }}</th>
+                    <th class="hidden px-3 py-2 font-medium md:table-cell">{{ t('inv.colTracking') }}</th>
+                    <th class="px-3 py-2 text-right font-medium">{{ t('inv.colAvgCost') }}</th>
+                    <th class="hidden px-3 py-2 text-right font-medium lg:table-cell">{{ t('inv.colLowStock') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="item in itemRows" :key="item.id"
+                    class="cursor-pointer border-t border-zinc-100 transition-colors hover:bg-zinc-50/60 dark:border-zinc-800/70 dark:hover:bg-zinc-800/40"
+                    @click="openItemCard(item)"
+                  >
+                    <td class="px-3 py-2 font-mono text-xs text-emerald-700 dark:text-emerald-400">{{ item.sku }}</td>
+                    <td class="px-3 py-2 font-medium">{{ item.name }}</td>
+                    <td class="px-3 py-2"><Badge :class="kindCls(item.kind)">{{ t(`inv.kind.${item.kind}`) }}</Badge></td>
+                    <td class="hidden px-3 py-2 text-muted-foreground sm:table-cell">{{ item.unit_code }}</td>
+                    <td class="hidden px-3 py-2 text-xs text-muted-foreground md:table-cell">{{ item.tracking === 'serial' ? t('inv.serial') : '—' }}</td>
+                    <td class="whitespace-nowrap px-3 py-2 text-right text-muted-foreground">{{ formatMoney2(item.avg_cost) }}</td>
+                    <td class="hidden px-3 py-2 text-right lg:table-cell">
+                      <Badge v-if="item.low_stock_threshold" class="bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                        ≥ {{ item.low_stock_threshold }}
+                      </Badge>
+                      <span v-else class="text-muted-foreground">—</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      </PaginatedList>
     </div>
 
     <!-- Остатки -->
     <div v-else-if="tab === 'balances'" class="space-y-3">
-      <div class="flex flex-wrap items-center gap-2">
-        <div class="w-[240px]">
-          <Select v-model="balanceLocation" :options="[
-            { value: '', label: t('inv.allLocations') },
-            ...locations.map((l) => ({ value: l.id, label: l.name })),
-          ]" />
-        </div>
-        <span class="text-sm text-muted-foreground">
-          {{ t('inv.totalValue') }}: <span class="font-semibold text-foreground">{{ formatMoney2(totalValue.toFixed(2)) }}</span>
-        </span>
-        <Badge
-          v-if="deficitItems > 0"
-          class="bg-red-500 text-[11px] text-white"
-          :title="t('inv.deficitHint')"
-        >{{ t('inv.deficitCount', { n: deficitItems }) }}</Badge>
-        <div v-if="canWrite" class="ml-auto flex gap-2">
-          <Button variant="outline" size="sm" class="gap-1.5" @click="transferOpen = true">
-            <ArrowLeftRight class="h-3.5 w-3.5" /> {{ t('inv.transfer') }}
-          </Button>
-          <Button variant="outline" size="sm" class="gap-1.5" @click="adjustOpen = true; adjustLines = []; addAdjustLine()">
-            <ClipboardCheck class="h-3.5 w-3.5" /> {{ t('inv.adjustment') }}
-          </Button>
-        </div>
-      </div>
-      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
-        <CardContent class="p-0">
-          <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
-          <div v-else-if="filteredBalances.length === 0" class="p-6"><EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" /></div>
-          <div v-else class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <thead>
-                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                  <th class="px-3 py-2 font-medium">{{ t('inv.colSku') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('inv.colName') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('inv.colLocation') }}</th>
-                  <th class="px-3 py-2 text-right font-medium">{{ t('inv.colQty') }}</th>
-                  <th class="hidden px-3 py-2 text-right font-medium sm:table-cell">{{ t('inv.colAvgCost') }}</th>
-                  <th class="px-3 py-2 text-right font-medium">{{ t('inv.colValue') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('inv.colLevel') }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="b in filteredBalances" :key="`${b.item_id}-${b.location_id}`" class="border-t border-zinc-100 dark:border-zinc-800/70">
-                  <td class="px-3 py-2 font-mono text-xs">{{ b.sku }}</td>
-                  <td class="px-3 py-2 font-medium">
-                    {{ b.item_name }}
-                    <Badge :class="['ml-1.5', kindCls(b.item_kind)]">{{ t(`inv.kind.${b.item_kind}`) }}</Badge>
-                  </td>
-                  <td class="px-3 py-2 text-muted-foreground">{{ b.location_name }}</td>
-                  <td class="px-3 py-2 text-right font-semibold tabular-nums">{{ Number(b.qty).toLocaleString('ru-RU') }}</td>
-                  <td class="hidden px-3 py-2 text-right text-muted-foreground sm:table-cell">{{ formatMoney2(b.avg_cost) }}</td>
-                  <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums">{{ formatMoney2(b.value) }}</td>
-                  <td class="px-3 py-2"><Badge :class="levelBadge[stockLevel(b)].cls">{{ levelBadge[stockLevel(b)].label }}</Badge></td>
-                </tr>
-              </tbody>
-            </table>
+      <PaginatedList
+        ref="balancesList" :fetch-page="fetchBalancesPage" :reset-key="`b:${balancesKey}`"
+        v-slot="{ items: balanceRows, loading, total }"
+      >
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="w-[240px]">
+            <Select v-model="balanceLocation" :options="[
+              { value: '', label: t('inv.allLocations') },
+              ...locations.map((l) => ({ value: l.id, label: l.name })),
+            ]" />
           </div>
-        </CardContent>
-      </Card>
+          <span v-if="balanceRows.length === total" class="text-sm text-muted-foreground">
+            {{ t('inv.totalValue') }}: <span class="font-semibold text-foreground">{{ formatMoney2(sumValue(balanceRows).toFixed(2)) }}</span>
+          </span>
+          <div v-if="canWrite" class="ml-auto flex gap-2">
+            <Button variant="outline" size="sm" class="gap-1.5" @click="openTransfer">
+              <ArrowLeftRight class="h-3.5 w-3.5" /> {{ t('inv.transfer') }}
+            </Button>
+            <Button variant="outline" size="sm" class="gap-1.5" @click="openAdjust">
+              <ClipboardCheck class="h-3.5 w-3.5" /> {{ t('inv.adjustment') }}
+            </Button>
+          </div>
+        </div>
+        <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+          <CardContent class="p-0">
+            <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
+            <div v-else-if="balanceRows.length === 0" class="p-6"><EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" /></div>
+            <div v-else class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                    <th class="px-3 py-2 font-medium">{{ t('inv.colSku') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('inv.colName') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('inv.colLocation') }}</th>
+                    <th class="px-3 py-2 text-right font-medium">{{ t('inv.colQty') }}</th>
+                    <th class="hidden px-3 py-2 text-right font-medium sm:table-cell">{{ t('inv.colAvgCost') }}</th>
+                    <th class="px-3 py-2 text-right font-medium">{{ t('inv.colValue') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('inv.colLevel') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="b in balanceRows" :key="`${b.item_id}-${b.location_id}`" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                    <td class="px-3 py-2 font-mono text-xs">{{ b.sku }}</td>
+                    <td class="px-3 py-2 font-medium">
+                      {{ b.item_name }}
+                      <Badge :class="['ml-1.5', kindCls(b.item_kind)]">{{ t(`inv.kind.${b.item_kind}`) }}</Badge>
+                    </td>
+                    <td class="px-3 py-2 text-muted-foreground">{{ b.location_name }}</td>
+                    <td class="px-3 py-2 text-right font-semibold tabular-nums">{{ Number(b.qty).toLocaleString('ru-RU') }}</td>
+                    <td class="hidden px-3 py-2 text-right text-muted-foreground sm:table-cell">{{ formatMoney2(b.avg_cost) }}</td>
+                    <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums">{{ formatMoney2(b.value) }}</td>
+                    <td class="px-3 py-2"><Badge :class="levelBadge[stockLevel(b)].cls">{{ levelBadge[stockLevel(b)].label }}</Badge></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      </PaginatedList>
     </div>
 
     <!-- Движения -->
     <div v-else-if="tab === 'moves'" class="space-y-3">
-      <div class="w-[240px]">
-        <Select v-model="movesLocation" :options="[
-          { value: '', label: t('inv.allLocations') },
-          ...locations.map((l) => ({ value: l.id, label: l.name })),
-        ]" />
-      </div>
-      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
-        <CardContent class="p-0">
-          <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
-          <div v-else class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <thead>
-                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                  <th class="px-3 py-2 font-medium">{{ t('inv.colDate') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('inv.colName') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('inv.colQty') }}</th>
-                  <th class="hidden px-3 py-2 font-medium md:table-cell">{{ t('inv.colRoute') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('inv.colSource') }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="m in filteredMoves" :key="m.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
-                  <td class="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">{{ m.moved_at }}</td>
-                  <td class="px-3 py-2">{{ itemName(m.item_id) }}</td>
-                  <td class="px-3 py-2 font-semibold tabular-nums">{{ Number(m.qty).toLocaleString('ru-RU') }}</td>
-                  <td class="hidden px-3 py-2 text-xs text-muted-foreground md:table-cell">
-                    {{ locationName(m.from_location_id) }} → {{ locationName(m.to_location_id) }}
-                  </td>
-                  <td class="px-3 py-2"><Badge variant="outline">{{ m.source_type }}</Badge></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      <PaginatedList
+        ref="movesList" :fetch-page="fetchMovesPage" :reset-key="`m:${movesKey}`"
+        v-slot="{ items: moveRows, loading }"
+      >
+        <div class="w-[240px]">
+          <Select v-model="movesLocation" :options="[
+            { value: '', label: t('inv.allLocations') },
+            ...locations.map((l) => ({ value: l.id, label: l.name })),
+          ]" />
+        </div>
+        <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+          <CardContent class="p-0">
+            <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
+            <div v-else-if="moveRows.length === 0" class="p-6"><EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" /></div>
+            <div v-else class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                    <th class="px-3 py-2 font-medium">{{ t('inv.colDate') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('inv.colName') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('inv.colQty') }}</th>
+                    <th class="hidden px-3 py-2 font-medium md:table-cell">{{ t('inv.colRoute') }}</th>
+                    <th class="px-3 py-2 font-medium">{{ t('inv.colSource') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="mv in moveRows" :key="mv.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                    <td class="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">{{ mv.moved_at }}</td>
+                    <td class="px-3 py-2">
+                      {{ mv.item_name ?? '…' }}
+                      <span class="ml-1 font-mono text-xs text-muted-foreground">{{ mv.item_sku }}</span>
+                    </td>
+                    <td class="px-3 py-2 font-semibold tabular-nums">{{ Number(mv.qty).toLocaleString('ru-RU') }}</td>
+                    <td class="hidden px-3 py-2 text-xs text-muted-foreground md:table-cell">
+                      {{ mv.from_location_name ?? '—' }} → {{ mv.to_location_name ?? '—' }}
+                    </td>
+                    <td class="px-3 py-2"><Badge variant="outline">{{ mv.source_type }}</Badge></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      </PaginatedList>
     </div>
 
     <!-- Сборка -->
@@ -549,7 +615,7 @@ function statusCls(status: string): string {
         <CardContent class="p-0">
           <div class="flex items-center justify-between px-4 py-3">
             <p class="flex items-center gap-2 text-sm font-semibold"><Cog class="h-4 w-4 text-emerald-600" /> {{ t('inv.techCards') }}</p>
-            <Button v-if="canWrite" variant="outline" size="sm" class="gap-1.5" @click="cardOpen = true">
+            <Button v-if="canWrite" variant="outline" size="sm" class="gap-1.5" @click="openCard">
               <Plus class="h-3.5 w-3.5" /> {{ t('inv.newCard') }}
             </Button>
           </div>
@@ -560,8 +626,8 @@ function statusCls(status: string): string {
                   <td class="px-3 py-2">
                     <p class="font-medium">{{ card.name }}</p>
                     <p class="text-xs text-muted-foreground">
-                      {{ itemName(card.product_item_id) }} × {{ Number(card.qty_out).toLocaleString('ru-RU') }}
-                      ← {{ card.components.map((c) => `${itemName(c.item_id)}×${Number(c.qty).toLocaleString('ru-RU')}`).join(', ') }}
+                      {{ card.product_name ?? '…' }} × {{ Number(card.qty_out).toLocaleString('ru-RU') }}
+                      ← {{ card.components.map((c) => `${card.component_names?.[c.item_id] ?? '…'}×${Number(c.qty).toLocaleString('ru-RU')}`).join(', ') }}
                     </p>
                   </td>
                   <td class="px-3 py-2 text-right">
@@ -599,7 +665,7 @@ function statusCls(status: string): string {
               <tbody>
                 <tr v-for="order in prodOrders.slice(0, 50).reverse()" :key="order.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
                   <td class="px-3 py-2 font-medium text-emerald-700 dark:text-emerald-400">{{ order.number ?? '—' }}</td>
-                  <td class="px-3 py-2 text-xs">{{ techCards.find((c) => c.id === order.tech_card_id)?.name ?? '…' }}</td>
+                  <td class="px-3 py-2 text-xs">{{ order.tech_card_name ?? techCards.find((c) => c.id === order.tech_card_id)?.name ?? '…' }}</td>
                   <td class="px-3 py-2 text-right tabular-nums">{{ Number(order.qty_planned).toLocaleString('ru-RU') }}</td>
                   <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums">{{ formatMoney2(order.material_cost) }}</td>
                   <td class="px-3 py-2"><Badge :class="statusCls(order.status)">{{ t(`inv.status.${order.status}`) }}</Badge></td>
@@ -629,31 +695,37 @@ function statusCls(status: string): string {
           <span class="ml-auto text-sm font-semibold">{{ formatMoney2(detailItem.avg_cost) }}</span>
         </div>
 
-        <div>
-          <p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{{ t('inv.tabBalances') }}</p>
-          <table class="mt-1.5 w-full text-sm">
-            <tbody>
-              <tr v-for="b in detailBalances" :key="b.location_id" class="border-t border-zinc-100 dark:border-zinc-800/70">
-                <td class="py-1.5">{{ b.location_name }}</td>
-                <td class="py-1.5 text-right font-semibold tabular-nums">{{ Number(b.qty).toLocaleString('ru-RU') }}</td>
-                <td class="py-1.5 text-right"><Badge :class="levelBadge[stockLevel(b)].cls">{{ levelBadge[stockLevel(b)].label }}</Badge></td>
-              </tr>
-              <tr v-if="detailBalances.length === 0">
-                <td colspan="3" class="py-3 text-center text-muted-foreground">{{ t('ui.emptyDescription') }}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div v-if="detailLoading" class="space-y-2">
+          <Skeleton class="h-8 w-full" />
+          <Skeleton class="h-8 w-full" />
         </div>
+        <template v-else>
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{{ t('inv.tabBalances') }}</p>
+            <table class="mt-1.5 w-full text-sm">
+              <tbody>
+                <tr v-for="b in detailBalances" :key="b.location_id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                  <td class="py-1.5">{{ b.location_name }}</td>
+                  <td class="py-1.5 text-right font-semibold tabular-nums">{{ Number(b.qty).toLocaleString('ru-RU') }}</td>
+                  <td class="py-1.5 text-right"><Badge :class="levelBadge[stockLevel(b)].cls">{{ levelBadge[stockLevel(b)].label }}</Badge></td>
+                </tr>
+                <tr v-if="detailBalances.length === 0">
+                  <td colspan="3" class="py-3 text-center text-muted-foreground">{{ t('ui.emptyDescription') }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
 
-        <div v-if="detailMoves.length">
-          <p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{{ t('inv.tabMoves') }}</p>
-          <ul class="mt-1.5 space-y-1 text-xs text-muted-foreground">
-            <li v-for="m in detailMoves" :key="m.id" class="flex justify-between gap-2">
-              <span class="truncate">{{ m.moved_at }} · {{ locationName(m.from_location_id) }} → {{ locationName(m.to_location_id) }}</span>
-              <span class="shrink-0 font-semibold">{{ Number(m.qty).toLocaleString('ru-RU') }}</span>
-            </li>
-          </ul>
-        </div>
+          <div v-if="detailMoves.length">
+            <p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{{ t('inv.tabMoves') }}</p>
+            <ul class="mt-1.5 space-y-1 text-xs text-muted-foreground">
+              <li v-for="mv in detailMoves" :key="mv.id" class="flex justify-between gap-2">
+                <span class="truncate">{{ mv.moved_at }} · {{ mv.from_location_name ?? '—' }} → {{ mv.to_location_name ?? '—' }}</span>
+                <span class="shrink-0 font-semibold">{{ Number(mv.qty).toLocaleString('ru-RU') }}</span>
+              </li>
+            </ul>
+          </div>
+        </template>
 
         <!-- Д13: испортить код (цифровые серийные) -->
         <form
@@ -713,7 +785,7 @@ function statusCls(status: string): string {
       <form class="space-y-4" @submit.prevent="saveTransfer">
         <div class="space-y-1.5">
           <Label class="text-xs font-medium">{{ t('inv.colItem') }}</Label>
-          <SearchSelect v-model="transferForm.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" :search-placeholder="t('ui.searchPlaceholder')" />
+          <SearchSelect v-model="transferForm.itemId" :options="itemOptions" :search-placeholder="t('ui.searchPlaceholder')" />
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1.5">
@@ -746,9 +818,9 @@ function statusCls(status: string): string {
         <p class="text-xs text-muted-foreground">{{ t('inv.adjustmentHint') }}</p>
         <div v-for="(line, index) in adjustLines" :key="index" class="flex items-end gap-2">
           <div class="flex-1 space-y-1">
-            <SearchSelect v-model="line.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
+            <SearchSelect v-model="line.itemId" :options="itemOptions" />
           </div>
-          <div v-if="items.find((i) => i.id === line.itemId)?.tracking === 'serial'" class="flex-1 space-y-1">
+          <div v-if="dialogItems.find((i) => i.id === line.itemId)?.tracking === 'serial'" class="flex-1 space-y-1">
             <textarea
               v-model="line.codes" rows="1" :placeholder="t('inv.codesPlaceholder')"
               class="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm shadow-sm"
@@ -776,14 +848,14 @@ function statusCls(status: string): string {
           <div class="space-y-1.5"><Label class="text-xs font-medium">{{ t('inv.colName') }}</Label><Input v-model="cardForm.name" /></div>
           <div class="space-y-1.5">
             <Label class="text-xs font-medium">{{ t('inv.colProduct') }}</Label>
-            <SearchSelect v-model="cardForm.productItemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
+            <SearchSelect v-model="cardForm.productItemId" :options="itemOptions" />
           </div>
         </div>
         <div class="w-32 space-y-1.5"><Label class="text-xs font-medium">{{ t('inv.qtyOut') }}</Label><Input v-model="cardForm.qtyOut" inputmode="decimal" /></div>
         <p class="text-xs font-medium text-muted-foreground">{{ t('inv.components') }}</p>
         <div v-for="(component, index) in cardForm.components" :key="index" class="flex items-end gap-2">
           <div class="flex-1 space-y-1">
-            <SearchSelect v-model="component.itemId" :options="items.map((i) => ({ value: i.id, label: `${i.sku} · ${i.name}` }))" />
+            <SearchSelect v-model="component.itemId" :options="itemOptions" />
           </div>
           <div class="w-28 space-y-1"><Input v-model="component.qty" inputmode="decimal" /></div>
           <Button variant="ghost" size="icon" class="h-9 w-9" @click="cardForm.components.splice(index, 1)">✕</Button>

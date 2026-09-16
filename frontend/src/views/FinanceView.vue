@@ -14,9 +14,9 @@ import { del, get, post } from '../api/client'
 import type { Account, Category, Counterparty, Period, Rate, Transaction } from '../api/types'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  Select, Skeleton, StatusBadge, Tabs, useToast,
+  PaginatedList, Select, Skeleton, StatusBadge, Tabs, useToast,
 } from '../components/ui'
-import type { StatusTone } from '../components/ui'
+import type { PageOf, StatusTone } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 import { formatMoney2, formatRate, isPositiveDecimalString } from '../utils/money'
 
@@ -29,7 +29,7 @@ const toast = useToast()
 const canWrite = computed(() => auth.moduleLevel('accounting') === 'rw')
 
 // локальные строки поиска справочников (гейт 1.1a); q уходит на сервер
-const refSearch = reactive({ accounts: '', categories: '', counterparties: '', rates: '' })
+const refSearch = reactive({ accounts: '', categories: '', counterparties: '' })
 const TABS = ['transactions', 'accounts', 'categories', 'counterparties', 'rates', 'periods'] as const
 type TabKey = typeof TABS[number]
 const tab = ref<TabKey>((route.query.tab as TabKey) in TABS || TABS.includes(route.query.tab as TabKey) ? (route.query.tab as TabKey) : 'transactions')
@@ -38,12 +38,9 @@ watch(tab, (value) => { void router.replace({ query: { ...route.query, tab: valu
 // ---------- Справочники + транзакции ----------
 
 const loading = ref(true)
-const txns = ref<Transaction[]>([])
 const accounts = ref<Account[]>([])
 const categories = ref<Category[]>([])
 const counterparties = ref<Counterparty[]>([])
-const rates = ref<Rate[]>([])
-const periods = ref<Period[]>([])
 
 const filters = reactive({
   dateFrom: '',
@@ -73,28 +70,31 @@ async function loadReference() {
   counterparties.value = k
 }
 
-async function loadTxns() {
-  const params = new URLSearchParams()
+// транзакции пагинированы (по 50 + infinite scroll); смена фильтров
+// меняет resetKey — список перезагружается с нуля, offset сбрасывается
+const txnList = ref<{ reload: () => Promise<void> } | null>(null)
+const txnKey = ref('init')
+
+function fetchTxnPage(offset: number, limit: number) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
   if (filters.dateFrom) params.set('date_from', filters.dateFrom)
   if (filters.dateTo) params.set('date_to', filters.dateTo)
   if (filters.accountId) params.set('account_id', filters.accountId)
   if (filters.categoryId) params.set('category_id', filters.categoryId)
-  const suffix = params.size ? `?${params.toString()}` : ''
-  txns.value = await get<Transaction[]>(`/accounting/transactions${suffix}`)
+  return get<PageOf<Transaction>>(`/accounting/transactions?${params}`)
 }
 
-async function loadRates() {
-  rates.value = await get<Rate[]>('/accounting/rates')
-}
-
-async function loadPeriods() {
-  periods.value = await get<Period[]>('/accounting/periods')
-}
+const rateList = ref<{ reload: () => Promise<void> } | null>(null)
+const periodList = ref<{ reload: () => Promise<void> } | null>(null)
+const fetchRatePage = (offset: number, limit: number) =>
+  get<PageOf<Rate>>(`/accounting/rates?limit=${limit}&offset=${offset}`)
+const fetchPeriodPage = (offset: number, limit: number) =>
+  get<PageOf<Period>>(`/accounting/periods?limit=${limit}&offset=${offset}`)
 
 async function loadAll() {
   loading.value = true
   try {
-    await Promise.all([loadReference(), loadTxns(), loadRates(), loadPeriods()])
+    await loadReference()
   } catch {
     toast.error(t('errors.unknown'))
   } finally {
@@ -106,24 +106,42 @@ onMounted(loadAll)
 let filterTimer: number | undefined
 watch(filters, () => {
   window.clearTimeout(filterTimer)
-  filterTimer = window.setTimeout(() => { void loadTxns().catch(() => toast.error(t('errors.unknown'))) }, 300)
-})
-
-let refTimer: number | undefined
-watch(refSearch, () => {
-  window.clearTimeout(refTimer)
-  refTimer = window.setTimeout(() => {
-    const q = (key: 'accounts' | 'categories' | 'counterparties') => {
-      const value = refSearch[key].trim()
-      return value ? `?q=${encodeURIComponent(value)}` : ''
-    }
-    void Promise.all([
-      get<Account[]>(`/accounting/accounts${q('accounts')}`).then((d) => { accounts.value = d }).catch(() => {}),
-      get<Category[]>(`/accounting/categories${q('categories')}`).then((d) => { categories.value = d }).catch(() => {}),
-      get<Counterparty[]>(`/accounting/counterparties${q('counterparties')}`).then((d) => { counterparties.value = d }).catch(() => {}),
-    ])
+  filterTimer = window.setTimeout(() => {
+    txnKey.value = [filters.dateFrom, filters.dateTo, filters.accountId, filters.categoryId].join('|')
   }, 300)
 })
+
+// q справочников уходит на сервер внутри PaginatedList; тут — только
+// дебаунс resetKey (поиск сбрасывает offset на 0). Карты имён для
+// таблицы транзакций (accountName/…) грузятся один раз на маунте.
+const refKey = reactive({ accounts: '', categories: '', counterparties: '' })
+let refTimer: number | undefined
+watch(() => [refSearch.accounts, refSearch.categories, refSearch.counterparties],
+  ([a, c, k]) => {
+    window.clearTimeout(refTimer)
+    refTimer = window.setTimeout(() => {
+      refKey.accounts = a
+      refKey.categories = c
+      refKey.counterparties = k
+    }, 300)
+  })
+
+const accountList = ref<{ reload: () => Promise<void> } | null>(null)
+const categoryList = ref<{ reload: () => Promise<void> } | null>(null)
+const counterpartyList = ref<{ reload: () => Promise<void> } | null>(null)
+
+function fetchAccountsPage(offset: number, limit: number) {
+  const qs = refKey.accounts.trim() ? `&q=${encodeURIComponent(refKey.accounts.trim())}` : ''
+  return get<PageOf<Account>>(`/accounting/accounts?limit=${limit}&offset=${offset}${qs}`)
+}
+function fetchCategoriesPage(offset: number, limit: number) {
+  const qs = refKey.categories.trim() ? `&q=${encodeURIComponent(refKey.categories.trim())}` : ''
+  return get<PageOf<Category>>(`/accounting/categories?limit=${limit}&offset=${offset}${qs}`)
+}
+function fetchCounterpartiesPage(offset: number, limit: number) {
+  const qs = refKey.counterparties.trim() ? `&q=${encodeURIComponent(refKey.counterparties.trim())}` : ''
+  return get<PageOf<Counterparty>>(`/accounting/counterparties?limit=${limit}&offset=${offset}${qs}`)
+}
 
 // ---------- Отображение ----------
 
@@ -243,7 +261,8 @@ async function saveTxn() {
       created.doc_number ?? undefined,
     )
     txnOpen.value = false
-    await Promise.all([loadTxns(), loadRates()])
+    void txnList.value?.reload()
+    void rateList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -257,7 +276,7 @@ async function postTxn(txn: Transaction) {
   try {
     await post<Transaction>(`/accounting/transactions/${txn.id}/post`)
     toast.success(t('finance.posted'), txn.doc_number ?? undefined)
-    await loadTxns()
+    void txnList.value?.reload()
   } catch {
     toast.error(t('errors.unknown'))
   }
@@ -267,7 +286,7 @@ async function deleteDraft(txn: Transaction) {
   try {
     await del(`/accounting/transactions/${txn.id}`)
     toast.success(t('finance.deleted'))
-    await loadTxns()
+    void txnList.value?.reload()
   } catch {
     toast.error(t('errors.unknown'))
   }
@@ -287,7 +306,7 @@ async function doStorno() {
     toast.success(t('finance.stornoed'))
     stornoTarget.value = null
     stornoReason.value = ''
-    await loadTxns()
+    void txnList.value?.reload()
   } catch {
     toast.error(t('errors.unknown'))
   } finally {
@@ -322,6 +341,9 @@ async function saveReference() {
     categoryForm.name = ''
     counterpartyForm.name = ''
     await loadReference()
+    void accountList.value?.reload()
+    void categoryList.value?.reload()
+    void counterpartyList.value?.reload()
   } catch {
     toast.error(t('errors.unknown'))
   } finally {
@@ -343,7 +365,7 @@ async function saveRate() {
     })
     toast.success(t('finance.rateSaved'))
     rateForm.rate = ''
-    await loadRates()
+    void rateList.value?.reload()
   } catch {
     toast.error(t('errors.unknown'))
   } finally {
@@ -357,7 +379,7 @@ async function switchPeriod(period: Period, action: 'close' | 'reopen') {
   try {
     await post<Period>(`/accounting/periods/${period.year}/${period.month}/${action}`)
     toast.success(t(action === 'close' ? 'finance.periodClosed' : 'finance.periodReopened'))
-    await loadPeriods()
+    void periodList.value?.reload()
   } catch {
     toast.error(t('errors.unknown'))
   }
@@ -429,6 +451,7 @@ const tabsList = computed(() => [
 
       <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
         <CardContent class="p-0">
+          <PaginatedList ref="txnList" :fetch-page="fetchTxnPage" :reset-key="txnKey" v-slot="{ items: txns, loading }">
           <div v-if="loading" class="space-y-2 p-4">
             <Skeleton class="h-10 w-full" />
             <Skeleton class="h-10 w-full" />
@@ -512,6 +535,7 @@ const tabsList = computed(() => [
               </tbody>
             </table>
           </div>
+          </PaginatedList>
         </CardContent>
       </Card>
     </div>
@@ -526,7 +550,14 @@ const tabsList = computed(() => [
             <Plus class="h-3.5 w-3.5" /> {{ t('finance.newAccount') }}
           </Button>
         </div>
-        <div class="overflow-x-auto">
+        <PaginatedList ref="accountList" :fetch-page="fetchAccountsPage" :reset-key="`a:${refKey.accounts}`" v-slot="{ items: accountRows, loading: refLoading }">
+        <div v-if="refLoading" class="space-y-2 p-4">
+          <Skeleton class="h-10 w-full" /><Skeleton class="h-10 w-full" />
+        </div>
+        <div v-else-if="!accountRows.length" class="p-6">
+          <EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" />
+        </div>
+        <div v-else class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
               <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
@@ -537,7 +568,7 @@ const tabsList = computed(() => [
               </tr>
             </thead>
             <tbody>
-              <tr v-for="a in accounts" :key="a.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+              <tr v-for="a in accountRows" :key="a.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
                 <td class="px-3 py-2 font-medium">{{ a.name }}</td>
                 <td class="px-3 py-2">{{ a.currency }}</td>
                 <td class="px-3 py-2 text-muted-foreground">{{ a.account_number ?? '—' }}</td>
@@ -549,6 +580,7 @@ const tabsList = computed(() => [
             </tbody>
           </table>
         </div>
+        </PaginatedList>
       </CardContent>
     </Card>
 
@@ -562,7 +594,14 @@ const tabsList = computed(() => [
             <Plus class="h-3.5 w-3.5" /> {{ t('finance.newCategory') }}
           </Button>
         </div>
-        <div class="overflow-x-auto">
+        <PaginatedList ref="categoryList" :fetch-page="fetchCategoriesPage" :reset-key="`c:${refKey.categories}`" v-slot="{ items: categoryRows, loading: refLoading }">
+        <div v-if="refLoading" class="space-y-2 p-4">
+          <Skeleton class="h-10 w-full" /><Skeleton class="h-10 w-full" />
+        </div>
+        <div v-else-if="!categoryRows.length" class="p-6">
+          <EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" />
+        </div>
+        <div v-else class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
               <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
@@ -572,7 +611,7 @@ const tabsList = computed(() => [
               </tr>
             </thead>
             <tbody>
-              <tr v-for="c in categories" :key="c.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+              <tr v-for="c in categoryRows" :key="c.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
                 <td class="px-3 py-2 font-medium">{{ c.name }}</td>
                 <td class="px-3 py-2">{{ t(`finance.kind.${c.kind}`) }}</td>
                 <td class="px-3 py-2 text-muted-foreground">{{ c.is_active ? '✓' : '—' }}</td>
@@ -580,6 +619,7 @@ const tabsList = computed(() => [
             </tbody>
           </table>
         </div>
+        </PaginatedList>
       </CardContent>
     </Card>
 
@@ -593,7 +633,14 @@ const tabsList = computed(() => [
             <Plus class="h-3.5 w-3.5" /> {{ t('finance.newCounterparty') }}
           </Button>
         </div>
-        <div class="overflow-x-auto">
+        <PaginatedList ref="counterpartyList" :fetch-page="fetchCounterpartiesPage" :reset-key="`k:${refKey.counterparties}`" v-slot="{ items: counterpartyRows, loading: refLoading }">
+        <div v-if="refLoading" class="space-y-2 p-4">
+          <Skeleton class="h-10 w-full" /><Skeleton class="h-10 w-full" />
+        </div>
+        <div v-else-if="!counterpartyRows.length" class="p-6">
+          <EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" />
+        </div>
+        <div v-else class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
               <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
@@ -604,7 +651,7 @@ const tabsList = computed(() => [
               </tr>
             </thead>
             <tbody>
-              <tr v-for="k in counterparties" :key="k.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+              <tr v-for="k in counterpartyRows" :key="k.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
                 <td class="px-3 py-2 font-medium text-emerald-700 dark:text-emerald-400">{{ k.internal_code }}</td>
                 <td class="px-3 py-2">{{ k.name }}</td>
                 <td class="px-3 py-2 text-muted-foreground">{{ k.inn || '—' }}</td>
@@ -613,6 +660,7 @@ const tabsList = computed(() => [
             </tbody>
           </table>
         </div>
+        </PaginatedList>
       </CardContent>
     </Card>
 
@@ -640,6 +688,7 @@ const tabsList = computed(() => [
       </Card>
       <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
         <CardContent class="p-0">
+          <PaginatedList ref="rateList" :fetch-page="fetchRatePage" v-slot="{ items: rateRows, loading: refLoading }">
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead>
@@ -651,7 +700,7 @@ const tabsList = computed(() => [
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(r, i) in rates.filter((row) => !refSearch.rates.trim() || row.currency.toLowerCase().includes(refSearch.rates.trim().toLowerCase())).slice(0, 60)" :key="`${r.date}-${r.currency}-${i}`" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                <tr v-for="r in rateRows" :key="`${r.date}-${r.currency}`" class="border-t border-zinc-100 dark:border-zinc-800/70">
                   <td class="whitespace-nowrap px-3 py-2">{{ r.date }}</td>
                   <td class="px-3 py-2">{{ r.currency }}</td>
                   <td class="px-3 py-2 text-right font-semibold">{{ formatRate(r.rate) }}</td>
@@ -666,6 +715,7 @@ const tabsList = computed(() => [
               </tbody>
             </table>
           </div>
+          </PaginatedList>
         </CardContent>
       </Card>
     </div>
@@ -673,6 +723,7 @@ const tabsList = computed(() => [
     <!-- Периоды -->
     <Card v-else-if="tab === 'periods'" class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
+        <PaginatedList ref="periodList" :fetch-page="fetchPeriodPage" v-slot="{ items: periodRows }">
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
@@ -683,7 +734,7 @@ const tabsList = computed(() => [
               </tr>
             </thead>
             <tbody>
-              <tr v-for="p in periods" :key="`${p.year}-${p.month}`" class="border-t border-zinc-100 dark:border-zinc-800/70">
+              <tr v-for="p in periodRows" :key="`${p.year}-${p.month}`" class="border-t border-zinc-100 dark:border-zinc-800/70">
                 <td class="px-3 py-2 font-medium">{{ p.year }} · {{ String(p.month).padStart(2, '0') }}</td>
                 <td class="px-3 py-2">
                   <Badge v-if="p.status === 'closed'" class="bg-red-100 text-red-800 dark:bg-red-950/60 dark:text-red-300">
@@ -704,6 +755,7 @@ const tabsList = computed(() => [
             </tbody>
           </table>
         </div>
+        </PaginatedList>
       </CardContent>
     </Card>
 

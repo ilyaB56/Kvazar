@@ -3,14 +3,17 @@
 // своей организации, личные гранты чипами, выдача/отозвать (выдающий видит
 // только свои rw-модули), создание «пустой» учётки с автогенерацией логина
 // из ФИО (предпросмотр), первая выдача = активация временным паролем.
+// Список пользователей пагинирован (PaginatedList, по 50 + infinite
+// scroll); поиск — локальный по загруженным строкам.
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { KeyRound, Plus, ShieldOff, UserPlus } from 'lucide-vue-next'
 import { del, get, post, put } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  SearchSelect, useToast,
+  PaginatedList, SearchSelect, Skeleton, useToast,
 } from '../components/ui'
+import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 
 const { t, d } = useI18n()
@@ -33,10 +36,26 @@ interface GrantRow {
   granted_at: string
 }
 
-const users = ref<UserRow[] | null>(null)
+const usersList = ref<{ reload: () => Promise<void> } | null>(null)
+// total из @loaded — показывать ли поиск (есть ли вообще пользователи)
+const usersTotal = ref(0)
 const delegations = ref<{ grantable: Record<string, string>; grants: GrantRow[] } | null>(null)
+const delegationsLoaded = ref(false)
 const search = ref('')
 const busy = ref<Record<string, boolean>>({})
+
+function fetchUsersPage(offset: number, limit: number) {
+  return get<PageOf<UserRow>>(`/users?limit=${limit}&offset=${offset}`)
+}
+
+function filterUsers(rows: UserRow[]): UserRow[] {
+  const q = search.value.trim().toLowerCase()
+  return q
+    ? rows.filter(u =>
+        (u.email ?? '').toLowerCase().includes(q)
+        || (u.full_name ?? '').toLowerCase().includes(q))
+    : rows
+}
 
 const canDelegate = computed(() =>
   auth.isAdmin || Object.keys(delegations.value?.grantable ?? {}).length > 0)
@@ -47,26 +66,17 @@ const grantableModules = computed(() =>
     label: t(`modules.${m}`),
   })))
 
-const filtered = computed(() => {
-  if (!users.value) return []
-  const q = search.value.trim().toLowerCase()
-  return q
-    ? users.value.filter(u =>
-        (u.email ?? '').toLowerCase().includes(q)
-        || (u.full_name ?? '').toLowerCase().includes(q))
-    : users.value
-})
-
-async function load() {
+async function loadDelegations() {
   try {
-    users.value = await get<UserRow[]>('/users')
     delegations.value = await get<{ grantable: Record<string, string>; grants: GrantRow[] }>('/delegations')
   } catch (error) {
     toast.apiError(error)
-    users.value = []
+    delegations.value = { grantable: {}, grants: [] }
+  } finally {
+    delegationsLoaded.value = true
   }
 }
-onMounted(load)
+onMounted(loadDelegations)
 
 const grantsByUser = computed(() => {
   const map: Record<string, GrantRow[]> = {}
@@ -106,7 +116,8 @@ async function doGrant() {
       toast.success(t('deleg.grantedToast'))
       grantOpen.value = false
     }
-    await load()
+    await usersList.value?.reload()
+    await loadDelegations()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -119,7 +130,8 @@ async function revoke(userId: string, module: string) {
   try {
     await del(`/users/${userId}/permissions/${module}`)
     toast.success(t('deleg.revokedToast'))
-    await load()
+    await usersList.value?.reload()
+    await loadDelegations()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -161,7 +173,8 @@ async function doCreate() {
     })
     createdUser.value = result
     toast.success(t('deleg.accountCreated'))
-    await load()
+    await usersList.value?.reload()
+    await loadDelegations()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -194,7 +207,7 @@ function closeCreate() {
           </div>
         </div>
         <div class="flex items-center gap-2">
-          <Input v-if="users?.length" v-model="search" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[200px]" />
+          <Input v-if="usersTotal" v-model="search" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[200px]" />
           <Button v-if="canDelegate" variant="emerald" size="sm" class="gap-1.5" @click="createOpen = true">
             <UserPlus class="h-3.5 w-3.5" /> {{ t('deleg.newAccount') }}
           </Button>
@@ -202,68 +215,74 @@ function closeCreate() {
       </CardContent>
     </Card>
 
-    <div v-if="!canDelegate && users" class="py-8">
+    <div v-if="!canDelegate && delegationsLoaded" class="py-8">
       <EmptyState :title="t('ui.emptyTitle')" :description="t('deleg.noGrantable')" />
     </div>
 
-    <Card v-if="canDelegate && filtered.length" class="border-zinc-200 shadow-sm dark:border-zinc-800">
-      <CardContent class="p-0">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                <th class="px-3 py-2 font-medium">{{ t('deleg.colUser') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('deleg.colRole') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('deleg.colGrants') }}</th>
-                <th class="px-3 py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in filtered" :key="row.id"
-                  class="border-t border-zinc-100 dark:border-zinc-800/70">
-                <td class="px-3 py-2">
-                  <p class="font-medium">{{ row.full_name || '—' }}</p>
-                  <p class="text-xs text-muted-foreground">{{ row.email }}</p>
-                </td>
-                <td class="px-3 py-2">
-                  <Badge :class="row.role === 'admin'
-                    ? 'bg-violet-100 text-violet-800 dark:bg-violet-950/60 dark:text-violet-300'
-                    : 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'">
-                    {{ t(`roles.${row.role}`) }}
-                  </Badge>
-                </td>
-                <td class="px-3 py-2">
-                  <div class="flex flex-wrap gap-1">
-                    <span
-                      v-for="g in grantsByUser[row.id] ?? []" :key="g.module"
-                      class="group inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+    <PaginatedList
+      v-if="canDelegate" ref="usersList" :fetch-page="fetchUsersPage"
+      @loaded="(total: number) => { usersTotal = total }"
+      v-slot="{ items: userRows, loading }"
+    >
+      <Skeleton v-if="loading" class="h-40 w-full" />
+      <Card v-else-if="filterUsers(userRows).length" class="border-zinc-200 shadow-sm dark:border-zinc-800">
+        <CardContent class="p-0">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                  <th class="px-3 py-2 font-medium">{{ t('deleg.colUser') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('deleg.colRole') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('deleg.colGrants') }}</th>
+                  <th class="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in filterUsers(userRows)" :key="row.id"
+                    class="border-t border-zinc-100 dark:border-zinc-800/70">
+                  <td class="px-3 py-2">
+                    <p class="font-medium">{{ row.full_name || '—' }}</p>
+                    <p class="text-xs text-muted-foreground">{{ row.email }}</p>
+                  </td>
+                  <td class="px-3 py-2">
+                    <Badge :class="row.role === 'admin'
+                      ? 'bg-violet-100 text-violet-800 dark:bg-violet-950/60 dark:text-violet-300'
+                      : 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'">
+                      {{ t(`roles.${row.role}`) }}
+                    </Badge>
+                  </td>
+                  <td class="px-3 py-2">
+                    <div class="flex flex-wrap gap-1">
+                      <span
+                        v-for="g in grantsByUser[row.id] ?? []" :key="g.module"
+                        class="group inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                      >
+                        {{ t(`modules.${g.module}`) }}·{{ g.level }}
+                        <button
+                          v-if="auth.isAdmin || g.module" type="button"
+                          class="opacity-0 transition-opacity group-hover:opacity-100"
+                          :title="t('deleg.revoke')"
+                          @click="revoke(row.id, g.module)"
+                        >×</button>
+                      </span>
+                      <span v-if="!(grantsByUser[row.id] ?? []).length" class="text-xs text-muted-foreground">—</span>
+                    </div>
+                  </td>
+                  <td class="px-3 py-2 text-right">
+                    <Button
+                      v-if="grantableModules.length && row.is_active" variant="outline" size="sm"
+                      class="gap-1" @click="askGrant(row)"
                     >
-                      {{ t(`modules.${g.module}`) }}·{{ g.level }}
-                      <button
-                        v-if="auth.isAdmin || g.module" type="button"
-                        class="opacity-0 transition-opacity group-hover:opacity-100"
-                        :title="t('deleg.revoke')"
-                        @click="revoke(row.id, g.module)"
-                      >×</button>
-                    </span>
-                    <span v-if="!(grantsByUser[row.id] ?? []).length" class="text-xs text-muted-foreground">—</span>
-                  </div>
-                </td>
-                <td class="px-3 py-2 text-right">
-                  <Button
-                    v-if="grantableModules.length && row.is_active" variant="outline" size="sm"
-                    class="gap-1" @click="askGrant(row)"
-                  >
-                    <Plus class="h-3.5 w-3.5" /> {{ t('deleg.grant') }}
-                  </Button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </CardContent>
-    </Card>
-    <Skeleton v-else-if="canDelegate" class="h-40 w-full" />
+                      <Plus class="h-3.5 w-3.5" /> {{ t('deleg.grant') }}
+                    </Button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </PaginatedList>
 
     <!-- Диалог выдачи -->
     <Dialog :open="grantOpen" :title="t('deleg.grantTitle')" width="440px"

@@ -2,14 +2,15 @@
 // Закупки (этап I): заказы поставщикам (создание со строками, подтверждение,
 // оплата), приёмки (привязка к заказу, локации, для цифровых — список кодов;
 // проведение/сторно), сальдо по поставщику. Кнопки — при accounting: rw.
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Ban, Check, PackageCheck, Plus, Wallet } from 'lucide-vue-next'
 import { get, post } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  Select, SearchSelect, Skeleton, Tabs, useToast,
+  PaginatedList, Select, SearchSelect, Skeleton, Tabs, useToast,
 } from '../components/ui'
+import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 import { formatMoney2, isPositiveDecimalString } from '../utils/money'
 
@@ -19,59 +20,78 @@ const toast = useToast()
 const canWrite = computed(() => auth.moduleLevel('accounting') === 'rw')
 
 const tab = ref('orders')
-const loading = ref(true)
 
 interface PurchaseOrder {
   id: string; number: string | null; counterparty_id: string; status: string
   currency: string; rate: string | null; amount: string; amount_base: string | null
   note: string; created_at: string
+  counterparty_name: string | null
 }
 interface Receipt {
   id: string; number: string | null; purchase_order_id: string | null
   counterparty_id: string; status: string; is_stornoed: boolean
   counterparty_doc: string | null; note: string; moved_at: string; created_at: string
+  counterparty_name: string | null; purchase_order_number: string | null
 }
 interface Counterparty { id: string; name: string }
 interface Item { id: string; sku: string; name: string; kind: string; tracking: string }
 interface Location { id: string; name: string; kind: string; is_active: boolean }
 interface Account { id: string; name: string; currency: string }
 
-const orders = ref<PurchaseOrder[]>([])
-const receipts = ref<Receipt[]>([])
+// списки пагинированы (по 50 + infinite scroll); имена контрагентов и
+// номера заказов приходят в payload — полные справочники не грузим
+const ordersList = ref<{ reload: () => Promise<void> } | null>(null)
+const receiptsList = ref<{ reload: () => Promise<void> } | null>(null)
+const fetchOrdersPage = (offset: number, limit: number) =>
+  get<PageOf<PurchaseOrder>>(`/accounting/purchase-orders?limit=${limit}&offset=${offset}`)
+const fetchReceiptsPage = (offset: number, limit: number) =>
+  get<PageOf<Receipt>>(`/accounting/receipts?limit=${limit}&offset=${offset}`)
+
+// справочники для диалогов/сальдо — лениво (диалог или вкладка «Сальдо»)
 const counterparties = ref<Counterparty[]>([])
 const items = ref<Item[]>([])
 const locations = ref<Location[]>([])
 const accounts = ref<Account[]>([])
+const refsLoading = ref(false)
 
-const cpName = (id: string) => counterparties.value.find((c) => c.id === id)?.name ?? '…'
-const orderNumber = (id: string | null) =>
-  id ? (orders.value.find((o) => o.id === id)?.number ?? '…') : '—'
-const activeLocations = computed(() => locations.value.filter((l) => l.is_active))
-
-async function loadAll() {
-  loading.value = true
+async function ensureDialogRefs() {
+  if (counterparties.value.length || refsLoading.value) return
+  refsLoading.value = true
   try {
-    const [o, r, cp, it, loc, acc] = await Promise.all([
-      get<PurchaseOrder[]>('/accounting/purchase-orders'),
-      get<Receipt[]>('/accounting/receipts'),
+    const [cp, it, loc, acc] = await Promise.all([
       get<Counterparty[]>('/accounting/counterparties'),
-      get<Item[]>('/accounting/items'),
+      get<Item[]>('/accounting/items?is_active=true'),
       get<Location[]>('/accounting/locations'),
       get<Account[]>('/accounting/accounts'),
     ])
-    orders.value = o
-    receipts.value = r
     counterparties.value = cp
     items.value = it
     locations.value = loc
     accounts.value = acc
-  } catch {
-    toast.error(t('errors.unknown'))
+  } catch (error) {
+    toast.apiError(error)
   } finally {
-    loading.value = false
+    refsLoading.value = false
   }
 }
-onMounted(loadAll)
+
+watch(tab, (value) => {
+  if (value === 'balance') void ensureDialogRefs()
+})
+
+const cpName = (id: string) => counterparties.value.find((c) => c.id === id)?.name ?? '…'
+const activeLocations = computed(() => locations.value.filter((l) => l.is_active))
+
+// заказы для пикера приёмки — лениво при первом открытии диалога
+const dialogOrders = ref<PurchaseOrder[]>([])
+async function ensureDialogOrders() {
+  if (dialogOrders.value.length) return
+  try {
+    dialogOrders.value = (await get<PageOf<PurchaseOrder>>('/accounting/purchase-orders?limit=0')).items
+  } catch (error) {
+    toast.apiError(error)
+  }
+}
 
 function statusCls(status: string): string {
   return {
@@ -93,6 +113,7 @@ const orderForm = reactive({
 })
 
 function openOrderDialog() {
+  void ensureDialogRefs()
   orderForm.counterpartyId = ''
   orderForm.currency = 'RUB'
   orderForm.note = ''
@@ -118,7 +139,8 @@ async function saveOrder() {
     })
     toast.success(t('pur.orderCreated'))
     orderOpen.value = false
-    await loadAll()
+    dialogOrders.value = []
+    await ordersList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -130,7 +152,7 @@ async function confirmOrder(order: PurchaseOrder) {
   try {
     await post(`/accounting/purchase-orders/${order.id}/confirm`)
     toast.success(t('pur.orderConfirmed'))
-    await loadAll()
+    await ordersList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   }
@@ -142,6 +164,7 @@ const payOrder = ref<PurchaseOrder | null>(null)
 const payForm = reactive({ accountId: '', amount: '' })
 
 function openPay(order: PurchaseOrder) {
+  void ensureDialogRefs()
   payOrder.value = order
   payForm.accountId = accounts.value.find((a) => a.currency === 'RUB')?.id ?? ''
   payForm.amount = order.amount_base ?? order.amount
@@ -157,7 +180,7 @@ async function savePay() {
     })
     toast.success(t('pur.paid'))
     payTarget.value = null
-    await loadAll()
+    await ordersList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   }
@@ -172,6 +195,8 @@ const receiptForm = reactive({
 })
 
 function openReceiptDialog(order?: PurchaseOrder) {
+  void ensureDialogRefs()
+  void ensureDialogOrders()
   receiptForm.orderId = order?.id ?? ''
   receiptForm.counterpartyDoc = ''
   const prefill = order
@@ -211,7 +236,11 @@ async function saveReceipt() {
     })
     toast.success(t('pur.receiptCreated'))
     receiptOpen.value = false
-    await loadAll()
+    dialogOrders.value = []
+    await Promise.all([
+      receiptsList.value?.reload() ?? Promise.resolve(),
+      ordersList.value?.reload() ?? Promise.resolve(),
+    ])
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -223,7 +252,10 @@ async function postReceipt(receipt: Receipt) {
   try {
     await post(`/accounting/receipts/${receipt.id}/post`)
     toast.success(t('pur.receiptPosted'))
-    await loadAll()
+    await Promise.all([
+      receiptsList.value?.reload() ?? Promise.resolve(),
+      ordersList.value?.reload() ?? Promise.resolve(),
+    ])
   } catch (error) {
     toast.apiError(error)
   }
@@ -233,7 +265,10 @@ async function unpostReceipt(receipt: Receipt) {
   try {
     await post(`/accounting/receipts/${receipt.id}/unpost`, { reason: t('pur.stornoReason') })
     toast.success(t('pur.receiptUnposted'))
-    await loadAll()
+    await Promise.all([
+      receiptsList.value?.reload() ?? Promise.resolve(),
+      ordersList.value?.reload() ?? Promise.resolve(),
+    ])
   } catch (error) {
     toast.apiError(error)
   }
@@ -280,8 +315,9 @@ async function loadBalance() {
 
     <!-- Заказы -->
     <div v-if="tab === 'orders'" class="space-y-3">
+      <PaginatedList ref="ordersList" :fetch-page="fetchOrdersPage" v-slot="{ items: orderRows, loading }">
       <div class="flex items-center justify-between">
-        <span class="text-sm text-muted-foreground">{{ t('pur.shownOf', { n: orders.length }) }}</span>
+        <span />
         <Button v-if="canWrite" variant="emerald" size="sm" class="gap-1.5" @click="openOrderDialog">
           <Plus class="h-3.5 w-3.5" /> {{ t('pur.newOrder') }}
         </Button>
@@ -289,6 +325,7 @@ async function loadBalance() {
       <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
         <CardContent class="p-0">
           <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /><Skeleton class="h-10 w-full" /></div>
+          <div v-else-if="!orderRows.length" class="p-6"><EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" /></div>
           <div v-else class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead>
@@ -302,9 +339,9 @@ async function loadBalance() {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="order in orders.slice(0, 60).reverse()" :key="order.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                <tr v-for="order in orderRows" :key="order.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
                   <td class="whitespace-nowrap px-3 py-2 font-medium text-emerald-700 dark:text-emerald-400">{{ order.number ?? '—' }}</td>
-                  <td class="px-3 py-2">{{ cpName(order.counterparty_id) }}</td>
+                  <td class="px-3 py-2">{{ order.counterparty_name ?? '…' }}</td>
                   <td class="whitespace-nowrap px-3 py-2 text-right font-semibold">{{ formatMoney2(order.amount, order.currency) }}
                     <span v-if="order.amount_base && order.currency !== 'RUB'" class="block text-[10px] font-normal text-muted-foreground">{{ formatMoney2(order.amount_base) }}</span>
                   </td>
@@ -329,12 +366,14 @@ async function loadBalance() {
           </div>
         </CardContent>
       </Card>
+      </PaginatedList>
     </div>
 
     <!-- Приёмки -->
     <div v-else-if="tab === 'receipts'" class="space-y-3">
+      <PaginatedList ref="receiptsList" :fetch-page="fetchReceiptsPage" v-slot="{ items: receiptRows, loading }">
       <div class="flex items-center justify-between">
-        <span class="text-sm text-muted-foreground">{{ t('pur.shownOf', { n: receipts.length }) }}</span>
+        <span />
         <Button v-if="canWrite" variant="emerald" size="sm" class="gap-1.5" @click="openReceiptDialog()">
           <Plus class="h-3.5 w-3.5" /> {{ t('pur.newReceipt') }}
         </Button>
@@ -342,6 +381,7 @@ async function loadBalance() {
       <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
         <CardContent class="p-0">
           <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
+          <div v-else-if="!receiptRows.length" class="p-6"><EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" /></div>
           <div v-else class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead>
@@ -355,11 +395,11 @@ async function loadBalance() {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="receipt in receipts.slice(0, 60).reverse()" :key="receipt.id"
+                <tr v-for="receipt in receiptRows" :key="receipt.id"
                     class="border-t border-zinc-100 dark:border-zinc-800/70" :class="receipt.is_stornoed && 'opacity-60'">
                   <td class="whitespace-nowrap px-3 py-2 font-medium text-emerald-700 dark:text-emerald-400">{{ receipt.number ?? '—' }}</td>
-                  <td class="px-3 py-2">{{ orderNumber(receipt.purchase_order_id) }}</td>
-                  <td class="hidden px-3 py-2 text-muted-foreground sm:table-cell">{{ cpName(receipt.counterparty_id) }}</td>
+                  <td class="px-3 py-2">{{ receipt.purchase_order_number ?? '—' }}</td>
+                  <td class="hidden px-3 py-2 text-muted-foreground sm:table-cell">{{ receipt.counterparty_name ?? '…' }}</td>
                   <td class="hidden px-3 py-2 text-xs text-muted-foreground md:table-cell">{{ receipt.counterparty_doc ?? '—' }}</td>
                   <td class="px-3 py-2">
                     <Badge :class="receipt.is_stornoed ? 'bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300' : statusCls(receipt.status)">
@@ -382,6 +422,7 @@ async function loadBalance() {
           </div>
         </CardContent>
       </Card>
+      </PaginatedList>
     </div>
 
     <!-- Сальдо -->
@@ -464,7 +505,7 @@ async function loadBalance() {
     >
       <form class="space-y-4" @submit.prevent="savePay">
         <p v-if="payOrder" class="text-sm text-muted-foreground">
-          {{ payOrder.number }} · {{ cpName(payOrder.counterparty_id) }} · {{ formatMoney2(payOrder.amount, payOrder.currency) }}
+          {{ payOrder.number }} · {{ payOrder.counterparty_name ?? '…' }} · {{ formatMoney2(payOrder.amount, payOrder.currency) }}
         </p>
         <div class="space-y-1.5">
           <Label class="text-xs font-medium">{{ t('finance.account') }}</Label>
@@ -489,7 +530,7 @@ async function loadBalance() {
             <Label class="text-xs font-medium">{{ t('pur.colOrder') }}</Label>
             <SearchSelect v-model="receiptForm.orderId" :options="[
               { value: '', label: '—' },
-              ...orders.filter((o) => o.status !== 'cancelled').slice(0, 200).map((o) => ({ value: o.id, label: `${o.number ?? o.id.slice(0, 8)} · ${cpName(o.counterparty_id)}` })),
+              ...dialogOrders.filter((o) => o.status !== 'cancelled').map((o) => ({ value: o.id, label: `${o.number ?? o.id.slice(0, 8)} · ${o.counterparty_name ?? '…'}` })),
             ]" :search-placeholder="t('ui.searchPlaceholder')" />
           </div>
           <div class="space-y-1.5">

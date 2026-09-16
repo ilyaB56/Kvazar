@@ -16,8 +16,9 @@ import {
 import { api, get, post } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, DropdownMenu, DropdownMenuItem,
-  EmptyState, Input, Label, Select, Skeleton, useToast,
+  EmptyState, Input, Label, PaginatedList, Select, Skeleton, useToast,
 } from '../components/ui'
+import type { PageOf } from '../components/ui'
 import QuasarMark from '../components/brand/QuasarMark.vue'
 import PrintArea from '../components/ui/PrintArea.vue'
 import { useAuthStore } from '../stores/auth'
@@ -77,9 +78,20 @@ interface HistoryRow {
 
 const loading = ref(true)
 const stages = ref<Stage[]>([])
-const deals = ref<Deal[]>([])
 const query = ref('')
 const stageFilter = ref('')
+
+// сделки пагинированы (по 50 + infinite scroll); поиск/стадия уходит на
+// сервер и меняет resetKey (offset сбрасывается)
+const dealsList = ref<{ reload: () => Promise<void> } | null>(null)
+const dealsKey = ref('init')
+
+function fetchDealsPage(offset: number, limit: number) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (query.value.trim()) params.set('q', query.value.trim())
+  if (stageFilter.value) params.set('stage_id', stageFilter.value)
+  return get<PageOf<Deal>>(`/crm/deals?${params}`)
+}
 
 const openStages = computed(() => stages.value.filter((s) => !s.is_won && !s.is_lost))
 const wonStage = computed(() => stages.value.find((s) => s.is_won))
@@ -100,34 +112,27 @@ async function loadStages() {
   stages.value = await get<Stage[]>('/crm/stages')
 }
 
-async function loadDeals() {
-  const params = new URLSearchParams()
-  if (query.value.trim()) params.set('q', query.value.trim())
-  if (stageFilter.value) params.set('stage_id', stageFilter.value)
-  const suffix = params.size ? `?${params.toString()}` : ''
-  deals.value = await get<Deal[]>(`/crm/deals${suffix}`)
-}
-
 let searchTimer: number | undefined
-watch(query, () => {
+watch([query, stageFilter], () => {
   window.clearTimeout(searchTimer)
-  searchTimer = window.setTimeout(() => { void loadDeals().catch(() => {}) }, 300)
+  searchTimer = window.setTimeout(() => {
+    dealsKey.value = `${query.value.trim()}|${stageFilter.value}`
+  }, 300)
 })
 
-async function loadAll() {
-  loading.value = true
+onMounted(async () => {
   try {
-    await Promise.all([loadStages(), loadDeals()])
+    await loadStages()
   } catch {
     toast.error(t('errors.unknown'))
   } finally {
     loading.value = false
   }
-}
-onMounted(loadAll)
+})
 
-const totalBase = computed(() =>
-  deals.value.reduce((sum, deal) => sum + Number(deal.amount_base ?? deal.amount), 0))
+function sumBase(rows: Deal[]): number {
+  return rows.reduce((sum, deal) => sum + Number(deal.amount_base ?? deal.amount), 0)
+}
 
 function stageClass(stage: Stage | undefined): string {
   if (!stage) return ''
@@ -146,11 +151,11 @@ async function moveDeal(deal: Deal, to: Stage) {
   try {
     await post<Deal>(`/crm/deals/${deal.id}/move`, { stage_id: to.id })
     toast.success(t('crm.moved', { stage: to.name }))
-    await loadDeals()
+    await dealsList.value?.reload()
     if (card.value?.id === deal.id) await openCard(deal.id)
   } catch (error) {
     toast.apiError(error)
-    await loadDeals()
+    await dealsList.value?.reload()
   }
 }
 
@@ -195,7 +200,7 @@ async function saveDeal() {
     })
     toast.success(t('crm.created'))
     createOpen.value = false
-    await loadDeals()
+    await dealsList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -313,18 +318,18 @@ const commKinds: Record<string, string> = {
             v-model="stageFilter" :options="[
               { value: '', label: t('crm.allStages') },
               ...stages.map((s) => ({ value: s.id, label: s.name })),
-            ]" @update:model-value="void loadDeals()"
+            ]"
           />
         </div>
       </CardContent>
     </Card>
 
-    <p class="text-sm text-muted-foreground">
-      {{ t('crm.found', { n: deals.length }) }}
-      <span class="font-semibold text-foreground">{{ formatMoney2(totalBase.toFixed(2)) }}</span>
-    </p>
-
     <!-- Таблица сделок -->
+    <PaginatedList ref="dealsList" :fetch-page="fetchDealsPage" :reset-key="dealsKey" v-slot="{ items: dealRows, loading, total }">
+    <p v-if="!loading && dealRows.length === total" class="text-sm text-muted-foreground">
+      {{ t('crm.found', { n: total }) }}
+      <span class="font-semibold text-foreground">{{ formatMoney2(sumBase(dealRows).toFixed(2)) }}</span>
+    </p>
     <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
         <div v-if="loading" class="space-y-2 p-4">
@@ -332,7 +337,7 @@ const commKinds: Record<string, string> = {
           <Skeleton class="h-10 w-full" />
           <Skeleton class="h-10 w-full" />
         </div>
-        <div v-else-if="deals.length === 0" class="p-6">
+        <div v-else-if="dealRows.length === 0" class="p-6">
           <EmptyState :title="t('ui.emptyTitle')" :description="t('ui.emptyDescription')" />
         </div>
         <div v-else class="overflow-x-auto">
@@ -349,7 +354,7 @@ const commKinds: Record<string, string> = {
             </thead>
             <tbody>
               <tr
-                v-for="deal in deals" :key="deal.id"
+                v-for="deal in dealRows" :key="deal.id"
                 class="cursor-pointer border-t border-zinc-100 transition-colors hover:bg-zinc-50/60 dark:border-zinc-800/70 dark:hover:bg-zinc-800/40"
                 @click="void openCard(deal.id)"
               >
@@ -403,6 +408,7 @@ const commKinds: Record<string, string> = {
         </div>
       </CardContent>
     </Card>
+    </PaginatedList>
 
     <!-- Диалог новой сделки -->
     <Dialog :open="createOpen" :title="t('crm.newDeal')" @update:open="(v: boolean) => { if (!v) createOpen = false }">

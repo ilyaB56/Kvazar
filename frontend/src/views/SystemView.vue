@@ -2,27 +2,40 @@
 // Система (этап G — финальный дом в Настройках): версия и проверка
 // обновлений, бэкапы с проверкой, параметр контура allow_negative_stock
 // (полировка из реестра — настройка видна и меняется через /settings),
-// журнал событий (events_log, админ).
+// журнал событий (events_log, админ). Список бэкапов пагинирован
+// (PaginatedList; эндпоинт пока отдаёт массив целиком — компонент это
+// переваривает, total = длине списка).
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { DatabaseBackup, RefreshCw, ShieldCheck } from 'lucide-vue-next'
 import { get, post, put } from '../api/client'
 import type { Backup, SystemVersion } from '../api/types'
 import {
-  Badge, Button, Card, CardContent, EmptyState, Label, Skeleton, Switch, useToast,
+  Badge, Button, Card, CardContent, EmptyState, Label, PaginatedList, Skeleton, Switch, useToast,
 } from '../components/ui'
+import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 
 const { t, d } = useI18n()
 const auth = useAuthStore()
 const toast = useToast()
 
-const backups = ref<Backup[] | null>(null)
+const backupsList = ref<{ reload: () => Promise<void> } | null>(null)
 const version = ref<SystemVersion | null>(null)
-const loading = ref(true)
 const creating = ref(false)
 const verifying = ref<Record<string, boolean>>({})
 const checking = ref(false)
+
+// последние загруженные бэкапы — для проверки «есть ли ещё pending»
+// при поллинге статусов
+const latestBackups = ref<Backup[]>([])
+
+async function fetchBackupsPage(offset: number, limit: number) {
+  const result = await get<PageOf<Backup> | Backup[]>(
+    `/system/backups?limit=${limit}&offset=${offset}`)
+  latestBackups.value = Array.isArray(result) ? result : result.items
+  return result
+}
 
 // журнал (админ)
 interface EventRow {
@@ -65,29 +78,19 @@ async function toggleNegativeStock(value: boolean) {
 }
 
 async function load() {
-  loading.value = true
-  try {
-    const [backupList, versionInfo] = await Promise.all([
-      get<Backup[]>('/system/backups'),
-      get<SystemVersion>('/system/version'),
-    ])
-    backups.value = backupList
-    version.value = versionInfo
-    if (auth.isAdmin) {
-      events.value = await get<EventRow[]>('/events/log?limit=20')
-    }
-    await loadSettings()
-  } finally {
-    loading.value = false
+  version.value = await get<SystemVersion>('/system/version')
+  if (auth.isAdmin) {
+    events.value = await get<EventRow[]>('/events/log?limit=20')
   }
+  await loadSettings()
 }
 
 // статусы создаются/проверяются в фоне — обновляем список, пока есть pending
 function schedulePolling() {
   stopPolling()
   pollTimer.value = window.setInterval(async () => {
-    backups.value = await get<Backup[]>('/system/backups')
-    const busy = backups.value.some((b) => b.status === 'created' && b.kind === 'manual')
+    await backupsList.value?.reload()
+    const busy = latestBackups.value.some((b) => b.status === 'created' && b.kind === 'manual')
     if (!busy && !Object.values(verifying.value).some(Boolean)) stopPolling()
   }, 3000)
 }
@@ -204,51 +207,53 @@ onBeforeUnmount(stopPolling)
     <!-- Бэкапы -->
     <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
-        <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3">
-          <p class="text-sm font-semibold min-w-0 truncate">{{ t('system.backups') }}</p>
-          <Button variant="emerald" size="sm" class="gap-1.5" :disabled="creating" @click="createBackup">
-            <DatabaseBackup class="h-3.5 w-3.5" /> {{ t('system.createBackup') }}
-          </Button>
-        </div>
-        <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
-        <div v-else-if="backups?.length === 0" class="p-6">
-          <EmptyState :title="t('ui.emptyTitle')" :description="t('system.noBackups')" />
-        </div>
-        <div v-else class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                <th class="px-3 py-2 font-medium">{{ t('system.backupDate') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('system.backupSize') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('system.backupKind') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('system.backupStatus') }}</th>
-                <th class="hidden px-3 py-2 font-medium lg:table-cell">{{ t('system.backupFile') }}</th>
-                <th class="px-3 py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in backups ?? []" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
-                <td class="whitespace-nowrap px-3 py-2">{{ d(row.created_at, 'short') }}</td>
-                <td class="px-3 py-2 text-muted-foreground">{{ formatSize(row.size) }}</td>
-                <td class="px-3 py-2">{{ t(`system.kind.${row.kind}`) }}</td>
-                <td class="px-3 py-2">
-                  <Badge :class="backupTone(row.status)">{{ t(`system.status.${row.status}`) }}</Badge>
-                </td>
-                <td class="hidden max-w-[240px] truncate px-3 py-2 font-mono text-xs text-muted-foreground lg:table-cell">
-                  {{ row.file_name }}
-                </td>
-                <td class="px-3 py-2 text-right">
-                  <Button
-                    variant="outline" size="sm" class="gap-1.5" :disabled="verifying[row.id]"
-                    @click="verifyBackup(row)"
-                  >
-                    <ShieldCheck class="h-3.5 w-3.5" /> {{ t('system.verify') }}
-                  </Button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <PaginatedList ref="backupsList" :fetch-page="fetchBackupsPage" v-slot="{ items: backupRows, loading }">
+          <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3">
+            <p class="text-sm font-semibold min-w-0 truncate">{{ t('system.backups') }}</p>
+            <Button variant="emerald" size="sm" class="gap-1.5" :disabled="creating" @click="createBackup">
+              <DatabaseBackup class="h-3.5 w-3.5" /> {{ t('system.createBackup') }}
+            </Button>
+          </div>
+          <div v-if="loading" class="space-y-2 p-4"><Skeleton class="h-10 w-full" /></div>
+          <div v-else-if="backupRows.length === 0" class="p-6">
+            <EmptyState :title="t('ui.emptyTitle')" :description="t('system.noBackups')" />
+          </div>
+          <div v-else class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                  <th class="px-3 py-2 font-medium">{{ t('system.backupDate') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('system.backupSize') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('system.backupKind') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('system.backupStatus') }}</th>
+                  <th class="hidden px-3 py-2 font-medium lg:table-cell">{{ t('system.backupFile') }}</th>
+                  <th class="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in backupRows" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                  <td class="whitespace-nowrap px-3 py-2">{{ d(row.created_at, 'short') }}</td>
+                  <td class="px-3 py-2 text-muted-foreground">{{ formatSize(row.size) }}</td>
+                  <td class="px-3 py-2">{{ t(`system.kind.${row.kind}`) }}</td>
+                  <td class="px-3 py-2">
+                    <Badge :class="backupTone(row.status)">{{ t(`system.status.${row.status}`) }}</Badge>
+                  </td>
+                  <td class="hidden max-w-[240px] truncate px-3 py-2 font-mono text-xs text-muted-foreground lg:table-cell">
+                    {{ row.file_name }}
+                  </td>
+                  <td class="px-3 py-2 text-right">
+                    <Button
+                      variant="outline" size="sm" class="gap-1.5" :disabled="verifying[row.id]"
+                      @click="verifyBackup(row)"
+                    >
+                      <ShieldCheck class="h-3.5 w-3.5" /> {{ t('system.verify') }}
+                    </Button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </PaginatedList>
       </CardContent>
     </Card>
 

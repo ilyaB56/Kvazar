@@ -1,14 +1,16 @@
 <script setup lang="ts">
 // Правила уведомлений (этап G — переприход на ui-библиотеку): список,
-// тест-отправка, удаление, создание с шаблоном.
-import { onMounted, reactive, ref } from 'vue'
+// тест-отправка, удаление, создание с шаблоном. Список пагинирован
+// (PaginatedList, по 50 + infinite scroll).
+import { reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Plus, Send, Trash2 } from 'lucide-vue-next'
 import { del, get, post } from '../api/client'
 import {
   Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  Select, Skeleton, useToast,
+  PaginatedList, Select, Skeleton, useToast,
 } from '../components/ui'
+import type { PageOf } from '../components/ui'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -34,11 +36,15 @@ const EVENTS = [
   'acc.production.order.posted',
 ]
 
-const rules = ref<NotificationRule[]>([])
-const loading = ref(true)
+const rulesList = ref<{ reload: () => Promise<void> } | null>(null)
 const dialogVisible = ref(false)
 const creating = ref(false)
 const testing = ref<Record<string, boolean>>({})
+
+function fetchRulesPage(offset: number, limit: number) {
+  return get<PageOf<NotificationRule>>(
+    `/integrations/notification-rules?limit=${limit}&offset=${offset}`)
+}
 
 const form = reactive({
   name: '',
@@ -46,15 +52,6 @@ const form = reactive({
   chat_id: '',
   template: '',
 })
-
-async function load() {
-  loading.value = true
-  try {
-    rules.value = await get<NotificationRule[]>('/integrations/notification-rules')
-  } finally {
-    loading.value = false
-  }
-}
 
 function openDialog() {
   form.name = ''
@@ -75,7 +72,7 @@ async function createRule() {
     await post('/integrations/notification-rules', { ...form })
     toast.success(t('notify.created'))
     dialogVisible.value = false
-    await load()
+    await rulesList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   } finally {
@@ -100,68 +97,68 @@ async function removeRule(row: NotificationRule) {
   try {
     await del(`/integrations/notification-rules/${row.id}`)
     toast.success(t('notify.removed'))
-    await load()
+    await rulesList.value?.reload()
   } catch (error) {
     toast.apiError(error)
   }
 }
-
-onMounted(load)
 </script>
 
 <template>
   <div class="space-y-4">
-    <div class="flex items-center justify-between gap-3 flex-wrap">
-      <p class="text-base font-semibold min-w-0 truncate">{{ t('notify.rulesTitle') }}</p>
-      <Button variant="emerald" size="sm" class="gap-1.5" @click="openDialog">
-        <Plus class="h-4 w-4" /> {{ t('notify.create') }}
-      </Button>
-    </div>
+    <PaginatedList ref="rulesList" :fetch-page="fetchRulesPage" v-slot="{ items: ruleRows, loading }">
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <p class="text-base font-semibold min-w-0 truncate">{{ t('notify.rulesTitle') }}</p>
+        <Button variant="emerald" size="sm" class="gap-1.5" @click="openDialog">
+          <Plus class="h-4 w-4" /> {{ t('notify.create') }}
+        </Button>
+      </div>
 
-    <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
-      <CardContent class="p-0">
-        <div v-if="loading" class="space-y-2 p-4">
-          <Skeleton class="h-10 w-full" />
-          <Skeleton class="h-10 w-full" />
-        </div>
-        <div v-else-if="rules.length === 0" class="p-6">
-          <EmptyState :title="t('ui.emptyTitle')" :description="t('notify.emptyRules')" />
-        </div>
-        <div v-else class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
-                <th class="px-3 py-2 font-medium">{{ t('notify.name') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('notify.event') }}</th>
-                <th class="hidden px-3 py-2 font-medium sm:table-cell">{{ t('notify.chatId') }}</th>
-                <th class="hidden px-3 py-2 font-medium lg:table-cell">{{ t('notify.template') }}</th>
-                <th class="px-3 py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in rules" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
-                <td class="px-3 py-2 font-medium">{{ row.name }}</td>
-                <td class="px-3 py-2 font-mono text-xs text-muted-foreground">{{ row.event_name }}</td>
-                <td class="hidden px-3 py-2 text-muted-foreground sm:table-cell">{{ row.chat_id }}</td>
-                <td class="hidden max-w-[260px] truncate px-3 py-2 text-xs text-muted-foreground lg:table-cell">
-                  {{ row.template }}
-                </td>
-                <td class="px-3 py-2">
-                  <div class="flex justify-end gap-1">
-                    <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('notify.test')" @click="testRule(row)">
-                      <Send class="h-3.5 w-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('notify.remove')" @click="removeRule(row)">
-                      <Trash2 class="h-3.5 w-3.5 text-red-500" />
-                    </Button>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </CardContent>
-    </Card>
+      <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
+        <CardContent class="p-0">
+          <div v-if="loading" class="space-y-2 p-4">
+            <Skeleton class="h-10 w-full" />
+            <Skeleton class="h-10 w-full" />
+          </div>
+          <div v-else-if="ruleRows.length === 0" class="p-6">
+            <EmptyState :title="t('ui.emptyTitle')" :description="t('notify.emptyRules')" />
+          </div>
+          <div v-else class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="bg-zinc-50/80 text-left text-xs text-muted-foreground dark:bg-zinc-900/50">
+                  <th class="px-3 py-2 font-medium">{{ t('notify.name') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('notify.event') }}</th>
+                  <th class="hidden px-3 py-2 font-medium sm:table-cell">{{ t('notify.chatId') }}</th>
+                  <th class="hidden px-3 py-2 font-medium lg:table-cell">{{ t('notify.template') }}</th>
+                  <th class="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in ruleRows" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
+                  <td class="px-3 py-2 font-medium">{{ row.name }}</td>
+                  <td class="px-3 py-2 font-mono text-xs text-muted-foreground">{{ row.event_name }}</td>
+                  <td class="hidden px-3 py-2 text-muted-foreground sm:table-cell">{{ row.chat_id }}</td>
+                  <td class="hidden max-w-[260px] truncate px-3 py-2 text-xs text-muted-foreground lg:table-cell">
+                    {{ row.template }}
+                  </td>
+                  <td class="px-3 py-2">
+                    <div class="flex justify-end gap-1">
+                      <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('notify.test')" @click="testRule(row)">
+                        <Send class="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('notify.remove')" @click="removeRule(row)">
+                        <Trash2 class="h-3.5 w-3.5 text-red-500" />
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </PaginatedList>
 
     <Dialog v-model:open="dialogVisible" :title="t('notify.create')" width="560px">
       <form class="space-y-4" @submit.prevent="createRule">

@@ -100,9 +100,12 @@ async function syncErrors(): Promise<NotifyItem[]> {
   const dayAgo = Date.now() - 24 * 3600 * 1000
   for (const job of jobs.filter((j) => j.is_active)) {
     try {
-      const runs = await get<Array<{
+      // достаточно последних 20 прогонов — ошибки свежее, полный
+      // журнал не нужен (пагинация списков, 2026-09-16)
+      const page = await get<{ items: Array<{
         id: number; status: string; error: string; started_at: string
-      }>>(`/integrations/sync-runs?sync_job_id=${job.id}`)
+      }>; total: number }>(`/integrations/sync-runs?sync_job_id=${job.id}&limit=20`)
+      const runs = page.items
       const failed = runs.find(
         (run) => run.status === 'error' && Date.parse(run.started_at) >= dayAgo,
       )

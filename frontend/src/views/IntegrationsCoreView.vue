@@ -5,6 +5,10 @@
 // «блокировки прямого доступа» не переносим: изоляция — правило разработки
 // (ADR-001, сеть только в connectors), рантайм-счётчика нет; в журнале
 // только факты.
+// Реестр коннекторов пагинирован (PaginatedList, по 50); полный список
+// соединений грузится только для KPI (счётчик «ok из всех»). Прогоны
+// live-журнала берутся с limit=10 на задание (свежие, сервер сортирует
+// по id desc) — раньше тянулась вся история прогонов каждого задания.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -12,7 +16,10 @@ import {
   Activity, ArrowDownToLine, ArrowUpFromLine, Clock3, Cpu, Play, PlugZap, ShieldCheck,
 } from 'lucide-vue-next'
 import { get, post } from '../api/client'
-import { Badge, Button, Card, CardContent, Skeleton, useToast } from '../components/ui'
+import {
+  Badge, Button, Card, CardContent, EmptyState, PaginatedList, Skeleton, useToast,
+} from '../components/ui'
+import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 
 const { t, d } = useI18n()
@@ -41,15 +48,18 @@ interface SyncRun {
 interface EventRow { id: number; action: string; entity_type: string; created_at: string }
 
 const loading = ref(true)
-const connections = ref<Connection[]>([])
 const jobs = ref<SyncJob[]>([])
 const runs = ref<SyncRun[]>([])
 const events = ref<EventRow[]>([])
 const queueSize = ref<number | null>(null)
 const paused = ref(false)
 
-const connectorsOk = computed(() =>
-  connections.value.filter((c) => c.last_check_ok === true).length)
+// total приходит из конверта PaginatedList (@loaded) — полный список
+// ради KPI больше не грузим
+const connectionsTotal = ref(0)
+function onConnectionsLoaded(total: number) {
+  connectionsTotal.value = total
+}
 const runs24h = computed(() => {
   const dayAgo = Date.now() - 24 * 3600 * 1000
   return runs.value.filter((run) => Date.parse(run.started_at) >= dayAgo).length
@@ -58,21 +68,25 @@ const activeJobs = computed(() => jobs.value.filter((job) => job.is_active).leng
 
 const testing = ref<Record<string, boolean>>({})
 
+// ----- Реестр коннекторов (пагинировано) -----
+const connectionsList = ref<{ reload: () => Promise<void> } | null>(null)
+
+function fetchConnectionsPage(offset: number, limit: number) {
+  return get<PageOf<Connection>>(`/integrations/connections?limit=${limit}&offset=${offset}`)
+}
+
+// ----- KPI + live-журнал -----
 async function loadAll() {
   try {
-    const [conn, jobList] = await Promise.all([
-      get<Connection[]>('/integrations/connections'),
-      get<SyncJob[]>('/integrations/sync-jobs'),
-    ])
-    connections.value = conn
+    const jobList = await get<SyncJob[]>('/integrations/sync-jobs')
     jobs.value = jobList
-    // live-журнал: последние прогоны активных заданий
+    // live-журнал: свежие прогоны активных заданий (limit=10 на задание)
     const active = jobList.filter((job) => job.is_active)
     const runLists = await Promise.all(
       active.map((job) =>
-        get<SyncRun[]>(`/integrations/sync-runs?sync_job_id=${job.id}`)
-          .then((rows) => rows.slice(0, 10).map((row) => ({ ...row, jobName: job.name })))
-          .catch(() => []),
+        get<PageOf<SyncRun>>(`/integrations/sync-runs?sync_job_id=${job.id}&limit=10`)
+          .then((page) => page.items.map((row) => ({ ...row, jobName: job.name })))
+          .catch(() => [] as SyncRun[]),
       ),
     )
     runs.value = runLists.flat().sort((a, b) => b.started_at.localeCompare(a.started_at)).slice(0, 30)
@@ -106,6 +120,7 @@ async function testConnection(connection: Connection) {
       `/integrations/connections/${connection.id}/test`)
     if (result.ok) toast.success(t('connections.testOk'))
     else toast.error(`${t('connections.testFailed')}: ${result.error ?? ''}`)
+    await connectionsList.value?.reload()
     await loadAll()
   } catch (error) {
     toast.apiError(error)
@@ -138,7 +153,7 @@ function statusMeta(connection: Connection): { label: string; badge: string; ico
 
 const kpis = computed(() => [
   {
-    icon: PlugZap, value: `${connectorsOk.value} / ${connections.value.length}`,
+    icon: PlugZap, value: String(connectionsTotal.value),
     label: t('integrations.kpiConnectors'), sub: t('integrations.kpiConnectorsSub'),
   },
   {
@@ -180,52 +195,64 @@ const kpis = computed(() => [
       <!-- Реестр коннекторов -->
       <Card class="border-zinc-200 shadow-sm dark:border-zinc-800 xl:col-span-2">
         <CardContent class="p-5">
-          <div class="flex items-center gap-2">
-            <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-500/10 text-violet-600 dark:text-violet-300">
-              <PlugZap class="h-4 w-4" />
-            </span>
-            <div>
-              <p class="text-base font-semibold">{{ t('integrations.registry') }}</p>
-              <p class="text-xs text-muted-foreground">{{ t('integrations.registrySub') }}</p>
-            </div>
-            <Button variant="ghost" size="sm" class="ml-auto text-xs" @click="router.push('/integrations/connections')">
-              {{ t('integrations.manage') }}
-            </Button>
-          </div>
-          <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div
-              v-for="connection in connections" :key="connection.id"
-              class="group flex flex-col rounded-xl border bg-card p-4 transition-all hover:-translate-y-0.5 hover:shadow-md"
-              :class="connection.last_check_ok === false
-                ? 'border-red-300 dark:border-red-900/60'
-                : 'border-zinc-200 hover:border-emerald-300 dark:border-zinc-800 dark:hover:border-emerald-800'"
-            >
-              <div class="flex items-start justify-between gap-2">
-                <span :class="['flex h-9 w-9 shrink-0 items-center justify-center rounded-lg', statusMeta(connection).icon]">
-                  <PlugZap class="h-4 w-4" />
-                </span>
-                <Badge :class="statusMeta(connection).badge">{{ statusMeta(connection).label }}</Badge>
+          <PaginatedList
+            ref="connectionsList" :fetch-page="fetchConnectionsPage"
+            @loaded="onConnectionsLoaded"
+            v-slot="{ items: connectionRows, loading }"
+          >
+            <div class="flex items-center gap-2">
+              <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-500/10 text-violet-600 dark:text-violet-300">
+                <PlugZap class="h-4 w-4" />
+              </span>
+              <div>
+                <p class="text-base font-semibold">{{ t('integrations.registry') }}</p>
+                <p class="text-xs text-muted-foreground">{{ t('integrations.registrySub') }}</p>
               </div>
-              <p class="mt-2.5 text-sm font-semibold leading-tight">{{ connection.name }}</p>
-              <p class="mt-0.5 text-[11px] text-muted-foreground">{{ connection.connector_code }}</p>
-              <div class="mt-3 flex items-center justify-between gap-2 border-t border-zinc-100 pt-2.5 dark:border-zinc-800">
-                <span class="flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
-                  <Clock3 class="h-3 w-3 shrink-0" />
-                  <span class="truncate">
-                    {{ connection.last_check_at ? d(connection.last_check_at, 'short') : t('integrations.neverChecked') }}
+              <Button variant="ghost" size="sm" class="ml-auto text-xs" @click="router.push('/integrations/connections')">
+                {{ t('integrations.manage') }}
+              </Button>
+            </div>
+            <div v-if="loading" class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Skeleton v-for="i in 4" :key="i" class="h-36 w-full" />
+            </div>
+            <div v-else-if="connectionRows.length === 0" class="mt-4">
+              <EmptyState :title="t('ui.emptyTitle')" :description="t('connections.empty')" />
+            </div>
+            <div v-else class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div
+                v-for="connection in connectionRows" :key="connection.id"
+                class="group flex flex-col rounded-xl border bg-card p-4 transition-all hover:-translate-y-0.5 hover:shadow-md"
+                :class="connection.last_check_ok === false
+                  ? 'border-red-300 dark:border-red-900/60'
+                  : 'border-zinc-200 hover:border-emerald-300 dark:border-zinc-800 dark:hover:border-emerald-800'"
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <span :class="['flex h-9 w-9 shrink-0 items-center justify-center rounded-lg', statusMeta(connection).icon]">
+                    <PlugZap class="h-4 w-4" />
                   </span>
-                </span>
-                <Button
-                  variant="outline" size="sm"
-                  class="h-7 shrink-0 gap-1 px-2 text-[11px]"
-                  :disabled="testing[connection.id]"
-                  @click="testConnection(connection)"
-                >
-                  <Play class="h-3 w-3" /> {{ testing[connection.id] ? t('connections.testing') : t('integrations.recheck') }}
-                </Button>
+                  <Badge :class="statusMeta(connection).badge">{{ statusMeta(connection).label }}</Badge>
+                </div>
+                <p class="mt-2.5 text-sm font-semibold leading-tight">{{ connection.name }}</p>
+                <p class="mt-0.5 text-[11px] text-muted-foreground">{{ connection.connector_code }}</p>
+                <div class="mt-3 flex items-center justify-between gap-2 border-t border-zinc-100 pt-2.5 dark:border-zinc-800">
+                  <span class="flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
+                    <Clock3 class="h-3 w-3 shrink-0" />
+                    <span class="truncate">
+                      {{ connection.last_check_at ? d(connection.last_check_at, 'short') : t('integrations.neverChecked') }}
+                    </span>
+                  </span>
+                  <Button
+                    variant="outline" size="sm"
+                    class="h-7 shrink-0 gap-1 px-2 text-[11px]"
+                    :disabled="testing[connection.id]"
+                    @click="testConnection(connection)"
+                  >
+                    <Play class="h-3 w-3" /> {{ testing[connection.id] ? t('connections.testing') : t('integrations.recheck') }}
+                  </Button>
+                </div>
               </div>
             </div>
-          </div>
+          </PaginatedList>
         </CardContent>
       </Card>
 
