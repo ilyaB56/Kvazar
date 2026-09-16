@@ -95,9 +95,9 @@ onBeforeUnmount(stopAutoRefresh)
 
 <template>
   <div class="space-y-4">
-    <div class="flex items-center justify-between gap-3">
-        <p class="text-base font-semibold">{{ t('sync.title') }}</p>
-        <Input v-model="jobSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+        <p class="text-base font-semibold min-w-0 truncate">{{ t('sync.title') }}</p>
+        <Input v-model="jobSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px] shrink-0" />
       </div>
 
     <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">

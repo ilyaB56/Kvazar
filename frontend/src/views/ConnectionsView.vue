@@ -171,9 +171,9 @@ onMounted(async () => {
 
     <!-- Подключения -->
     <div v-if="tab === 'connections'" class="space-y-4">
-      <div class="flex items-center justify-between">
-        <p class="text-base font-semibold">{{ t('connections.title') }}</p>
-        <Input v-model="connSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <p class="text-base font-semibold min-w-0 truncate">{{ t('connections.title') }}</p>
+        <Input v-model="connSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px] shrink-0" />
         <Button variant="emerald" size="sm" class="gap-1.5" @click="dialogVisible = true">
           <Plus class="h-4 w-4" /> {{ t('connections.create') }}
         </Button>
@@ -232,9 +232,9 @@ onMounted(async () => {
 
     <!-- Вебхуки -->
     <div v-else class="space-y-4">
-      <div class="flex items-center justify-between">
-        <p class="text-base font-semibold">{{ t('connections.webhooks') }}</p>
-        <Input v-model="hookSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <p class="text-base font-semibold min-w-0 truncate">{{ t('connections.webhooks') }}</p>
+        <Input v-model="hookSearch" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px] shrink-0" />
       </div>
       <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
         <CardContent class="flex flex-col gap-2 p-4 sm:flex-row">

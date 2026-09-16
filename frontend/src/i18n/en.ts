@@ -24,6 +24,7 @@ export default {
     sections: {
       operations: 'Operations',
       domains: 'Accounting domains',
+      neural: 'Neural networks',
       system: 'System',
     },
   },

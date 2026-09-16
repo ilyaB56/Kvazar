@@ -23,6 +23,7 @@ export default {
     sections: {
       operations: 'Оперативная работа',
       domains: 'Области учёта',
+      neural: 'Нейросети',
       system: 'Система',
     },
   },

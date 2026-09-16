@@ -376,10 +376,10 @@ onMounted(() => {
     <!-- Документы -->
     <Card v-else-if="tab === 'documents'" class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
-        <div class="flex items-center justify-between px-4 py-3">
-          <p class="text-sm font-semibold">{{ t('ai.documents') }}</p>
+        <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3">
+          <p class="text-sm font-semibold min-w-0 truncate">{{ t('ai.documents') }}</p>
           <div v-if="canWrite">
-            <input ref="fileInput" type="file" class="hidden" @change="uploadFile">
+            <input ref="fileInput" type="file" class="hidden shrink-0" @change="uploadFile">
             <Button variant="emerald" size="sm" class="gap-1.5" :disabled="uploading" @click="pickFile">
               <Upload class="h-3.5 w-3.5" /> {{ uploading ? t('ai.uploading') : t('ai.upload') }}
             </Button>

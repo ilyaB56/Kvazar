@@ -65,11 +65,11 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
         class="relative z-10 w-full rounded-xl border border-border bg-card p-6 shadow-lg"
         :style="{ maxWidth: width }"
       >
-        <div class="mb-4 flex items-start justify-between gap-4">
-          <h2 v-if="title" class="text-lg font-semibold leading-none tracking-tight">{{ title }}</h2>
+        <div class="mb-4 flex items-center justify-between gap-4">
+          <h2 v-if="title" class="min-w-0 truncate text-lg font-semibold leading-snug tracking-tight">{{ title }}</h2>
           <button
             type="button"
-            class="rounded-md text-muted-foreground transition-colors hover:text-foreground"
+            class="shrink-0 rounded-md text-muted-foreground transition-colors hover:text-foreground"
             :aria-label="t('ui.close')"
             @click="close"
           >

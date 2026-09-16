@@ -519,9 +519,9 @@ const tabsList = computed(() => [
     <!-- Счета -->
     <Card v-else-if="tab === 'accounts'" class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
-        <div class="flex items-center justify-between px-4 py-3">
-          <p class="text-sm font-semibold">{{ t('finance.tabs.accounts') }}</p>
-          <Input v-model="refSearch.accounts" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
+        <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3">
+          <p class="text-sm font-semibold min-w-0 truncate">{{ t('finance.tabs.accounts') }}</p>
+          <Input v-model="refSearch.accounts" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px] shrink-0" />
           <Button v-if="canWrite" variant="outline" size="sm" class="gap-1.5" @click="refDialog = 'account'">
             <Plus class="h-3.5 w-3.5" /> {{ t('finance.newAccount') }}
           </Button>
@@ -555,9 +555,9 @@ const tabsList = computed(() => [
     <!-- Категории -->
     <Card v-else-if="tab === 'categories'" class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
-        <div class="flex items-center justify-between px-4 py-3">
-          <p class="text-sm font-semibold">{{ t('finance.tabs.categories') }}</p>
-          <Input v-model="refSearch.categories" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
+        <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3">
+          <p class="text-sm font-semibold min-w-0 truncate">{{ t('finance.tabs.categories') }}</p>
+          <Input v-model="refSearch.categories" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px] shrink-0" />
           <Button v-if="canWrite" variant="outline" size="sm" class="gap-1.5" @click="refDialog = 'category'">
             <Plus class="h-3.5 w-3.5" /> {{ t('finance.newCategory') }}
           </Button>
@@ -586,9 +586,9 @@ const tabsList = computed(() => [
     <!-- Контрагенты -->
     <Card v-else-if="tab === 'counterparties'" class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
-        <div class="flex items-center justify-between px-4 py-3">
-          <p class="text-sm font-semibold">{{ t('finance.tabs.counterparties') }}</p>
-          <Input v-model="refSearch.counterparties" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px]" />
+        <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3">
+          <p class="text-sm font-semibold min-w-0 truncate">{{ t('finance.tabs.counterparties') }}</p>
+          <Input v-model="refSearch.counterparties" :placeholder="t('ui.searchPlaceholder')" class="h-8 w-[220px] shrink-0" />
           <Button v-if="canWrite" variant="outline" size="sm" class="gap-1.5" @click="refDialog = 'counterparty'">
             <Plus class="h-3.5 w-3.5" /> {{ t('finance.newCounterparty') }}
           </Button>

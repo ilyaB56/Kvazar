@@ -43,6 +43,8 @@ interface NavItem {
   label: string
   icon: typeof Plug
 }
+// Перегруппировка (критика основателя + дизайн-аудит): домены учёта
+// отдельно; ИИ — своя секция «Нейросети»; Интеграции+Настройки — «Система»
 const navSections = computed(() => [
   {
     title: t('nav.sections.operations'),
@@ -68,11 +70,21 @@ const navSections = computed(() => [
       auth.moduleLevel('accounting') !== 'none' || auth.moduleLevel('crm') !== 'none'
         ? { to: '/reports', label: t('nav.reports'), icon: BarChart3 }
         : null,
-      auth.moduleLevel('integrations') !== 'none'
-        ? { to: '/integrations/connections', label: t('nav.integrations'), icon: Plug }
-        : null,
+    ] as Array<NavItem | null>).filter((item): item is NavItem => item !== null),
+  },
+  {
+    title: t('nav.sections.neural'),
+    items: ([
       auth.moduleLevel('ai') !== 'none'
         ? { to: '/assistant', label: t('nav.assistant'), icon: Bot }
+        : null,
+    ] as Array<NavItem | null>).filter((item): item is NavItem => item !== null),
+  },
+  {
+    title: t('nav.sections.system'),
+    items: ([
+      auth.moduleLevel('integrations') !== 'none'
+        ? { to: '/integrations/connections', label: t('nav.integrations'), icon: Plug }
         : null,
       { to: '/settings/organization', label: t('nav.settings'), icon: Settings2 },
     ] as Array<NavItem | null>).filter((item): item is NavItem => item !== null),
@@ -291,17 +303,6 @@ async function logout() {
           <Moon v-else class="h-4 w-4" />
         </Button>
         <NotificationCenter />
-      <!-- гейт 1.4: seed-админ ещё не сменил пароль -->
-      <div
-        v-if="auth.user?.must_change_password"
-        class="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
-      >
-        <ShieldAlert class="h-3.5 w-3.5 shrink-0" />
-        {{ t('shell.changeSeedPassword') }}
-        <button type="button" class="ml-auto font-semibold underline" @click="passwordOpen = true">
-          {{ t('password.submit') }}
-        </button>
-      </div>
         <DropdownMenu align="end">
           <template #trigger>
             <span class="flex items-center gap-2 rounded-full border border-zinc-200 bg-card py-1 pl-1 pr-2.5 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800" :aria-label="t('shell.userMenu')">
@@ -325,6 +326,18 @@ async function logout() {
           </DropdownMenuItem>
         </DropdownMenu>
       </header>
+
+    <!-- Гейт 1.4: seed-админ ещё не сменил пароль — отдельная полоса -->
+    <div
+      v-if="auth.user?.must_change_password"
+      class="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900 sm:px-6 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+    >
+      <span class="flex items-center gap-2">
+        <ShieldAlert class="h-4 w-4 shrink-0" />
+        {{ t('shell.changeSeedPassword') }}
+      </span>
+      <Button variant="outline" size="sm" @click="passwordOpen = true">{{ t('password.submit') }}</Button>
+    </div>
 
     <!-- Баннер: смените временный пароль до дедлайна (§12.4) -->
     <div

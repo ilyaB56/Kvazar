@@ -204,8 +204,8 @@ onBeforeUnmount(stopPolling)
     <!-- Бэкапы -->
     <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
-        <div class="flex items-center justify-between px-4 py-3">
-          <p class="text-sm font-semibold">{{ t('system.backups') }}</p>
+        <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3">
+          <p class="text-sm font-semibold min-w-0 truncate">{{ t('system.backups') }}</p>
           <Button variant="emerald" size="sm" class="gap-1.5" :disabled="creating" @click="createBackup">
             <DatabaseBackup class="h-3.5 w-3.5" /> {{ t('system.createBackup') }}
           </Button>
@@ -255,8 +255,8 @@ onBeforeUnmount(stopPolling)
     <!-- Журнал событий (админ) -->
     <Card v-if="auth.isAdmin" class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
-        <div class="flex items-center justify-between px-4 py-3">
-          <p class="text-sm font-semibold">{{ t('system.eventLog') }}</p>
+        <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3">
+          <p class="text-sm font-semibold min-w-0 truncate">{{ t('system.eventLog') }}</p>
           <Button variant="ghost" size="sm" class="gap-1.5" @click="load">
             <RefreshCw class="h-3.5 w-3.5" /> {{ t('sync.refresh') }}
           </Button>

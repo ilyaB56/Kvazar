@@ -111,8 +111,8 @@ onMounted(load)
 
 <template>
   <div class="space-y-4">
-    <div class="flex items-center justify-between">
-      <p class="text-base font-semibold">{{ t('notify.rulesTitle') }}</p>
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+      <p class="text-base font-semibold min-w-0 truncate">{{ t('notify.rulesTitle') }}</p>
       <Button variant="emerald" size="sm" class="gap-1.5" @click="openDialog">
         <Plus class="h-4 w-4" /> {{ t('notify.create') }}
       </Button>
