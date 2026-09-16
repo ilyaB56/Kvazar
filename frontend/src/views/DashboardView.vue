@@ -224,7 +224,7 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="space-y-4">
+  <div class="space-y-6">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div>
         <h2 class="text-lg font-bold tracking-tight">{{ t('dash.title') }}</h2>

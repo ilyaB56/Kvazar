@@ -1,0 +1,487 @@
+  table_schema   |      table_name      | ordinal_position |     column_name     |        data_type         | is_nullable |                        default_val                        
+-----------------+----------------------+------------------+---------------------+--------------------------+-------------+-----------------------------------------------------------
+ ai_agent        | chat_messages        |                1 | id                  | integer                  | NO          | nextval('ai_agent.chat_messages_id_seq'::regclass)
+ ai_agent        | chat_messages        |                2 | session_id          | uuid                     | NO          | 
+ ai_agent        | chat_messages        |                3 | role                | character varying        | NO          | 
+ ai_agent        | chat_messages        |                4 | content             | text                     | NO          | 
+ ai_agent        | chat_messages        |                5 | meta                | jsonb                    | NO          | '{}'::jsonb
+ ai_agent        | chat_messages        |                6 | created_at          | timestamp with time zone | YES         | now()
+ ai_agent        | chat_sessions        |                1 | id                  | uuid                     | NO          | 
+ ai_agent        | chat_sessions        |                2 | user_id             | uuid                     | NO          | 
+ ai_agent        | chat_sessions        |                3 | title               | character varying        | NO          | ''::character varying
+ ai_agent        | chat_sessions        |                4 | created_at          | timestamp with time zone | YES         | now()
+ ai_agent        | chunks               |                1 | id                  | integer                  | NO          | nextval('ai_agent.chunks_id_seq'::regclass)
+ ai_agent        | chunks               |                2 | document_id         | uuid                     | NO          | 
+ ai_agent        | chunks               |                3 | chunk_index         | integer                  | NO          | 
+ ai_agent        | chunks               |                4 | text                | text                     | NO          | 
+ ai_agent        | chunks               |                5 | embedding           | USER-DEFINED             | YES         | 
+ ai_agent        | documents            |                1 | id                  | uuid                     | NO          | 
+ ai_agent        | documents            |                2 | name                | character varying        | NO          | 
+ ai_agent        | documents            |                3 | source_type         | character varying        | NO          | 'file'::character varying
+ ai_agent        | documents            |                4 | uploaded_by         | uuid                     | NO          | 
+ ai_agent        | documents            |                5 | is_deleted          | boolean                  | NO          | false
+ ai_agent        | documents            |                6 | created_at          | timestamp with time zone | YES         | now()
+ ai_agent        | proposals            |                1 | id                  | uuid                     | NO          | 
+ ai_agent        | proposals            |                2 | user_id             | uuid                     | NO          | 
+ ai_agent        | proposals            |                3 | action_type         | character varying        | NO          | 
+ ai_agent        | proposals            |                4 | payload             | jsonb                    | NO          | '{}'::jsonb
+ ai_agent        | proposals            |                5 | reason              | text                     | NO          | ''::text
+ ai_agent        | proposals            |                6 | status              | character varying        | NO          | 'pending'::character varying
+ ai_agent        | proposals            |                7 | idempotency_key     | character varying        | YES         | 
+ ai_agent        | proposals            |                8 | result              | jsonb                    | NO          | '{}'::jsonb
+ ai_agent        | proposals            |                9 | created_at          | timestamp with time zone | YES         | now()
+ ai_agent        | proposals            |               10 | decided_at          | timestamp with time zone | YES         | 
+ ai_agent        | proposals            |               11 | decided_by          | uuid                     | YES         | 
+ ai_agent        | user_settings        |                1 | user_id             | uuid                     | NO          | 
+ ai_agent        | user_settings        |                2 | autopapply          | boolean                  | NO          | false
+ erp_core        | api_tokens           |                1 | id                  | uuid                     | NO          | 
+ erp_core        | api_tokens           |                2 | name                | character varying        | NO          | 
+ erp_core        | api_tokens           |                3 | token_hash          | character varying        | NO          | 
+ erp_core        | api_tokens           |                4 | role                | character varying        | NO          | 'user'::character varying
+ erp_core        | api_tokens           |                5 | owner_user_id       | uuid                     | YES         | 
+ erp_core        | api_tokens           |                6 | is_active           | boolean                  | NO          | true
+ erp_core        | api_tokens           |                7 | created_at          | timestamp with time zone | YES         | now()
+ erp_core        | api_tokens           |                8 | last_used_at        | timestamp with time zone | YES         | 
+ erp_core        | attachments          |                1 | id                  | uuid                     | NO          | 
+ erp_core        | attachments          |                2 | entity_type         | character varying        | NO          | 
+ erp_core        | attachments          |                3 | entity_id           | uuid                     | NO          | 
+ erp_core        | attachments          |                4 | file_name           | character varying        | NO          | 
+ erp_core        | attachments          |                5 | storage_path        | text                     | NO          | 
+ erp_core        | attachments          |                6 | created_at          | timestamp with time zone | YES         | now()
+ erp_core        | auth_sessions        |                1 | id                  | uuid                     | NO          | 
+ erp_core        | auth_sessions        |                2 | user_id             | uuid                     | NO          | 
+ erp_core        | auth_sessions        |                3 | user_agent          | text                     | NO          | ''::text
+ erp_core        | auth_sessions        |                4 | ip                  | character varying        | NO          | ''::character varying
+ erp_core        | auth_sessions        |                5 | created_at          | timestamp with time zone | NO          | now()
+ erp_core        | auth_sessions        |                6 | last_used_at        | timestamp with time zone | YES         | 
+ erp_core        | auth_sessions        |                7 | revoked_at          | timestamp with time zone | YES         | 
+ erp_core        | backups              |                1 | id                  | uuid                     | NO          | 
+ erp_core        | backups              |                2 | file_name           | character varying        | NO          | 
+ erp_core        | backups              |                3 | size                | integer                  | NO          | 
+ erp_core        | backups              |                4 | sha256              | character varying        | NO          | 
+ erp_core        | backups              |                5 | kind                | character varying        | NO          | 
+ erp_core        | backups              |                6 | status              | character varying        | NO          | 'created'::character varying
+ erp_core        | backups              |                7 | created_at          | timestamp with time zone | YES         | now()
+ erp_core        | companies            |                1 | id                  | uuid                     | NO          | 
+ erp_core        | companies            |                2 | name                | character varying        | NO          | 
+ erp_core        | companies            |                3 | inn                 | character varying        | NO          | ''::character varying
+ erp_core        | companies            |                4 | created_at          | timestamp with time zone | YES         | now()
+ erp_core        | contacts             |                1 | id                  | uuid                     | NO          | 
+ erp_core        | contacts             |                2 | company_id          | uuid                     | YES         | 
+ erp_core        | contacts             |                3 | full_name           | character varying        | NO          | 
+ erp_core        | contacts             |                4 | email               | character varying        | NO          | ''::character varying
+ erp_core        | contacts             |                5 | phone               | character varying        | NO          | ''::character varying
+ erp_core        | contacts             |                6 | extra               | jsonb                    | NO          | '{}'::jsonb
+ erp_core        | contacts             |                7 | created_at          | timestamp with time zone | YES         | now()
+ erp_core        | event_outbox         |                1 | id                  | integer                  | NO          | nextval('erp_core.event_outbox_id_seq'::regclass)
+ erp_core        | event_outbox         |                2 | event_name          | character varying        | NO          | 
+ erp_core        | event_outbox         |                3 | payload             | jsonb                    | NO          | '{}'::jsonb
+ erp_core        | event_outbox         |                4 | processed           | boolean                  | NO          | false
+ erp_core        | event_outbox         |                5 | created_at          | timestamp with time zone | YES         | now()
+ erp_core        | event_outbox         |                6 | processed_at        | timestamp with time zone | YES         | 
+ erp_core        | events_log           |                1 | id                  | integer                  | NO          | nextval('erp_core.events_log_id_seq'::regclass)
+ erp_core        | events_log           |                2 | user_id             | uuid                     | YES         | 
+ erp_core        | events_log           |                3 | action              | character varying        | NO          | 
+ erp_core        | events_log           |                4 | entity_type         | character varying        | NO          | ''::character varying
+ erp_core        | events_log           |                5 | entity_id           | character varying        | NO          | ''::character varying
+ erp_core        | events_log           |                6 | payload             | jsonb                    | NO          | '{}'::jsonb
+ erp_core        | events_log           |                7 | created_at          | timestamp with time zone | YES         | now()
+ erp_core        | module_registry      |                1 | id                  | integer                  | NO          | nextval('erp_core.module_registry_id_seq'::regclass)
+ erp_core        | module_registry      |                2 | name                | character varying        | NO          | 
+ erp_core        | module_registry      |                3 | version             | character varying        | NO          | 
+ erp_core        | module_registry      |                4 | db_schema           | character varying        | NO          | 
+ erp_core        | module_registry      |                5 | depends_on          | jsonb                    | NO          | '[]'::jsonb
+ erp_core        | module_registry      |                6 | is_active           | boolean                  | NO          | true
+ erp_core        | module_registry      |                7 | installed_at        | timestamp with time zone | YES         | now()
+ erp_core        | record_versions      |                1 | id                  | integer                  | NO          | nextval('erp_core.record_versions_id_seq'::regclass)
+ erp_core        | record_versions      |                2 | entity_type         | character varying        | NO          | 
+ erp_core        | record_versions      |                3 | entity_id           | character varying        | NO          | 
+ erp_core        | record_versions      |                4 | changed_by          | uuid                     | YES         | 
+ erp_core        | record_versions      |                5 | changed_at          | timestamp with time zone | YES         | now()
+ erp_core        | record_versions      |                6 | diff                | jsonb                    | NO          | '{}'::jsonb
+ erp_core        | record_versions      |                7 | reason              | text                     | YES         | 
+ erp_core        | revoked_tokens       |                1 | jti                 | uuid                     | NO          | 
+ erp_core        | revoked_tokens       |                2 | user_id             | uuid                     | NO          | 
+ erp_core        | revoked_tokens       |                3 | expires_at          | timestamp with time zone | NO          | 
+ erp_core        | role_permissions     |                1 | role_key            | character varying        | NO          | 
+ erp_core        | role_permissions     |                2 | module              | character varying        | NO          | 
+ erp_core        | role_permissions     |                3 | level               | character varying        | NO          | 
+ erp_core        | roles                |                1 | key                 | character varying        | NO          | 
+ erp_core        | roles                |                2 | name                | character varying        | NO          | 
+ erp_core        | roles                |                3 | description         | text                     | NO          | ''::text
+ erp_core        | roles                |                4 | is_builtin          | boolean                  | NO          | false
+ erp_core        | roles                |                5 | color               | character varying        | NO          | 'zinc'::character varying
+ erp_core        | settings             |                1 | id                  | integer                  | NO          | nextval('erp_core.settings_id_seq'::regclass)
+ erp_core        | settings             |                2 | key                 | character varying        | NO          | 
+ erp_core        | settings             |                3 | value               | jsonb                    | YES         | 
+ erp_core        | settings             |                4 | value_type          | character varying        | NO          | 'string'::character varying
+ erp_core        | users                |                1 | id                  | uuid                     | NO          | 
+ erp_core        | users                |                2 | email               | character varying        | NO          | 
+ erp_core        | users                |                3 | password_hash       | character varying        | NO          | 
+ erp_core        | users                |                4 | full_name           | character varying        | NO          | ''::character varying
+ erp_core        | users                |                5 | role                | character varying        | NO          | 'user'::character varying
+ erp_core        | users                |                6 | is_active           | boolean                  | NO          | true
+ erp_core        | users                |                7 | created_at          | timestamp with time zone | YES         | now()
+ erp_core        | users                |                8 | token_version       | integer                  | NO          | 0
+ integrations    | connections          |                1 | id                  | uuid                     | NO          | 
+ integrations    | connections          |                2 | name                | character varying        | NO          | 
+ integrations    | connections          |                3 | connector_code      | character varying        | NO          | 
+ integrations    | connections          |                4 | credentials_enc     | text                     | NO          | ''::text
+ integrations    | connections          |                5 | config              | jsonb                    | NO          | '{}'::jsonb
+ integrations    | connections          |                6 | is_active           | boolean                  | NO          | true
+ integrations    | connections          |                7 | last_check_at       | timestamp with time zone | YES         | 
+ integrations    | connections          |                8 | last_check_ok       | boolean                  | YES         | 
+ integrations    | connections          |                9 | created_at          | timestamp with time zone | YES         | now()
+ integrations    | connector_types      |                1 | id                  | integer                  | NO          | nextval('integrations.connector_types_id_seq'::regclass)
+ integrations    | connector_types      |                2 | code                | character varying        | NO          | 
+ integrations    | connector_types      |                3 | display_name        | character varying        | NO          | 
+ integrations    | connector_types      |                4 | capabilities        | jsonb                    | NO          | '["fetch", "push"]'::jsonb
+ integrations    | connector_types      |                5 | config_schema       | jsonb                    | NO          | '{}'::jsonb
+ integrations    | connector_types      |                6 | is_builtin          | boolean                  | NO          | false
+ integrations    | field_mappings       |                1 | id                  | uuid                     | NO          | 
+ integrations    | field_mappings       |                2 | name                | character varying        | NO          | 
+ integrations    | field_mappings       |                3 | source_fields       | jsonb                    | NO          | '[]'::jsonb
+ integrations    | field_mappings       |                4 | target_fields       | jsonb                    | NO          | '[]'::jsonb
+ integrations    | field_mappings       |                5 | transformations     | jsonb                    | NO          | '{}'::jsonb
+ integrations    | field_mappings       |                6 | created_at          | timestamp with time zone | YES         | now()
+ integrations    | flow_runs            |                1 | id                  | uuid                     | NO          | 
+ integrations    | flow_runs            |                2 | payment_id          | uuid                     | NO          | 
+ integrations    | flow_runs            |                3 | recipe_id           | uuid                     | YES         | 
+ integrations    | flow_runs            |                4 | status              | character varying        | NO          | 
+ integrations    | flow_runs            |                5 | step                | character varying        | NO          | 
+ integrations    | flow_runs            |                6 | context             | jsonb                    | NO          | 
+ integrations    | flow_runs            |                7 | error               | text                     | NO          | 
+ integrations    | flow_runs            |                8 | attempts            | integer                  | NO          | 
+ integrations    | flow_runs            |                9 | started_at          | timestamp with time zone | YES         | now()
+ integrations    | flow_runs            |               10 | finished_at         | timestamp with time zone | YES         | 
+ integrations    | item_mappings        |                1 | id                  | uuid                     | NO          | 
+ integrations    | item_mappings        |                2 | connection_id       | uuid                     | YES         | 
+ integrations    | item_mappings        |                3 | external_item_id    | character varying        | NO          | 
+ integrations    | item_mappings        |                4 | sku                 | character varying        | YES         | 
+ integrations    | item_mappings        |                5 | item_id             | uuid                     | NO          | 
+ integrations    | item_mappings        |                6 | is_active           | boolean                  | NO          | 
+ integrations    | item_mappings        |                7 | created_at          | timestamp with time zone | YES         | now()
+ integrations    | notification_rules   |                1 | id                  | uuid                     | NO          | 
+ integrations    | notification_rules   |                2 | name                | character varying        | NO          | 
+ integrations    | notification_rules   |                3 | event_name          | character varying        | NO          | 
+ integrations    | notification_rules   |                4 | chat_id             | character varying        | NO          | 
+ integrations    | notification_rules   |                5 | template            | text                     | NO          | ''::text
+ integrations    | notification_rules   |                6 | is_active           | boolean                  | NO          | true
+ integrations    | notification_rules   |                7 | created_at          | timestamp with time zone | YES         | now()
+ integrations    | online_payments      |                1 | id                  | uuid                     | NO          | 
+ integrations    | online_payments      |                2 | connection_id       | uuid                     | NO          | 
+ integrations    | online_payments      |                3 | provider            | character varying        | NO          | 
+ integrations    | online_payments      |                4 | provider_payment_id | character varying        | NO          | 
+ integrations    | online_payments      |                5 | status              | character varying        | NO          | 
+ integrations    | online_payments      |                6 | amount              | numeric                  | NO          | 
+ integrations    | online_payments      |                7 | currency            | character varying        | NO          | 
+ integrations    | online_payments      |                8 | buyer               | jsonb                    | NO          | 
+ integrations    | online_payments      |                9 | lines               | jsonb                    | NO          | 
+ integrations    | online_payments      |               10 | metadata            | jsonb                    | NO          | 
+ integrations    | online_payments      |               11 | webhook_event_id    | uuid                     | YES         | 
+ integrations    | online_payments      |               12 | sales_order_id      | uuid                     | YES         | 
+ integrations    | online_payments      |               13 | transaction_id      | uuid                     | YES         | 
+ integrations    | online_payments      |               14 | shipment_id         | uuid                     | YES         | 
+ integrations    | online_payments      |               15 | error_step          | character varying        | NO          | 
+ integrations    | online_payments      |               16 | error_reason        | character varying        | NO          | 
+ integrations    | online_payments      |               17 | created_at          | timestamp with time zone | YES         | now()
+ integrations    | online_payments      |               18 | updated_at          | timestamp with time zone | YES         | 
+ integrations    | recipes              |                1 | id                  | uuid                     | NO          | 
+ integrations    | recipes              |                2 | name                | character varying        | NO          | 
+ integrations    | recipes              |                3 | definition          | jsonb                    | NO          | '{}'::jsonb
+ integrations    | recipes              |                4 | is_published        | boolean                  | NO          | false
+ integrations    | recipes              |                5 | created_at          | timestamp with time zone | YES         | now()
+ integrations    | sync_jobs            |                1 | id                  | uuid                     | NO          | 
+ integrations    | sync_jobs            |                2 | name                | character varying        | NO          | 
+ integrations    | sync_jobs            |                3 | connection_id       | uuid                     | NO          | 
+ integrations    | sync_jobs            |                4 | direction           | character varying        | NO          | 'fetch'::character varying
+ integrations    | sync_jobs            |                5 | cron                | character varying        | NO          | ''::character varying
+ integrations    | sync_jobs            |                6 | endpoint            | character varying        | NO          | ''::character varying
+ integrations    | sync_jobs            |                7 | mapping_id          | uuid                     | YES         | 
+ integrations    | sync_jobs            |                8 | is_active           | boolean                  | NO          | true
+ integrations    | sync_jobs            |                9 | created_at          | timestamp with time zone | YES         | now()
+ integrations    | sync_jobs            |               10 | last_run_at         | timestamp with time zone | YES         | 
+ integrations    | sync_jobs            |               11 | emit_event          | character varying        | NO          | 'integration.data.fetched'::character varying
+ integrations    | sync_runs            |                1 | id                  | integer                  | NO          | nextval('integrations.sync_runs_id_seq'::regclass)
+ integrations    | sync_runs            |                2 | sync_job_id         | uuid                     | NO          | 
+ integrations    | sync_runs            |                3 | status              | character varying        | NO          | 
+ integrations    | sync_runs            |                4 | items_in            | integer                  | NO          | 0
+ integrations    | sync_runs            |                5 | items_out           | integer                  | NO          | 0
+ integrations    | sync_runs            |                6 | payload             | jsonb                    | NO          | '{}'::jsonb
+ integrations    | sync_runs            |                7 | error               | text                     | NO          | ''::text
+ integrations    | sync_runs            |                8 | started_at          | timestamp with time zone | YES         | now()
+ integrations    | webhook_endpoints    |                1 | id                  | uuid                     | NO          | 
+ integrations    | webhook_endpoints    |                2 | name                | character varying        | NO          | 
+ integrations    | webhook_endpoints    |                3 | secret_token        | character varying        | NO          | 
+ integrations    | webhook_endpoints    |                4 | target_module       | character varying        | NO          | 'external'::character varying
+ integrations    | webhook_endpoints    |                5 | is_active           | boolean                  | NO          | true
+ integrations    | webhook_endpoints    |                6 | created_at          | timestamp with time zone | YES         | now()
+ integrations    | webhook_endpoints    |                8 | connection_id       | uuid                     | YES         | 
+ integrations    | webhook_events       |                1 | id                  | uuid                     | NO          | 
+ integrations    | webhook_events       |                2 | endpoint_id         | uuid                     | NO          | 
+ integrations    | webhook_events       |                3 | connection_id       | uuid                     | YES         | 
+ integrations    | webhook_events       |                4 | external_key        | character varying        | NO          | 
+ integrations    | webhook_events       |                5 | event_type          | character varying        | NO          | 
+ integrations    | webhook_events       |                6 | payload             | jsonb                    | NO          | 
+ integrations    | webhook_events       |                7 | status              | character varying        | NO          | 
+ integrations    | webhook_events       |                8 | error               | text                     | NO          | 
+ integrations    | webhook_events       |                9 | received_at         | timestamp with time zone | YES         | now()
+ integrations    | webhook_events       |               10 | processed_at        | timestamp with time zone | YES         | 
+ mgmt_accounting | accounts             |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | accounts             |                2 | company_id          | uuid                     | YES         | 
+ mgmt_accounting | accounts             |                3 | name                | character varying        | NO          | 
+ mgmt_accounting | accounts             |                4 | currency            | character varying        | NO          | 
+ mgmt_accounting | accounts             |                5 | is_active           | boolean                  | NO          | true
+ mgmt_accounting | accounts             |                6 | created_at          | timestamp with time zone | YES         | now()
+ mgmt_accounting | accounts             |                7 | account_number      | character varying        | YES         | 
+ mgmt_accounting | categories           |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | categories           |                2 | parent_id           | uuid                     | YES         | 
+ mgmt_accounting | categories           |                3 | name                | character varying        | NO          | 
+ mgmt_accounting | categories           |                4 | kind                | character varying        | NO          | 
+ mgmt_accounting | categories           |                5 | is_active           | boolean                  | NO          | true
+ mgmt_accounting | counterparties       |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | counterparties       |                2 | internal_code       | character varying        | NO          | 
+ mgmt_accounting | counterparties       |                3 | name                | character varying        | NO          | 
+ mgmt_accounting | counterparties       |                4 | inn                 | character varying        | NO          | ''::character varying
+ mgmt_accounting | counterparties       |                5 | kpp                 | character varying        | NO          | ''::character varying
+ mgmt_accounting | counterparties       |                6 | contact_id          | uuid                     | YES         | 
+ mgmt_accounting | counterparties       |                7 | is_active           | boolean                  | NO          | true
+ mgmt_accounting | doc_sequences        |                1 | id                  | integer                  | NO          | nextval('mgmt_accounting.doc_sequences_id_seq'::regclass)
+ mgmt_accounting | doc_sequences        |                2 | doc_type_code       | character varying        | NO          | 
+ mgmt_accounting | doc_sequences        |                3 | year                | integer                  | NO          | 
+ mgmt_accounting | doc_sequences        |                4 | last_number         | integer                  | NO          | 0
+ mgmt_accounting | doc_types            |                1 | code                | character varying        | NO          | 
+ mgmt_accounting | doc_types            |                2 | title               | character varying        | NO          | 
+ mgmt_accounting | doc_types            |                3 | number_prefix       | character varying        | NO          | 
+ mgmt_accounting | doc_types            |                4 | is_active           | boolean                  | NO          | true
+ mgmt_accounting | item_serials         |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | item_serials         |                2 | item_id             | uuid                     | NO          | 
+ mgmt_accounting | item_serials         |                3 | code_enc            | text                     | NO          | 
+ mgmt_accounting | item_serials         |                4 | code_hash           | character varying        | NO          | 
+ mgmt_accounting | item_serials         |                5 | status              | character varying        | NO          | 'in_stock'::character varying
+ mgmt_accounting | item_serials         |                6 | location_id         | uuid                     | YES         | 
+ mgmt_accounting | item_serials         |                7 | unit_cost           | numeric                  | YES         | 
+ mgmt_accounting | item_serials         |                8 | received_move_id    | uuid                     | YES         | 
+ mgmt_accounting | item_serials         |                9 | sold_move_id        | uuid                     | YES         | 
+ mgmt_accounting | item_serials         |               10 | received_at         | date                     | NO          | 
+ mgmt_accounting | items                |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | items                |                2 | sku                 | character varying        | NO          | 
+ mgmt_accounting | items                |                3 | name                | character varying        | NO          | 
+ mgmt_accounting | items                |                4 | kind                | character varying        | NO          | 
+ mgmt_accounting | items                |                5 | unit_code           | character varying        | NO          | 
+ mgmt_accounting | items                |                6 | tracking            | character varying        | NO          | 'qty'::character varying
+ mgmt_accounting | items                |                7 | barcode             | character varying        | YES         | 
+ mgmt_accounting | items                |                8 | sale_price          | numeric                  | YES         | 
+ mgmt_accounting | items                |                9 | avg_cost            | numeric                  | YES         | 
+ mgmt_accounting | items                |               10 | low_stock_threshold | numeric                  | YES         | 
+ mgmt_accounting | items                |               11 | is_active           | boolean                  | NO          | true
+ mgmt_accounting | items                |               12 | created_at          | timestamp with time zone | YES         | now()
+ mgmt_accounting | items                |               13 | updated_at          | timestamp with time zone | YES         | 
+ mgmt_accounting | locations            |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | locations            |                2 | name                | character varying        | NO          | 
+ mgmt_accounting | locations            |                3 | kind                | character varying        | NO          | 
+ mgmt_accounting | locations            |                4 | is_transit          | boolean                  | NO          | false
+ mgmt_accounting | locations            |                5 | is_active           | boolean                  | NO          | true
+ mgmt_accounting | locations            |                6 | created_at          | timestamp with time zone | YES         | now()
+ mgmt_accounting | periods              |                1 | id                  | integer                  | NO          | nextval('mgmt_accounting.periods_id_seq'::regclass)
+ mgmt_accounting | periods              |                2 | year                | integer                  | NO          | 
+ mgmt_accounting | periods              |                3 | month               | integer                  | NO          | 
+ mgmt_accounting | periods              |                4 | status              | character varying        | NO          | 'open'::character varying
+ mgmt_accounting | periods              |                5 | closed_by           | uuid                     | YES         | 
+ mgmt_accounting | periods              |                6 | closed_at           | timestamp with time zone | YES         | 
+ mgmt_accounting | production_orders    |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | production_orders    |                2 | number              | character varying        | YES         | 
+ mgmt_accounting | production_orders    |                3 | tech_card_id        | uuid                     | NO          | 
+ mgmt_accounting | production_orders    |                4 | qty_planned         | numeric                  | NO          | 
+ mgmt_accounting | production_orders    |                5 | status              | character varying        | NO          | 'draft'::character varying
+ mgmt_accounting | production_orders    |                6 | is_stornoed         | boolean                  | NO          | false
+ mgmt_accounting | production_orders    |                7 | material_cost       | numeric                  | YES         | 
+ mgmt_accounting | production_orders    |                8 | moved_at            | date                     | NO          | 
+ mgmt_accounting | production_orders    |                9 | note                | text                     | NO          | ''::text
+ mgmt_accounting | production_orders    |               10 | created_by          | uuid                     | NO          | 
+ mgmt_accounting | production_orders    |               11 | created_at          | timestamp with time zone | YES         | now()
+ mgmt_accounting | production_orders    |               12 | posted_at           | timestamp with time zone | YES         | 
+ mgmt_accounting | purchase_order_lines |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | purchase_order_lines |                2 | order_id            | uuid                     | NO          | 
+ mgmt_accounting | purchase_order_lines |                3 | item_id             | uuid                     | NO          | 
+ mgmt_accounting | purchase_order_lines |                4 | qty                 | numeric                  | NO          | 
+ mgmt_accounting | purchase_order_lines |                5 | unit_price          | numeric                  | NO          | 
+ mgmt_accounting | purchase_order_lines |                6 | amount              | numeric                  | NO          | 
+ mgmt_accounting | purchase_orders      |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | purchase_orders      |                2 | number              | character varying        | YES         | 
+ mgmt_accounting | purchase_orders      |                3 | counterparty_id     | uuid                     | NO          | 
+ mgmt_accounting | purchase_orders      |                4 | status              | character varying        | NO          | 'draft'::character varying
+ mgmt_accounting | purchase_orders      |                5 | currency            | character varying        | NO          | 
+ mgmt_accounting | purchase_orders      |                6 | rate                | numeric                  | YES         | 
+ mgmt_accounting | purchase_orders      |                7 | amount              | numeric                  | NO          | 
+ mgmt_accounting | purchase_orders      |                8 | amount_base         | numeric                  | NO          | 
+ mgmt_accounting | purchase_orders      |                9 | note                | text                     | NO          | ''::text
+ mgmt_accounting | purchase_orders      |               10 | created_by          | uuid                     | NO          | 
+ mgmt_accounting | purchase_orders      |               11 | created_at          | timestamp with time zone | YES         | now()
+ mgmt_accounting | purchase_orders      |               12 | updated_at          | timestamp with time zone | YES         | 
+ mgmt_accounting | rates                |                1 | id                  | integer                  | NO          | nextval('mgmt_accounting.rates_id_seq'::regclass)
+ mgmt_accounting | rates                |                2 | date                | date                     | NO          | 
+ mgmt_accounting | rates                |                3 | currency            | character varying        | NO          | 
+ mgmt_accounting | rates                |                4 | rate                | numeric                  | NO          | 
+ mgmt_accounting | rates                |                5 | source              | character varying        | NO          | 'manual'::character varying
+ mgmt_accounting | receipt_lines        |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | receipt_lines        |                2 | receipt_id          | uuid                     | NO          | 
+ mgmt_accounting | receipt_lines        |                3 | item_id             | uuid                     | NO          | 
+ mgmt_accounting | receipt_lines        |                4 | location_id         | uuid                     | YES         | 
+ mgmt_accounting | receipt_lines        |                5 | qty                 | numeric                  | NO          | 
+ mgmt_accounting | receipt_lines        |                6 | unit_cost           | numeric                  | YES         | 
+ mgmt_accounting | receipt_lines        |                7 | serial_codes        | jsonb                    | YES         | 
+ mgmt_accounting | receipts             |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | receipts             |                2 | number              | character varying        | YES         | 
+ mgmt_accounting | receipts             |                3 | purchase_order_id   | uuid                     | YES         | 
+ mgmt_accounting | receipts             |                4 | counterparty_id     | uuid                     | NO          | 
+ mgmt_accounting | receipts             |                5 | status              | character varying        | NO          | 'draft'::character varying
+ mgmt_accounting | receipts             |                6 | is_stornoed         | boolean                  | NO          | false
+ mgmt_accounting | receipts             |                7 | counterparty_doc    | character varying        | YES         | 
+ mgmt_accounting | receipts             |                8 | note                | text                     | NO          | ''::text
+ mgmt_accounting | receipts             |                9 | moved_at            | date                     | NO          | 
+ mgmt_accounting | receipts             |               10 | created_by          | uuid                     | NO          | 
+ mgmt_accounting | receipts             |               11 | created_at          | timestamp with time zone | YES         | now()
+ mgmt_accounting | receipts             |               12 | posted_at           | timestamp with time zone | YES         | 
+ mgmt_accounting | sales_order_lines    |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | sales_order_lines    |                2 | order_id            | uuid                     | NO          | 
+ mgmt_accounting | sales_order_lines    |                3 | item_id             | uuid                     | NO          | 
+ mgmt_accounting | sales_order_lines    |                4 | qty                 | numeric                  | NO          | 
+ mgmt_accounting | sales_order_lines    |                5 | unit_price          | numeric                  | NO          | 
+ mgmt_accounting | sales_order_lines    |                6 | amount              | numeric                  | NO          | 
+ mgmt_accounting | sales_order_lines    |                7 | reserved_qty        | numeric                  | NO          | '0'::numeric
+ mgmt_accounting | sales_orders         |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | sales_orders         |                2 | number              | character varying        | YES         | 
+ mgmt_accounting | sales_orders         |                3 | counterparty_id     | uuid                     | NO          | 
+ mgmt_accounting | sales_orders         |                4 | crm_deal_id         | uuid                     | YES         | 
+ mgmt_accounting | sales_orders         |                5 | status              | character varying        | NO          | 'draft'::character varying
+ mgmt_accounting | sales_orders         |                6 | currency            | character varying        | NO          | 
+ mgmt_accounting | sales_orders         |                7 | rate                | numeric                  | YES         | 
+ mgmt_accounting | sales_orders         |                8 | amount              | numeric                  | NO          | 
+ mgmt_accounting | sales_orders         |                9 | amount_base         | numeric                  | NO          | 
+ mgmt_accounting | sales_orders         |               10 | note                | text                     | NO          | ''::text
+ mgmt_accounting | sales_orders         |               11 | created_by          | uuid                     | NO          | 
+ mgmt_accounting | sales_orders         |               12 | created_at          | timestamp with time zone | YES         | now()
+ mgmt_accounting | sales_orders         |               13 | updated_at          | timestamp with time zone | YES         | 
+ mgmt_accounting | shipment_lines       |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | shipment_lines       |                2 | shipment_id         | uuid                     | NO          | 
+ mgmt_accounting | shipment_lines       |                3 | item_id             | uuid                     | NO          | 
+ mgmt_accounting | shipment_lines       |                4 | location_id         | uuid                     | YES         | 
+ mgmt_accounting | shipment_lines       |                5 | qty                 | numeric                  | NO          | 
+ mgmt_accounting | shipment_lines       |                6 | unit_price          | numeric                  | YES         | 
+ mgmt_accounting | shipment_lines       |                7 | amount_base         | numeric                  | YES         | 
+ mgmt_accounting | shipment_lines       |                8 | serial_codes        | jsonb                    | YES         | 
+ mgmt_accounting | shipment_lines       |               11 | serial_ids          | jsonb                    | YES         | 
+ mgmt_accounting | shipments            |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | shipments            |                2 | number              | character varying        | YES         | 
+ mgmt_accounting | shipments            |                3 | sales_order_id      | uuid                     | NO          | 
+ mgmt_accounting | shipments            |                4 | status              | character varying        | NO          | 'draft'::character varying
+ mgmt_accounting | shipments            |                5 | is_stornoed         | boolean                  | NO          | false
+ mgmt_accounting | shipments            |                6 | counterparty_doc    | character varying        | YES         | 
+ mgmt_accounting | shipments            |                7 | note                | text                     | NO          | ''::text
+ mgmt_accounting | shipments            |                8 | moved_at            | date                     | NO          | 
+ mgmt_accounting | shipments            |                9 | created_by          | uuid                     | NO          | 
+ mgmt_accounting | shipments            |               10 | created_at          | timestamp with time zone | YES         | now()
+ mgmt_accounting | shipments            |               11 | posted_at           | timestamp with time zone | YES         | 
+ mgmt_accounting | shipments            |               12 | delivered_at        | timestamp with time zone | YES         | 
+ mgmt_accounting | shipments            |               13 | delivered_via       | character varying        | NO          | ''::character varying
+ mgmt_accounting | stock_moves          |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | stock_moves          |                2 | item_id             | uuid                     | NO          | 
+ mgmt_accounting | stock_moves          |                3 | qty                 | numeric                  | NO          | 
+ mgmt_accounting | stock_moves          |                4 | unit_cost           | numeric                  | YES         | 
+ mgmt_accounting | stock_moves          |                5 | from_location_id    | uuid                     | NO          | 
+ mgmt_accounting | stock_moves          |                6 | to_location_id      | uuid                     | NO          | 
+ mgmt_accounting | stock_moves          |                7 | counterparty_id     | uuid                     | YES         | 
+ mgmt_accounting | stock_moves          |                8 | source_type         | character varying        | YES         | 
+ mgmt_accounting | stock_moves          |                9 | source_id           | uuid                     | YES         | 
+ mgmt_accounting | stock_moves          |               10 | moved_at            | date                     | NO          | 
+ mgmt_accounting | stock_moves          |               11 | created_by          | uuid                     | NO          | 
+ mgmt_accounting | stock_moves          |               12 | note                | text                     | NO          | ''::text
+ mgmt_accounting | stock_moves          |               13 | created_at          | timestamp with time zone | YES         | now()
+ mgmt_accounting | tech_cards           |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | tech_cards           |                2 | name                | character varying        | NO          | 
+ mgmt_accounting | tech_cards           |                3 | product_item_id     | uuid                     | NO          | 
+ mgmt_accounting | tech_cards           |                4 | qty_out             | numeric                  | NO          | 
+ mgmt_accounting | tech_cards           |                5 | components          | jsonb                    | NO          | 
+ mgmt_accounting | tech_cards           |                6 | is_active           | boolean                  | NO          | true
+ mgmt_accounting | tech_cards           |                7 | created_by          | uuid                     | NO          | 
+ mgmt_accounting | tech_cards           |                8 | created_at          | timestamp with time zone | YES         | now()
+ mgmt_accounting | transactions         |                1 | id                  | uuid                     | NO          | 
+ mgmt_accounting | transactions         |                2 | doc_number          | character varying        | YES         | 
+ mgmt_accounting | transactions         |                3 | doc_type_code       | character varying        | NO          | 
+ mgmt_accounting | transactions         |                4 | kind                | character varying        | NO          | 
+ mgmt_accounting | transactions         |                5 | status              | character varying        | NO          | 'draft'::character varying
+ mgmt_accounting | transactions         |                6 | operated_at         | date                     | NO          | 
+ mgmt_accounting | transactions         |                7 | created_at          | timestamp with time zone | YES         | now()
+ mgmt_accounting | transactions         |                8 | amount              | numeric                  | NO          | 
+ mgmt_accounting | transactions         |                9 | currency            | character varying        | NO          | 
+ mgmt_accounting | transactions         |               10 | rate                | numeric                  | YES         | 
+ mgmt_accounting | transactions         |               11 | amount_base         | numeric                  | YES         | 
+ mgmt_accounting | transactions         |               12 | amount_to           | numeric                  | YES         | 
+ mgmt_accounting | transactions         |               13 | currency_to         | character varying        | YES         | 
+ mgmt_accounting | transactions         |               14 | rate_to             | numeric                  | YES         | 
+ mgmt_accounting | transactions         |               15 | amount_to_base      | numeric                  | YES         | 
+ mgmt_accounting | transactions         |               16 | account_id          | uuid                     | NO          | 
+ mgmt_accounting | transactions         |               17 | account_to_id       | uuid                     | YES         | 
+ mgmt_accounting | transactions         |               18 | category_id         | uuid                     | YES         | 
+ mgmt_accounting | transactions         |               19 | counterparty_id     | uuid                     | YES         | 
+ mgmt_accounting | transactions         |               20 | description         | text                     | NO          | ''::text
+ mgmt_accounting | transactions         |               21 | dimensions          | jsonb                    | NO          | '{}'::jsonb
+ mgmt_accounting | transactions         |               22 | is_deleted          | boolean                  | NO          | false
+ mgmt_accounting | transactions         |               23 | is_stornoed         | boolean                  | NO          | false
+ mgmt_accounting | transactions         |               24 | storno_of_id        | uuid                     | YES         | 
+ mgmt_accounting | transactions         |               25 | created_by          | uuid                     | NO          | 
+ mgmt_accounting | units                |                1 | code                | character varying        | NO          | 
+ mgmt_accounting | units                |                2 | name                | character varying        | NO          | 
+ mgmt_accounting | units                |                3 | is_active           | boolean                  | NO          | true
+ mgmt_accounting | v_stock_balances     |                1 | item_id             | uuid                     | YES         | 
+ mgmt_accounting | v_stock_balances     |                2 | sku                 | character varying        | YES         | 
+ mgmt_accounting | v_stock_balances     |                3 | location_id         | uuid                     | YES         | 
+ mgmt_accounting | v_stock_balances     |                4 | location_name       | character varying        | YES         | 
+ mgmt_accounting | v_stock_balances     |                5 | location_kind       | character varying        | YES         | 
+ mgmt_accounting | v_stock_balances     |                6 | qty                 | numeric                  | YES         | 
+ mgmt_accounting | v_stock_balances     |                7 | avg_cost            | numeric                  | YES         | 
+ mgmt_accounting | v_stock_balances     |                8 | value               | numeric                  | YES         | 
+ mini_crm        | activities           |                1 | id                  | uuid                     | NO          | 
+ mini_crm        | activities           |                2 | deal_id             | uuid                     | NO          | 
+ mini_crm        | activities           |                3 | title               | character varying        | NO          | 
+ mini_crm        | activities           |                4 | due_at              | date                     | NO          | 
+ mini_crm        | activities           |                5 | done                | boolean                  | NO          | false
+ mini_crm        | activities           |                6 | done_at             | timestamp with time zone | YES         | 
+ mini_crm        | activities           |                7 | created_by          | uuid                     | NO          | 
+ mini_crm        | activities           |                8 | created_at          | timestamp with time zone | YES         | now()
+ mini_crm        | communications       |                1 | id                  | uuid                     | NO          | 
+ mini_crm        | communications       |                2 | deal_id             | uuid                     | NO          | 
+ mini_crm        | communications       |                3 | kind                | character varying        | NO          | 
+ mini_crm        | communications       |                4 | content             | text                     | NO          | 
+ mini_crm        | communications       |                5 | occurred_at         | date                     | NO          | 
+ mini_crm        | communications       |                6 | created_by          | uuid                     | NO          | 
+ mini_crm        | communications       |                7 | created_at          | timestamp with time zone | YES         | now()
+ mini_crm        | deals                |                1 | id                  | uuid                     | NO          | 
+ mini_crm        | deals                |                2 | title               | character varying        | NO          | 
+ mini_crm        | deals                |                3 | stage_id            | uuid                     | NO          | 
+ mini_crm        | deals                |                4 | counterparty_id     | uuid                     | YES         | 
+ mini_crm        | deals                |                5 | contact_id          | uuid                     | YES         | 
+ mini_crm        | deals                |                6 | responsible_id      | uuid                     | YES         | 
+ mini_crm        | deals                |                7 | amount              | numeric                  | NO          | 
+ mini_crm        | deals                |                8 | currency            | character varying        | NO          | 
+ mini_crm        | deals                |                9 | rate                | numeric                  | YES         | 
+ mini_crm        | deals                |               10 | amount_base         | numeric                  | YES         | 
+ mini_crm        | deals                |               11 | expected_close_at   | date                     | YES         | 
+ mini_crm        | deals                |               12 | lost_reason         | text                     | YES         | 
+ mini_crm        | deals                |               13 | dimensions          | jsonb                    | NO          | '{}'::jsonb
+ mini_crm        | deals                |               14 | is_deleted          | boolean                  | NO          | false
+ mini_crm        | deals                |               15 | created_by          | uuid                     | NO          | 
+ mini_crm        | deals                |               16 | created_at          | timestamp with time zone | YES         | now()
+ mini_crm        | deals                |               17 | updated_at          | timestamp with time zone | YES         | 
+ mini_crm        | deals                |               18 | won_at              | timestamp with time zone | YES         | 
+ mini_crm        | deals                |               19 | lost_at             | timestamp with time zone | YES         | 
+ mini_crm        | stages               |                1 | id                  | uuid                     | NO          | 
+ mini_crm        | stages               |                2 | name                | character varying        | NO          | 
+ mini_crm        | stages               |                3 | position            | integer                  | NO          | 
+ mini_crm        | stages               |                4 | probability         | integer                  | YES         | 
+ mini_crm        | stages               |                5 | is_won              | boolean                  | NO          | false
+ mini_crm        | stages               |                6 | is_lost             | boolean                  | NO          | false
+ mini_crm        | stages               |                7 | is_active           | boolean                  | NO          | true
+(483 rows)
+

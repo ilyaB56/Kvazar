@@ -357,7 +357,7 @@ async function logout() {
     </div>
 
       <!-- Контент (появление экрана 0.22s) -->
-      <main class="flex-1 px-4 py-6 sm:px-6 lg:px-8">
+      <main class="flex-1 px-4 py-8 sm:px-6 lg:px-8">
         <div class="mx-auto w-full max-w-[1400px]">
           <router-view :key="route.path" class="erp-view-in" />
         </div>

@@ -110,6 +110,11 @@ services:
     restart: unless-stopped
     image: ollama/ollama:latest
     profiles: ["ai"]
+    # Дешёвый хост: одна модель в памяти, один параллельный запрос —
+    # иначе генерация с RAG-контекстом съедает память VM и роняет движок
+    environment:
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
     volumes:
       - ollama_models:/root/.ollama
     ports:
