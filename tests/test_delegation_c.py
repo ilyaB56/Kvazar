@@ -217,3 +217,45 @@ def test_c4_me_exposes_deadline_and_username(client, admin):
     assert me["username"] == account["username"]
     assert me["must_change_password"] is True
     assert me["must_change_password_by"] is not None
+
+
+def test_c5_admin_created_via_users_gets_totp_deadline(client, admin):
+    """Руководитель, созданный вкладкой «Пользователи» (POST /users), получает
+    totp_setup_deadline +7 дней — как и админ при создании организации.
+    Сотрудник — без дедлайна; выдача роли admin патчем — тоже дедлайн."""
+    from sqlalchemy import text
+
+    from src.db import SessionLocal
+
+    def deadline(email):
+        db = SessionLocal()
+        try:
+            return db.execute(text(
+                "SELECT totp_setup_deadline FROM erp_core.users"
+                " WHERE email = :e").bindparams(e=email)).scalar()
+        finally:
+            db.close()
+
+    headers = _auth(admin["access_token"])
+    # 1) админ через POST /users — дедлайн есть
+    new_admin = f"admin-users-{RUN}@mt.test"
+    response = client.post(f"{API}/users", json={
+        "email": new_admin, "password": "AdminPass123",
+        "full_name": "Админ Через Юзеров", "role": "admin"}, headers=headers)
+    assert response.status_code == 201, response.text
+    dl = deadline(new_admin)
+    assert dl is not None, "админ из POST /users без totp_setup_deadline"
+
+    # 2) сотрудник — без дедлайна
+    new_user = f"user-users-{RUN}@mt.test"
+    response = client.post(f"{API}/users", json={
+        "email": new_user, "password": "UserPass123",
+        "full_name": "Просто Сотрудник", "role": "user"}, headers=headers)
+    assert response.status_code == 201, response.text
+    assert deadline(new_user) is None
+
+    # 3) сотрудник → роль admin патчем: дедлайн появляется
+    response = client.patch(f"{API}/users/{response.json()['id']}",
+                            json={"role": "admin"}, headers=headers)
+    assert response.status_code == 200, response.text
+    assert deadline(new_user) is not None, "PATCH role=admin не выставил дедлайн"

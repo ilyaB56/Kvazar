@@ -954,12 +954,16 @@ def _reissue_pair(db, payload, user, org: str | None) -> TokenOut:
                       entity_id=org or "",
                       payload={"sid": sid}))
     db.commit()
+    from src.core import totp as totp_core
     return TokenOut(
         access_token=create_access_token(user.id, user.role,
                                          ver=user.token_version, sid=sid,
                                          org=org, pl=pl),
         refresh_token=create_refresh_token(user.id, ver=user.token_version,
                                            sid=sid, org=org, pl=pl),
+        # флаг мастера 2FA — и в перевыпущенной паре (вход в организацию),
+        # иначе UI его теряет и мастер не показывается
+        totp_setup_required=_2fa_required(user) and not totp_core.is_enabled(db, user.id),
     )
 
 
@@ -1188,6 +1192,10 @@ def create_user(body: UserCreate, admin: AdminUser, db: Session = Depends(get_db
         full_name=body.full_name,
         role=body.role,
         company_id=creator_org,
+        # руководитель без 2FA обязан настроить её за 7 дней (multitenancy
+        # этап D) — тот же фикс, что и при создании организации
+        totp_setup_deadline=datetime.now(UTC) + timedelta(days=7)
+        if body.role == "admin" else None,
     )
     db.add(user)
     db.add(AuditEvent(user_id=admin.id, action="user.created", entity_type="user",
@@ -1214,6 +1222,9 @@ def patch_user(user_id: uuid.UUID, body: UserPatch, admin: AdminUser,
             raise HTTPException(422, f"Unknown role: {body.role}")
         if user.id == admin.id and body.role != "admin":
             raise HTTPException(400, "Нельзя снять роль администратора с себя")
+        if body.role == "admin" and user.role != "admin"                 and user.totp_setup_deadline is None:
+            # новый руководитель получает дедлайн настройки 2FA
+            user.totp_setup_deadline = datetime.now(UTC) + timedelta(days=7)
         user.role = body.role
     if body.full_name is not None:
         user.full_name = body.full_name

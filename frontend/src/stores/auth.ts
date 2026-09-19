@@ -133,6 +133,12 @@ export const useAuthStore = defineStore('auth', {
       this.organizations = tokens.organizations ?? []
       this.totpSetupNeeded = !!tokens.totp_setup_required
       this.setupDismissed = false
+      // отказ «Настроить позже» живёт один вход: новый логин снова
+      // показывает мастер 2FA (localStorage-флаг чистим)
+      localStorage.removeItem('erp.totp-dismissed')
+      // отказ «Настроить позже» живёт один вход: новый логин снова
+      // показывает мастер 2FA (localStorage-флаг чистим)
+      localStorage.removeItem('erp.totp-dismissed')
       await this.fetchMe()
       await this.fetchPermissions()
     },
@@ -207,6 +213,11 @@ export const useAuthStore = defineStore('auth', {
         body: JSON.stringify({ refresh_token: this.refreshToken, company_id: companyId }),
       })
       this.persist(tokens)
+      // вход в организацию перевыпускает пару: флаг 2FA обновляется и тут
+      // (иначе мастер не показывался после выбора организации)
+      this.totpSetupNeeded = !!tokens.totp_setup_required
+      this.setupDismissed = false
+      localStorage.removeItem('erp.totp-dismissed')
     },
     async leaveOrg(): Promise<void> {
       const tokens = await jsonFetch<TokenPair>('/api/v1/auth/leave-org', {
