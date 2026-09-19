@@ -50,7 +50,12 @@ class AccountingApi:
     """
 
     def __init__(self, base_url: str, api_token: str, timeout: int = 15):
+        # нормализуем base: принимаем и "http://api:8000", и
+        # "http://api:8000/api/v1" — пути методов относительные (без
+        # /api/v1; раньше двойной префикс давал /api/v1/api/v1/… → 404)
         self._base = base_url.rstrip("/")
+        if not self._base.endswith("/api/v1"):
+            self._base += "/api/v1"
         self._headers = {"X-API-Token": api_token, "Content-Type": "application/json"}
         self._timeout = timeout
 
@@ -72,7 +77,7 @@ class AccountingApi:
         return response.json() if response.content else {}
 
     def find_or_create(self, buyer: dict, fallback_name: str) -> str:
-        data = self._call("POST", "/api/v1/accounting/counterparties/find-or-create", {
+        data = self._call("POST", "/accounting/counterparties/find-or-create", {
             "email": buyer.get("email", ""),
             "phone": buyer.get("phone", ""),
             "name": buyer.get("name", "") or fallback_name,
@@ -80,37 +85,37 @@ class AccountingApi:
         return data["counterparty_id"]
 
     def create_order(self, counterparty_id: str, lines: list[dict]) -> dict:
-        return self._call("POST", "/api/v1/accounting/sales-orders", {
+        return self._call("POST", "/accounting/sales-orders", {
             "counterparty_id": counterparty_id,
             "lines": lines,
         })
 
     def confirm_order(self, order_id: str) -> dict:
-        return self._call("POST", f"/api/v1/accounting/sales-orders/{order_id}/confirm", {})
+        return self._call("POST", f"/accounting/sales-orders/{order_id}/confirm", {})
 
     def pay_order(self, order_id: str, account_id: str, amount: str) -> dict:
-        return self._call("POST", f"/api/v1/accounting/sales-orders/{order_id}/pay", {
+        return self._call("POST", f"/accounting/sales-orders/{order_id}/pay", {
             "account_id": account_id, "amount": amount,
         })
 
     def create_shipment(self, order_id: str, lines: list[dict]) -> dict:
-        return self._call("POST", "/api/v1/accounting/shipments", {
+        return self._call("POST", "/accounting/shipments", {
             "sales_order_id": order_id, "lines": lines,
         })
 
     def post_shipment(self, shipment_id: str) -> dict:
-        return self._call("POST", f"/api/v1/accounting/shipments/{shipment_id}/post", {})
+        return self._call("POST", f"/accounting/shipments/{shipment_id}/post", {})
 
     def deliver_shipment(self, shipment_id: str, channel: str) -> dict:
         return self._call(
-            "POST", f"/api/v1/accounting/shipments/{shipment_id}/deliver",
+            "POST", f"/accounting/shipments/{shipment_id}/deliver",
             {"channel_note": channel})
 
     def shipment_codes(self, shipment_id: str) -> list[dict]:
         """Коды выданной отгрузки для шага notify (повторяемый): rw-токен
         видит расшифрованные serial_codes — расшифровка на лету по
         serial_ids (§12.5), открытые коды нигде не хранятся."""
-        data = self._call("GET", f"/api/v1/accounting/shipments/{shipment_id}")
+        data = self._call("GET", f"/accounting/shipments/{shipment_id}")
         out = []
         for line in data.get("lines", []):
             if line.get("serial_codes"):
@@ -121,7 +126,7 @@ class AccountingApi:
     def create_transaction(self, counterparty_id: str, account_id: str,
                            amount: str, currency: str, description: str) -> dict:
         # транзакция без source-заказа (§12.3): деньги не ждут товара
-        return self._call("POST", "/api/v1/accounting/transactions", {
+        return self._call("POST", "/accounting/transactions", {
             "kind": "income", "operated_at": datetime.now(UTC).date().isoformat(),
             "amount": amount, "currency": currency, "account_id": account_id,
             "counterparty_id": counterparty_id, "description": description,
@@ -208,6 +213,15 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
                    api: AccountingApi) -> m.FlowRun:
     """Исполнить (или продолжить) флоу платежа. Все шаги идемпотентны:
     context хранит созданные id; retry пропускает готовое."""
+    # сериализация конкурентных запусков: синхронный путь вебхука (в API)
+    # и recipe_task (в воркере) могут прийти одновременно — без блокировки
+    # строки два флоу гонятся по одним таблицам (deadlock/двойные документы)
+    payment = db.execute(
+        select(m.OnlinePayment).where(m.OnlinePayment.id == payment.id)
+        .with_for_update().execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if payment is None:
+        raise FlowError("payment_not_found", "payment disappeared")
     definition = (recipe.definition or {}) if recipe else {}
     action = definition.get("action", {})
     config = action.get("config", {}) if isinstance(action, dict) else {}
@@ -220,6 +234,11 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
     if run is None:
         run = m.FlowRun(payment_id=payment.id, recipe_id=recipe.id if recipe else None)
         db.add(run)
+    elif run.status == "done" and payment.status == "processed":
+        # флоу уже завершён (синхронный путь вебхука); recipe_task из
+        # outbox-события должен молча завершиться — повторная запись
+        # flow_runs гонится с живой транзакцией (deadlock)
+        return run
     else:
         run.attempts += 1
         run.status = "running"

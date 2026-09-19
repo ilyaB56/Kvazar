@@ -286,10 +286,9 @@ def _flow_recipe_and_api(db: Session, connection) -> tuple:
 
     creds = decrypt_dict(token_conn.credentials_enc)
     config = token_conn.config or {}
-    base = config.get("base_url", "").rstrip("/")
-    if base.endswith("/api/v1"):
-        base = base[: -len("/api/v1")]
-    api = AccountingApi(base, creds.get("api_key", ""))
+    # base с /api/v1 или без — нормализует AccountingApi
+    api = AccountingApi(config.get("base_url", "http://api:8000"),
+                        creds.get("api_key", ""))
     return recipe, api
 
 

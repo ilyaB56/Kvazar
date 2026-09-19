@@ -47,19 +47,27 @@ def dispatch_outbox(db: Session, limit: int = 100) -> int:
     Возвращает количество обработанных событий. Для продакшена — вынести в
     отдельный воркер; сейчас вызывается после коммита запроса.
     """
+    # SKIP LOCKED: dispatch вызывается и в запросах API, и в beat — без
+    # блокировки два диспетчера забирают одни строки и дублируют задачи
+    # подписчикам (двойные флоу платежа, дубли документов)
     rows = db.execute(
-        select(EventOutbox).where(EventOutbox.processed.is_(False)).order_by(EventOutbox.id).limit(limit)
+        select(EventOutbox).where(EventOutbox.processed.is_(False))
+        .order_by(EventOutbox.id).limit(limit).with_for_update(skip_locked=True)
     ).scalars().all()
-    count = 0
+    if not rows:
+        return 0
+    payloads = [(row.event_name, row.payload) for row in rows]
     for row in rows:
-        for fn in _handlers.get(row.event_name, []):
-            try:
-                fn(row.payload)
-            except Exception:  # noqa: BLE001 — один сбой не должен ронять остальные события
-                logger.exception("handler %s failed for event %s", fn, row.event_name)
         row.processed = True
+    db.commit()  # сразу метим обработанными — дубли исключены
+    count = 0
+    for event_name, payload in payloads:
+        for fn in _handlers.get(event_name, []):
+            try:
+                fn(payload)
+            except Exception:  # noqa: BLE001 — один сбой не должен ронять остальные события
+                logger.exception("handler %s failed for event %s", fn, event_name)
         count += 1
-    db.commit()
     return count
 
 

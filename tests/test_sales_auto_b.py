@@ -129,6 +129,35 @@ def admin_headers(client):
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _teardown_stage():
+    """Чистим за собой: опубликованный рецепт с trigger
+    integration.payment.received ловит ЧУЖИЕ платежи следующих прогонов
+    (фильтра по подключению у рецепта нет) — мусорные рецепты однажды
+    разом «заработали» и завалили систему заказами по старым событиям.
+    Коннекты деактивируем: на них ссылаются платежи, удалять нельзя."""
+    yield
+    try:
+        from sqlalchemy import text
+
+        from src.db import SessionLocal
+
+        db = SessionLocal()
+        try:
+            db.execute(text(
+                "DELETE FROM integrations.recipes WHERE name LIKE :pat"
+            ).bindparams(pat=f"%{RUN}%"))
+            db.execute(text(
+                "UPDATE integrations.connections SET is_active = false"
+                " WHERE name LIKE :pat"
+            ).bindparams(pat=f"%{RUN}%"))
+            db.commit()
+        finally:
+            db.close()
+    except ImportError:
+        pass  # запуск вне api-контейнера — убирать нечего
+
+
 @pytest.fixture(scope="module")
 def stage(client, admin_headers, yookassa_mock):
     """Полная обвязка: товар+склад, счёт, api-token connection, yookassa
@@ -158,7 +187,7 @@ def stage(client, admin_headers, yookassa_mock):
     api_conn = client.post(f"{API}/integrations/connections", json={
         "name": f"b-api-{RUN}", "connector_code": "http_rest",
         "credentials": {"api_key": api_token},
-        "config": {"base_url": "http://127.0.0.1:8000/api/v1", "auth_style": "none"},
+        "config": {"base_url": "http://api:8000", "auth_style": "none"},
     }, headers=admin_headers).json()
 
     yk_conn = client.post(f"{API}/integrations/connections", json={

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 import re
 
 from sqlalchemy import select
@@ -46,10 +47,45 @@ def render_body(body_template: str, payload: dict) -> dict:
 
 
 def execute_recipe_action(recipe: m.Recipe, payload: dict) -> bool:
-    """Одно действие api_call через connection. Возвращает ok."""
+    """Действие рецепта: sales_flow или api_call. Возвращает ok."""
     db = SessionLocal()
     try:
         action = (recipe.definition or {}).get("action", {})
+        action_type = action.get("type", "api_call")
+
+        if action_type == "sales_flow":
+            # оркестратор «платёж → документы → коды» (sales-automation §3.2)
+            from src.modules.integrations import sales_flow as sf
+            from src.modules.integrations.sales_flow import AccountingApi
+            payment_id = payload.get("payment_id")
+            if not payment_id:
+                logger.warning("recipe %s: sales_flow без payment_id", recipe.name)
+                return False
+            payment = db.get(m.OnlinePayment, uuid.UUID(str(payment_id)))
+            if payment is None:
+                logger.warning("recipe %s: payment %s not found", recipe.name, payment_id)
+                return False
+            # AccountingApi из http_rest-подключения (api_connection_id в definition)
+            api_conn_id = (recipe.definition or {}).get("api_connection_id")
+            api_conn = db.get(m.Connection, api_conn_id) if api_conn_id else None
+            if api_conn is None:
+                logger.warning("recipe %s: api_connection_id not found", recipe.name)
+                return False
+            api_creds = decrypt_dict(api_conn.credentials_enc) if api_conn.credentials_enc else {}
+            api = AccountingApi(
+                # worker живёт в compose-сети: API — по имени сервиса
+                base_url=api_conn.config.get("base_url", "http://api:8000/api/v1"),
+                api_token=api_creds.get("api_key", ""),
+            )
+            try:
+                sf.run_sales_flow(db, payment=payment, recipe=recipe, api=api)
+                return True
+            except Exception:
+                logger.exception("recipe %s: sales_flow failed for payment %s",
+                                 recipe.name, payment_id)
+                return False
+
+        # --- api_call (прежний путь) ---
         connection = db.get(m.Connection, action.get("connection_id"))
         if connection is None:
             logger.warning("recipe %s: connection not found", recipe.name)
@@ -90,17 +126,36 @@ def register_recipe_handlers() -> None:
 
     for trigger in triggers:
         def handler(payload: dict, _trigger=trigger) -> None:
-            # исполнение уходит в воркер (блокирующий api_call)
+            # исполнение уходит в воркер (блокирующий api_call) — КРОМЕ
+            # платежей: флоу payment.received вебхук исполняет синхронно
+            # (этап B, ответ 202 несёт статус флоу); воркерный дубль не
+            # нужен и опасен — side-effects (заказ/отгрузка) живут в
+            # отдельных транзакциях API, повтор гонит дубли документов
             from src.modules.integrations.tasks import recipe_task
+
+            if _trigger == "integration.payment.received":
+                return
 
             session = SessionLocal()
             try:
                 matching = session.scalars(select(m.Recipe).where(
                     m.Recipe.is_published.is_(True))).all()
+                # §3.2: рецепт привязан к провайдеру платежей
+                # (action.connection_id) — чужие подключения не обрабатываем;
+                # иначе N тестовых/демо-рецептов разводят N флоу на платёж
+                pay_conn = None
+                pay_id = payload.get("payment_id")
+                if pay_id:
+                    pay_conn = session.scalar(select(m.OnlinePayment.connection_id).where(
+                        m.OnlinePayment.id == uuid.UUID(str(pay_id))))
             finally:
                 session.close()
             for recipe in matching:
-                if (recipe.definition or {}).get("trigger_event") != _trigger:
+                definition = recipe.definition or {}
+                if definition.get("trigger_event") != _trigger:
+                    continue
+                action_conn = (definition.get("action") or {}).get("connection_id")
+                if action_conn and pay_conn is not None                         and str(action_conn) != str(pay_conn):
                     continue
                 try:
                     recipe_task.delay(str(recipe.id), dict(payload))
