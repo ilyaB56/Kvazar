@@ -144,14 +144,27 @@ class YooKassaConnector(AcquiringConnector):
         obj: dict[str, Any] = payload.get("object", payload)
         amount = obj.get("amount") or {}
         buyer: dict[str, Any] = {}
+        buyer = obj.get("recipient") or {}
+        if not isinstance(buyer, dict):
+            buyer = {}
         receipt = obj.get("receipt_registration") or {}
         if isinstance(receipt, dict):
-            buyer = receipt.get("buyer") or {}
+            buyer = receipt.get("buyer") or buyer
         metadata = obj.get("metadata") or {}
         lines = []
         raw_lines = metadata.get("lines")
         if isinstance(raw_lines, list):
             lines = [line for line in raw_lines if isinstance(line, dict)]
+        elif metadata.get("item_sku") or metadata.get("sku"):
+            # простой платёж одним товаром (реестр/демо): плоский
+            # metadata {item_sku, qty[, price]} вместо массива lines
+            sku = str(metadata.get("item_sku") or metadata.get("sku"))
+            lines = [{
+                "external_id": sku, "sku": sku,
+                "qty": metadata.get("qty", 1),
+                "price": str(metadata.get("price", "")
+                             or amount.get("value", "")),
+            }]
         return {
             "payment_id": str(obj.get("id", "")),
             "status": str(obj.get("status", "")),
@@ -160,7 +173,8 @@ class YooKassaConnector(AcquiringConnector):
             "buyer": {
                 "email": buyer.get("email") or metadata.get("email") or "",
                 "phone": buyer.get("phone") or metadata.get("phone") or "",
-                "name": buyer.get("full_name") or metadata.get("name") or "",
+                "name": buyer.get("full_name") or buyer.get("name")
+                           or metadata.get("name") or "",
             },
             "lines": [
                 {

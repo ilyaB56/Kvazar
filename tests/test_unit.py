@@ -83,3 +83,32 @@ def test_webhook_hmac_verify():
     signature = hmac.new(b"whsec", body, hashlib.sha256).hexdigest()
     assert connector.verify_webhook({"x-signature": signature}, body)
     assert not connector.verify_webhook({"x-signature": "bad"}, body)
+
+
+def test_yookassa_normalize_flat_metadata():
+    """Плоский metadata {item_sku, qty} (простой сайт/демо) → одна строка
+    платежа; массив metadata.lines — как раньше."""
+    from src.modules.integrations.connectors.acquiring import YooKassaConnector
+
+    conn = YooKassaConnector(
+        code=YooKassaConnector.code, display_name=YooKassaConnector.display_name,
+        config={"base_url": "http://127.0.0.1:1"}, credentials={})
+    flat = conn.normalize({
+        "object": {
+            "id": "flat-1", "status": "succeeded",
+            "amount": {"value": "990.00", "currency": "RUB"},
+            "metadata": {"item_sku": "T-1", "qty": "2"},
+            "recipient": {"email": "b@x.ru", "name": "Б"},
+        }})
+    assert flat["lines"] == [{
+        "external_id": "T-1", "sku": "T-1", "name": "",
+        "qty": "2", "price": "990.00"}]
+    assert flat["buyer"]["email"] == "b@x.ru"
+
+    listed = conn.normalize({
+        "object": {
+            "id": "list-1", "amount": {"value": "10.00"},
+            "metadata": {"lines": [{"external_id": "s-1", "sku": "S",
+                                    "qty": 1, "price": "10.00"}]}}})
+    assert listed["lines"][0]["external_id"] == "s-1"
+    assert listed["lines"][0]["price"] == "10.00"

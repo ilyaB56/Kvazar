@@ -222,6 +222,11 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
     ).scalar_one_or_none()
     if payment is None:
         raise FlowError("payment_not_found", "payment disappeared")
+    # диагностика 403 из воркера: видим, какой токен реально уходит
+    # (префикс + длина; сам секрет в логи не пишем)
+    _token = getattr(api, "_headers", {}).get("X-API-Token", "")
+    logger.info("sales_flow api token: %s… (len=%d)",
+                _token[:10], len(_token))
     definition = (recipe.definition or {}) if recipe else {}
     action = definition.get("action", {})
     config = action.get("config", {}) if isinstance(action, dict) else {}
