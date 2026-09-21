@@ -1295,6 +1295,9 @@ class OrgOut(BaseModel):
     is_active: bool
     users_count: int = 0
     created_at: object = None
+    # админ организации (для «Сбросить пароль админа» на экране выбора org)
+    admin_id: uuid.UUID | None = None
+    admin_email: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -1330,12 +1333,26 @@ def platform_list_orgs(admin: PlatformAdmin, db: Session = Depends(get_db),
         start = page.offset or 0
         end = start + page.limit if page.limit else None
         rows = rows[start:end]
-        return {"items": [OrgOut(id=c.id, name=c.name, inn=c.inn, is_active=c.is_active,
-                                 users_count=int(counts.get(c.id, 0)), created_at=c.created_at)
-                          for c in rows], "total": total}
-    return [OrgOut(id=c.id, name=c.name, inn=c.inn, is_active=c.is_active,
-                   users_count=int(counts.get(c.id, 0)), created_at=c.created_at)
-            for c in rows]
+    # админы показанных организаций (батч): для сброса пароля админа
+    # админов у организации может быть несколько — берём старейшего
+    # (создан вместе с организацией): desc + перезапись = первый по дате
+    admins = {row[0]: (row[1], row[2]) for row in db.execute(
+        select(User.company_id, User.id, User.email)
+        .where(User.company_id.in_({c.id for c in rows}),
+               User.role == "admin")
+        .order_by(User.created_at.desc())
+    ).all()} if rows else {}
+
+    def _out(c: Company) -> OrgOut:
+        admin = admins.get(c.id)
+        return OrgOut(id=c.id, name=c.name, inn=c.inn, is_active=c.is_active,
+                      users_count=int(counts.get(c.id, 0)), created_at=c.created_at,
+                      admin_id=admin[0] if admin else None,
+                      admin_email=admin[1] if admin else None)
+
+    if page.paginated:
+        return {"items": [_out(c) for c in rows], "total": total}
+    return [_out(c) for c in rows]
 
 
 @router.post("/platform/orgs", status_code=201)

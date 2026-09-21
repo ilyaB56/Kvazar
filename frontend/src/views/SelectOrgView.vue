@@ -8,11 +8,11 @@
 import { reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { Building2, Plus, Power, PowerOff } from 'lucide-vue-next'
+import { Building2, KeyRound, Plus, Power, PowerOff } from 'lucide-vue-next'
 import { get, patch, post } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  PaginatedList, Skeleton, useToast,
+  PaginatedList, Skeleton, TempPasswordDialog, useToast,
 } from '../components/ui'
 import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
@@ -23,6 +23,8 @@ interface Org {
   inn: string
   is_active: boolean
   users_count: number
+  admin_id: string | null
+  admin_email: string | null
 }
 
 const { t } = useI18n()
@@ -37,6 +39,37 @@ function fetchOrgPage(offset: number, limit: number) {
 }
 
 const opening = ref<string | null>(null)
+
+// поиск по организациям: клиентская фильтрация загруженных строк
+const orgSearch = ref('')
+function filterOrgs(orgs: Org[]): Org[] {
+  const q = orgSearch.value.trim().toLowerCase()
+  if (!q) return orgs
+  return orgs.filter((o) => o.name.toLowerCase().includes(q)
+    || (o.inn ?? '').toLowerCase().includes(q))
+}
+
+// сброс пароля администратора организации (только платформенный админ)
+const resetOpen = ref(false)
+const resetTarget = ref<Org | null>(null)
+const resetPassword = ref<string | null>(null)
+const resetWorking = ref(false)
+
+async function resetAdminPassword(org: Org) {
+  if (resetWorking.value || !org.admin_id) return
+  resetWorking.value = true
+  try {
+    const response = await post<{ temp_password: string }>(
+      `/platform/users/${org.admin_id}/reset-password`)
+    resetPassword.value = response.temp_password
+    resetTarget.value = org
+    resetOpen.value = true
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    resetWorking.value = false
+  }
+}
 
 async function openOrg(org: Org) {
   if (opening.value || !org.is_active) return
@@ -112,6 +145,15 @@ function closeCreate() {
     </div>
 
     <PaginatedList ref="list" :fetch-page="fetchOrgPage" v-slot="{ items: orgs, loading }">
+      <div class="flex flex-wrap items-center gap-2 pb-1">
+        <Input
+          v-model="orgSearch" :placeholder="t('mt.searchOrgs')"
+          class="h-9 max-w-xs" :disabled="loading"
+        />
+        <span v-if="orgSearch.trim() && !loading" class="text-xs text-muted-foreground">
+          {{ t('mt.foundOf', { n: filterOrgs(orgs).length, m: orgs.length }) }}
+        </span>
+      </div>
       <Skeleton v-if="loading" class="h-40 w-full" />
       <Card v-else-if="!orgs.length" class="border-zinc-200 shadow-sm dark:border-zinc-800">
         <CardContent class="py-10">
@@ -120,7 +162,7 @@ function closeCreate() {
       </Card>
       <div v-else class="space-y-2">
         <Card
-          v-for="org in orgs" :key="org.id"
+          v-for="org in filterOrgs(orgs)" :key="org.id"
           class="border-zinc-200 shadow-sm transition-colors dark:border-zinc-800"
           :class="!org.is_active && 'opacity-60'"
         >
@@ -144,6 +186,13 @@ function closeCreate() {
               :disabled="opening === org.id" @click="openOrg(org)"
             >
               {{ opening === org.id ? t('mt.opening') : t('mt.open') }}
+            </Button>
+            <Button
+              v-if="org.admin_id" variant="ghost" size="sm"
+              :title="t('mt.resetAdmin')" :disabled="resetWorking"
+              @click="resetAdminPassword(org)"
+            >
+              <KeyRound class="h-4 w-4 text-sky-600" />
             </Button>
             <Button
               variant="ghost" size="sm"
@@ -202,5 +251,13 @@ function closeCreate() {
         </div>
       </div>
     </Dialog>
+
+    <!-- Сброс пароля администратора организации -->
+    <TempPasswordDialog
+      :open="resetOpen" :title="t('mt.resetAdminTitle')"
+      :hint="t('mt.resetAdminHint', { name: resetTarget?.name ?? '' })"
+      :temp-password="resetPassword"
+      @update:open="(v: boolean) => { resetOpen = v }"
+    />
   </div>
 </template>

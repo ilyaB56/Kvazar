@@ -11,7 +11,7 @@ import { KeyRound, Plus, ShieldOff, UserPlus } from 'lucide-vue-next'
 import { del, get, post, put } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
-  PaginatedList, SearchSelect, Skeleton, useToast,
+  PaginatedList, SearchSelect, Skeleton, TempPasswordDialog, useToast,
 } from '../components/ui'
 import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
@@ -46,6 +46,28 @@ const busy = ref<Record<string, boolean>>({})
 
 function fetchUsersPage(offset: number, limit: number) {
   return get<PageOf<UserRow>>(`/users?limit=${limit}&offset=${offset}`)
+}
+
+// сброс пароля сотрудника (§7.4): сотрудник своей org, не себя
+const resetOpen = ref(false)
+const resetTarget = ref<UserRow | null>(null)
+const resetPassword = ref<string | null>(null)
+const resetWorking = ref(false)
+
+async function resetUserPassword(row: UserRow) {
+  if (resetWorking.value) return
+  resetWorking.value = true
+  try {
+    const response = await post<{ temp_password: string }>(
+      `/users/${row.id}/reset-password`)
+    resetPassword.value = response.temp_password
+    resetTarget.value = row
+    resetOpen.value = true
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    resetWorking.value = false
+  }
 }
 
 function filterUsers(rows: UserRow[]): UserRow[] {
@@ -269,12 +291,21 @@ function closeCreate() {
                     </div>
                   </td>
                   <td class="px-3 py-2 text-right">
-                    <Button
-                      v-if="grantableModules.length && row.is_active" variant="outline" size="sm"
-                      class="gap-1" @click="askGrant(row)"
-                    >
-                      <Plus class="h-3.5 w-3.5" /> {{ t('deleg.grant') }}
-                    </Button>
+                    <div class="flex justify-end gap-1">
+                      <Button
+                        v-if="grantableModules.length && row.is_active" variant="outline" size="sm"
+                        class="gap-1" @click="askGrant(row)"
+                      >
+                        <Plus class="h-3.5 w-3.5" /> {{ t('deleg.grant') }}
+                      </Button>
+                      <Button
+                        v-if="row.id !== auth.user?.id" variant="ghost" size="icon" class="h-8 w-8"
+                        :title="t('deleg.resetPassword')" :disabled="resetWorking"
+                        @click="resetUserPassword(row)"
+                      >
+                        <KeyRound class="h-3.5 w-3.5 text-sky-600" />
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -370,5 +401,12 @@ function closeCreate() {
         </div>
       </div>
     </Dialog>
+    <!-- Сброс пароля сотрудника -->
+    <TempPasswordDialog
+      :open="resetOpen" :title="t('deleg.resetTitle')"
+      :hint="t('deleg.resetHint', { name: resetTarget?.full_name || resetTarget?.email || '' })"
+      :temp-password="resetPassword"
+      @update:open="(v: boolean) => { resetOpen = v }"
+    />
   </div>
 </template>

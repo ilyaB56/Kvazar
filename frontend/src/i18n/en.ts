@@ -414,6 +414,9 @@ export default {
     passwordHint: 'Changing the password revokes all active sessions and tokens (security-p0): you will need to sign in again everywhere.',
   },
   deleg: {
+    resetPassword: 'Reset password',
+    resetTitle: 'Password reset',
+    resetHint: "Temporary password for the employee is shown once — pass it along and ask to change it at first login.",
     title: 'Users and delegation',
     hint: 'Grant access to your rw modules without an administrator: never above your own permissions, only to active colleagues of your organization.',
     noGrantable: 'No modules available for granting (rw on at least one required)',
@@ -488,6 +491,11 @@ export default {
     enabledToast: 'Two-factor authentication enabled',
   },
   mt: {
+    resetAdmin: 'Reset admin password',
+    resetAdminTitle: 'Administrator password reset',
+    resetAdminHint: "Temporary password for the organization administrator is shown once — pass it along; sessions terminated.",
+    searchOrgs: 'Search by name or INN…',
+    foundOf: 'Found {n} of {m}',
     selectOrgTitle: 'Select organization',
     selectOrgHint: 'Open an organization to work with its data. This screen is also the platform registry: create and manage organizations.',
     createOrg: 'New organization',
