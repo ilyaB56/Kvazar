@@ -5,10 +5,10 @@
 // и переключением активности. Обычный пользователь сюда не попадает (guard).
 // Реестр пагинирован (по 50 + infinite scroll) — организаций сотни, полный
 // список подвешивал экран.
-import { reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { Building2, KeyRound, Plus, Power, PowerOff } from 'lucide-vue-next'
+import { Building2, Hourglass, KeyRound, Plus, Power, PowerOff, UserPlus, X } from 'lucide-vue-next'
 import { get, patch, post } from '../api/client'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
@@ -16,6 +16,63 @@ import {
 } from '../components/ui'
 import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
+
+// ---------- Заявки на подключение (self-service signup) ----------
+interface SignupRequest {
+  id: string
+  company_name: string
+  contact_name: string
+  email: string
+  status: 'pending' | 'verified'
+  created_at: string
+  verified_at: string | null
+}
+
+const requests = ref<SignupRequest[]>([])
+const requestsLoading = ref(false)
+const requestBusy = ref<string | null>(null)
+
+async function loadRequests() {
+  requestsLoading.value = true
+  try {
+    requests.value = await get<SignupRequest[]>('/platform/signup-requests')
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    requestsLoading.value = false
+  }
+}
+
+onMounted(loadRequests)
+
+async function approveRequest(req: SignupRequest) {
+  if (requestBusy.value) return
+  requestBusy.value = req.id
+  try {
+    const org = await post<{ name: string; admin: { email: string } }>(
+      `/platform/signup-requests/${req.id}/approve`)
+    toast.success(t('mt.orgCreatedToast', { name: org.name })
+      + t('mt.orgCreatedAdminToast', { email: org.admin.email }))
+    await Promise.all([list.value?.reload(), loadRequests()])
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    requestBusy.value = null
+  }
+}
+
+async function rejectRequest(req: SignupRequest) {
+  if (requestBusy.value) return
+  requestBusy.value = req.id
+  try {
+    await post(`/platform/signup-requests/${req.id}/reject`)
+    await loadRequests()
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    requestBusy.value = null
+  }
+}
 
 interface Org {
   id: string
@@ -143,6 +200,47 @@ function closeCreate() {
         <Plus class="h-3.5 w-3.5" /> {{ t('mt.createOrg') }}
       </Button>
     </div>
+
+    <!-- Заявки на подключение (self-service signup) -->
+    <Card v-if="requests.length" class="border-amber-200 shadow-sm dark:border-amber-900/60">
+      <CardContent class="space-y-2 p-4">
+        <p class="flex items-center gap-2 text-sm font-semibold">
+          <UserPlus class="h-4 w-4 text-amber-500" /> {{ t('mt.pendingTitle') }}
+        </p>
+        <div
+          v-for="req in requests" :key="req.id"
+          class="flex flex-wrap items-center gap-3 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800"
+        >
+          <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
+            <Hourglass class="h-4 w-4" />
+          </span>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm font-medium">{{ req.company_name }}</p>
+            <p class="mt-0.5 truncate text-xs text-muted-foreground">
+              {{ req.contact_name }} · {{ req.email }} ·
+              {{ new Date(req.created_at).toLocaleDateString() }} ·
+              <span :class="req.status === 'verified'
+                ? 'text-emerald-600 dark:text-emerald-400'
+                : 'text-amber-600 dark:text-amber-400'">
+                {{ req.status === 'verified' ? t('mt.statusVerified') : t('mt.statusPending') }}
+              </span>
+            </p>
+          </div>
+          <Button
+            v-if="req.status === 'verified'" variant="emerald" size="sm"
+            :disabled="requestBusy === req.id" @click="approveRequest(req)"
+          >
+            {{ t('mt.approve') }}
+          </Button>
+          <Button
+            variant="ghost" size="sm" :title="t('mt.reject')"
+            :disabled="requestBusy === req.id" @click="rejectRequest(req)"
+          >
+            <X class="h-4 w-4 text-red-500" />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
 
     <PaginatedList ref="list" :fetch-page="fetchOrgPage" v-slot="{ items: orgs, loading }">
       <div class="flex flex-wrap items-center gap-2 pb-1">

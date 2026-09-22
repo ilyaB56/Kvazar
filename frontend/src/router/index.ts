@@ -18,6 +18,18 @@ const router = createRouter({
       meta: { titleKey: 'recovery.title' },
     },
     {
+      // публичная заявка на подключение организации (self-service)
+      path: '/signup', name: 'signup',
+      component: () => import('../views/SignupView.vue'),
+      meta: { titleKey: 'signup.title' },
+    },
+    {
+      // подтверждение email заявки по ссылке из письма (24 часа) — публично
+      path: '/signup/verify', name: 'signup-verify',
+      component: () => import('../views/SignupVerifyView.vue'),
+      meta: { titleKey: 'signupVerify.pageTitle' },
+    },
+    {
       // multitenancy: выбор организации супер-админом платформы (§9)
       path: '/select-org', name: 'select-org',
       component: () => import('../views/SelectOrgView.vue'),
