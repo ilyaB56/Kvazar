@@ -40,10 +40,34 @@ def _build(code: str):
     return connector_registry.build(code, {}, {})
 
 
+def _build_if_connected(code: str):
+    """Коннектор по активному connection; None — если connection нет."""
+    db = SessionLocal()
+    try:
+        connection = _connection_for(db, code)
+        if connection is None:
+            return None
+        return connector_registry.build(
+            code, connection.config, decrypt_dict(connection.credentials_enc))
+    finally:
+        db.close()
+
+
 def chat(messages: list[dict], scenario: str = "default",
          scripted_content: str | None = None) -> dict[str, Any]:
-    """Сообщения → {content}. scenario/scripted_content — управление моком."""
+    """Сообщения → {content}. scenario/scripted_content — управление моком.
+
+    Блок 1 (ADR-006): активное подключение external_ai — внешний ИИ для
+    чата (Z.ai/OpenAI/Anthropic); его ошибка — фолбэк на основной
+    провайдер (ollama). Эмбеддинги — только локальная модель."""
     settings = get_settings()
+    external = _build_if_connected("external_ai")
+    if external is not None:
+        result = external.push(payload={"messages": messages})
+        if result.ok:
+            return result.data or {"content": ""}
+        logger.warning("external_ai failed, fallback to %s: %s",
+                       settings.ai_provider, result.error[:200])
     connector = _build(settings.ai_provider)
     payload: dict[str, Any] = {"messages": messages}
     if settings.ai_provider == "llm_mock":

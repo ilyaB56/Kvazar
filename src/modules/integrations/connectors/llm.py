@@ -124,57 +124,5 @@ class LlmMockConnector(BaseConnector):
         return ConnectorResult(ok=True, data={"embedding": _hash_embed((params or {}).get("text", ""))})
 
 
-class LlmOpenaiCompatConnector(BaseConnector):
-    """Заготовка внешнего LLM (OpenAI-совместимый API). ADR-006: выключен.
-
-    Код присутствует, регистрация в каталоге — только при
-    ENABLE_EXTERNAL_LLM=true (отдельное решение архитектурного чата).
-    """
-
-    code = "llm_openai_compat"
-    display_name = "Внешний LLM (OpenAI-совместимый) — выключен по ADR-006"
-    capabilities = Capabilities(fetch=True, push=True)
-    config_schema = {
-        "base_url": {"type": "string", "required": True},
-        "chat_path": {"type": "string", "default": "/v1/chat/completions"},
-        "embed_path": {"type": "string", "default": "/v1/embeddings"},
-        "timeout_seconds": {"type": "int", "default": 120},
-    }
-
-    def test_connection(self) -> ConnectorResult:
-        return ConnectorResult(ok=False, error="disabled by ADR-006 (ENABLE_EXTERNAL_LLM)")
-
-    def push(self, endpoint: str = "", payload: dict | None = None) -> ConnectorResult:
-        body = payload or {}
-        try:
-            response = httpx.post(
-                self.config.get("base_url", "").rstrip("/") + (endpoint or "/v1/chat/completions"),
-                headers={"Authorization": f"Bearer {self.credentials.get('api_key', '')}"},
-                json={"model": body.get("model") or "gpt-4o-mini",
-                      "messages": body.get("messages", [])},
-                timeout=self.config.get("timeout_seconds", 120))
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            return ConnectorResult(ok=True, data={"content": content})
-        except httpx.HTTPError as exc:
-            return ConnectorResult(ok=False, error=str(exc))
-
-    def fetch(self, endpoint: str = "", params: dict | None = None) -> ConnectorResult:
-        try:
-            response = httpx.post(
-                self.config.get("base_url", "").rstrip("/") + (endpoint or "/v1/embeddings"),
-                headers={"Authorization": f"Bearer {self.credentials.get('api_key', '')}"},
-                json={"model": (params or {}).get("model", "text-embedding-3-small"),
-                      "input": (params or {}).get("text", "")},
-                timeout=self.config.get("timeout_seconds", 120))
-            response.raise_for_status()
-            vector = response.json()["data"][0]["embedding"]
-            return ConnectorResult(ok=True, data={"embedding": vector})
-        except httpx.HTTPError as exc:
-            return ConnectorResult(ok=False, error=str(exc))
-
-
 registry.register(OllamaConnector)
 registry.register(LlmMockConnector)
-if get_settings().enable_external_llm:  # ADR-006: default false
-    registry.register(LlmOpenaiCompatConnector)

@@ -108,6 +108,17 @@ docker compose up -d --build web
 
 ## ИИ-агент (ADR-006)
 
+Внешний ИИ (блок 1, 2026-09-21): Интеграции → Подключения → «Внешний ИИ
+(Z.ai / OpenAI / Anthropic)» — base_url API + модель + токен (Fernet).
+Активное подключение переключает чат ассистента на внешний провайдер
+(OpenAI-совместимый `/chat/completions` или Anthropic `/v1/messages` —
+config `style`); эмбеддинги остаются на локальной модели (RAG-векторы).
+Ошибка внешнего ИИ → автоматический фолбэк на Ollama. Function calling
+не меняется: инструменты в system prompt, ответ-JSON исполняется
+существующим циклом (ADR-006: read-only + propose, журнал egress).
+Хосты внешнего ИИ в проде — в `CONNECTOR_ALLOWLIST` при strict-режиме.
+
+
 - **Только локальный Ollama** (данные не покидают контур). Профиль:
   `docker compose --profile ai up -d`, прогрев моделей:
   `docker compose exec api python -m src.modules.ai_agent.pull_models`.
