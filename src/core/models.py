@@ -217,6 +217,32 @@ class UserPermission(Base):
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class SignupRequest(Base):
+    """signup_requests — заявки на самообслуживание (блок 2): публичная
+    регистрация → email-подтверждение (24 ч, одноразовый sha256-токен,
+    открытый текст — только в письме через Fernet) → одобрение
+    платформенным админом → организация + админ с паролем из заявки."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "signup_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_name: Mapped[str] = mapped_column(String(255))
+    contact_name: Mapped[str] = mapped_column(String(255), default="")
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    token_enc: Mapped[str] = mapped_column(Text)  # Fernet — для письма
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/verified/approved/rejected
+    org_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id"), nullable=True)
+    created_ip: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class PasswordReset(Base):
     """password_resets — токены восстановления пароля (§5.5): sha256-хэш
     urlsafe-32 (токен в БД не хранится), 1 час, одноразовость (used_at)."""

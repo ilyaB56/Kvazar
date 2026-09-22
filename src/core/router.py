@@ -47,13 +47,14 @@ from src.core.models import (
     Role,
     RolePermission,
     Setting,
+    SignupRequest,
     User,
 )
 from src.core.pagination import Page, PageParams, page_params
 from src.core.passwords import validate_password
 from src.core.versioning import record_version
 from src.core.rate_limit import (
-    check_forgot_password_rate_limit, check_login_rate_limit,
+    check_forgot_password_rate_limit, check_login_rate_limit, client_ip,
     check_password_confirm_rate_limit, reset_login_rate_limit,
     reset_password_confirm_rate_limit,
 )
@@ -1024,6 +1025,153 @@ class AuthSessionOut(BaseModel):
     created_at: datetime
     last_used_at: datetime | None
     is_current: bool = False
+
+
+# ---------- Самообслуживание: публичная регистрация (блок 2) ----------
+
+class SignupIn(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "company_name": "ООО «Ромашка»", "name": "Иван Иванов",
+        "email": "director@romashka.ru", "password": "Strong1pass",
+    }}}
+
+    company_name: str = Field(min_length=2, max_length=255)
+    name: str = Field(default="", max_length=255)
+    email: str = Field(min_length=5, max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class SignupVerifyIn(BaseModel):
+    token: str = Field(min_length=20, max_length=64)
+
+
+@router.post("/auth/signup")
+def signup(body: SignupIn, request: Request, db: Session = Depends(get_db)):
+    """Публичная заявка на подключение (блок 2). ВСЕГДА 200 {ok} — не
+    раскрывает, что email уже в заявке (повтор — перевыпуск токена и
+    одно письмо). Пароль — по политике, хэш хранится в заявке; вход
+    станет возможен только после одобрения платформенным админом.
+    Письмо-подтверждение — платформенным SMTP. Rate limit 3/час (ip)."""
+    from src.core import signup as signup_mod
+
+    email = body.email.strip().lower()
+    check_forgot_password_rate_limit(f"signup|{email}|{client_ip(request)}")
+    if validate_password(body.password):  # список нарушений; пустой = ок
+        raise HTTPException(422, "password_policy")
+
+    signup_mod.create_or_refresh(
+        db, company_name=body.company_name.strip(),
+        contact_name=body.name.strip(), email=email,
+        password_hash=hash_password(body.password),
+        ip=client_ip(request)[:64])
+    return {"ok": True}
+
+
+@router.post("/auth/signup/verify")
+def signup_verify(body: SignupVerifyIn, db: Session = Depends(get_db)):
+    """Одноразовое подтверждение email (24 ч). 200 — подтверждено и
+    платформенный админ уведомлён; 410 — неизвестен/истёк/использован."""
+    from src.core import signup as signup_mod
+
+    if not signup_mod.verify(db, body.token.strip()):
+        raise HTTPException(410, "token expired, used or unknown")
+    return {"ok": True}
+
+
+class SignupRequestOut(BaseModel):
+    id: uuid.UUID
+    company_name: str
+    contact_name: str
+    email: str
+    status: str
+    created_at: datetime
+    verified_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/platform/signup-requests",
+            response_model=list[SignupRequestOut])
+def platform_list_signups(admin: PlatformAdmin, db: Session = Depends(get_db)):
+    """Заявки на подключение: ожидающие решения (verified) сверху,
+    затем неподтверждённые — новые выше."""
+    rows = db.scalars(select(SignupRequest).where(
+        SignupRequest.status.in_(("pending", "verified")))
+        .order_by(SignupRequest.created_at.desc())).all()
+    return sorted(rows, key=lambda r: (
+        r.status != "verified",
+        -(r.created_at.timestamp() if r.created_at else 0)))
+
+
+@router.post("/platform/signup-requests/{request_id}/approve")
+def platform_approve_signup(request_id: uuid.UUID, admin: PlatformAdmin,
+                            db: Session = Depends(get_db)):
+    """Одобрение: организация + сиды + админ с паролём из заявки
+    (человек задал его при регистрации — временного пароля нет),
+    дедлайн 2FA +7 дней. 409 — email занят/статус не verified."""
+    row = db.get(SignupRequest, request_id)
+    if row is None:
+        raise HTTPException(404, "Signup request not found")
+    if row.status != "verified":
+        raise HTTPException(409, f"Request is {row.status}, not verified")
+    if db.scalar(select(User).where(User.email == row.email)):
+        raise HTTPException(409, f"Email already exists: {row.email}")
+
+    company = Company(name=row.company_name, is_active=True)
+    db.add(company)
+    db.flush()
+    from src.seed import seed_company_data
+
+    seed_company_data(db, company.id)
+    org_admin = User(
+        email=row.email,
+        password_hash=row.password_hash,
+        full_name=row.contact_name,
+        role="admin",
+        company_id=company.id,
+        totp_setup_deadline=datetime.now(UTC) + timedelta(days=7),
+    )
+    db.add(org_admin)
+    row.status = "approved"
+    row.decided_at = datetime.now(UTC)
+    row.org_id = company.id
+    db.add(AuditEvent(
+        user_id=admin.id, action="platform.signup.approved",
+        entity_type="company", entity_id=str(company.id),
+        payload={"name": company.name, "admin_email": row.email,
+                 "signup_request": str(row.id)}))
+    events.publish(db, "platform.org.created", {
+        "company_id": str(company.id), "name": company.name,
+        "admin_email": row.email,
+    })
+    db.commit()
+    db.refresh(company)
+    db.refresh(org_admin)
+    return {
+        "id": str(company.id), "name": company.name, "inn": company.inn,
+        "is_active": company.is_active, "users_count": 1,
+        "created_at": company.created_at,
+        "admin": {"id": str(org_admin.id), "email": org_admin.email,
+                  "full_name": org_admin.full_name, "role": "admin"},
+    }
+
+
+@router.post("/platform/signup-requests/{request_id}/reject")
+def platform_reject_signup(request_id: uuid.UUID, admin: PlatformAdmin,
+                           db: Session = Depends(get_db)):
+    row = db.get(SignupRequest, request_id)
+    if row is None:
+        raise HTTPException(404, "Signup request not found")
+    if row.status not in ("pending", "verified"):
+        raise HTTPException(409, f"Request already {row.status}")
+    row.status = "rejected"
+    row.decided_at = datetime.now(UTC)
+    db.add(AuditEvent(
+        user_id=admin.id, action="platform.signup.rejected",
+        entity_type="signup_request", entity_id=str(row.id),
+        payload={"email": row.email}))
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/auth/sessions", response_model=list[AuthSessionOut] | Page[AuthSessionOut])
