@@ -1132,6 +1132,10 @@ def platform_approve_signup(request_id: uuid.UUID, admin: PlatformAdmin,
         totp_setup_deadline=datetime.now(UTC) + timedelta(days=7),
     )
     db.add(org_admin)
+    db.flush()
+    from src.seed import ensure_ai_self_api
+
+    ensure_ai_self_api(db, company.id, admin_user_id=org_admin.id)
     row.status = "approved"
     row.decided_at = datetime.now(UTC)
     row.org_id = company.id
@@ -1530,6 +1534,10 @@ def platform_create_org(body: OrgCreateIn, admin: PlatformAdmin,
     )
     db.add(org_admin)
     db.flush()
+    # инструменты ИИ: connection ai-self-api на собственный API
+    from src.seed import ensure_ai_self_api
+
+    ensure_ai_self_api(db, company.id, admin_user_id=org_admin.id)
     db.add(AuditEvent(
         user_id=admin.id, action="platform.org.created",
         entity_type="company", entity_id=str(company.id),

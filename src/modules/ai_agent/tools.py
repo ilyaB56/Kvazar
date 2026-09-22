@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from contextvars import ContextVar
 from typing import Any
 
 from sqlalchemy import select
@@ -20,6 +21,16 @@ from src.modules.integrations.crypto import decrypt_dict
 logger = logging.getLogger(__name__)
 
 SELF_API_CONNECTION = "ai-self-api"
+
+# организация текущего диалога: у каждой org свой ai-self-api токен
+# (бутстрап создаёт подключение каждой организации); без контекста —
+# единственный connection (совместимость со старыми сидами)
+_current_company: ContextVar[uuid.UUID | None] = ContextVar("ai_company", default=None)
+
+
+def set_company(company_id) -> None:
+    """Вызывается chat_reply: инструменты ходят в API своей организации."""
+    _current_company.set(company_id)
 
 # JSON-schema инструментов — в системный промпт (формат мока — JSON-протокол)
 TOOL_SCHEMAS = """Доступные инструменты. Чтобы вызвать инструмент, ответь СТРОГО одним JSON-объектом:
@@ -45,14 +56,24 @@ TOOL_SCHEMAS = """Доступные инструменты. Чтобы вызв
 def _self_api_connector():
     db = SessionLocal()
     try:
-        connection = db.scalar(select(im.Connection).where(
+        company_id = _current_company.get()
+        query = select(im.Connection).where(
             im.Connection.name == SELF_API_CONNECTION,
             im.Connection.is_active.is_(True),
-        ))
+        )
+        if company_id is not None:
+            query = query.where(im.Connection.company_id == company_id)
+        connection = db.scalar(query)
         if connection is None:
             raise RuntimeError("connection ai-self-api not found (run seed)")
+        config = dict(connection.config or {})
+        # пути ниже начинаются с /api/v1 — base_url обязан быть БЕЗ него;
+        # нормализуем, если connection сохранили с суффиксом (сид блока 2)
+        base = str(config.get("base_url", "")).rstrip("/")
+        if base.endswith("/api/v1"):
+            config["base_url"] = base[: -len("/api/v1")]
         return connector_registry.build(
-            connection.connector_code, connection.config,
+            connection.connector_code, config,
             decrypt_dict(connection.credentials_enc),
         )
     finally:

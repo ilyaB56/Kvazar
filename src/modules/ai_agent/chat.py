@@ -133,6 +133,11 @@ def chat_reply(*, session_id: uuid.UUID | None, message: str, user_id: uuid.UUID
             raise PermissionError("session belongs to another user")
 
         history = get_history(db, session.id)
+        # инструменты ходят в API организации этого диалога (ai-self-api
+        # у каждой org свой после бутстрапа)
+        from src.modules.ai_agent import tools as ai_tools
+
+        ai_tools.set_company(session.company_id)
         raw_sources = search(message, limit=RAG_TOP_K)
         # дедупликация чанков: один документ мог попасть несколькими кусками
         # — оставляем ближайший на (document_id, текст)

@@ -35,7 +35,12 @@ class ExternalAIConnector(BaseConnector):
     config_schema = {
         "base_url": {"type": "string", "required": True,
                      "default": "https://api.z.ai/v1"},
-        "model": {"type": "string", "required": True},
+        # dropdown в UI (ConnectionsView рендерит enum как Select);
+        # коннектор принимает любую строку — список лишь подсказка
+        "model": {"type": "enum",
+                  "values": ["glm-4-flash", "glm-4-plus",
+                             "gpt-4o-mini", "claude-3-haiku"],
+                  "required": True, "default": "glm-4-flash"},
         "style": {"type": "enum", "values": ["openai", "anthropic"],
                   "default": "openai"},
         "timeout_seconds": {"type": "int", "default": 120},

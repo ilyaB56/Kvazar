@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from src.config import get_settings
 from src.core.auth import hash_password
-from src.core.models import Company, ModuleRegistry, User
+from src.core.models import ApiToken, Company, ModuleRegistry, User
 from src.core.plugins import MANIFESTS
 from src.db import SessionLocal
 from src.modules.integrations import models as im
@@ -83,6 +83,48 @@ def _seed_ai_chain(db) -> None:
         ))
 
 
+def ensure_ai_self_api(db, company_id, admin_user_id=None) -> None:
+    """Connection «ai-self-api» для инструментов ИИ (tools.py): http_rest
+    на собственный API с X-API-Token (role user, контекст организации).
+
+    Идемпотентно: существует активный ai-self-api — ничего не делаем.
+    Вызывается при создании организации (платформа/одобрение signup) и
+    на bootstrap для существующих организаций без него."""
+    import hashlib
+    import secrets as _secrets
+
+    from sqlalchemy import select as _select
+
+    from src.modules.integrations import models as im
+    from src.modules.integrations.crypto import encrypt_dict
+
+    existing = db.scalar(_select(im.Connection).where(
+        im.Connection.name == "ai-self-api",
+        im.Connection.company_id == company_id,
+        im.Connection.is_active.is_(True)))
+    if existing is not None:
+        return
+    token = _secrets.token_urlsafe(32)
+    db.add(ApiToken(
+        name="ai-self-api",
+        token_hash=hashlib.sha256(token.encode()).hexdigest(),
+        role="user",
+        owner_user_id=admin_user_id,
+        company_id=company_id,
+    ))
+    db.add(im.Connection(
+        company_id=company_id,
+        name="ai-self-api",
+        connector_code="http_rest",
+        credentials_enc=encrypt_dict({"api_key": token}),
+        # auth_style=header + X-API-Token: http_rest с "none" не шлёт
+        # токен вовсе (401); base с /api/v1 — tools.py нормализует сам
+        config={"base_url": "http://api:8000/api/v1",
+                "auth_style": "header", "auth_header_name": "X-API-Token"},
+    ))
+    db.flush()
+
+
 def seed_company_data(db, company_id) -> None:
     """Стартовые данные организации (multitenancy §5.1): базовые категории,
     склады + системные транзиты, период текущего месяца. Вызывается ядром
@@ -130,6 +172,19 @@ def seed_company_data(db, company_id) -> None:
 def run() -> None:
     db = SessionLocal()
     try:
+        # bootstrap (самообслуживание/ИИ, 2026-09-22): существующим
+        # организациям без ai-self-api — создать (роль user, владелец —
+        # старейший админ организации)
+        try:
+            for company in db.scalars(select(Company)).all():
+                owner = db.scalar(select(User).where(
+                    User.company_id == company.id, User.role == "admin"
+                ).order_by(User.created_at))
+                ensure_ai_self_api(db, company.id,
+                                   admin_user_id=owner.id if owner else None)
+            db.commit()
+        except Exception:  # noqa: BLE001 — сид не должен валить старт
+            db.rollback()
         if db.scalar(select(User).where(User.email == "admin@example.com")) is None:
             db.add(User(
                 email="admin@example.com",
