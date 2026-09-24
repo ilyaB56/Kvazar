@@ -132,6 +132,97 @@ class SyncRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+# ---------- Ozon Seller (ozon-connector-spec §4) ----------
+
+class OzonProduct(Base):
+    """Кэш-каталог товаров Ozon (upsert по connection+offer_id).
+    Маппинг на items — вручную через item_mappings (external_item_id=offer_id)."""
+    __table_args__ = (
+        UniqueConstraint("connection_id", "offer_id", name="uq_ozon_products_conn_offer"),
+        {"schema": S},
+    )
+    __tablename__ = "ozon_products"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{S}.connections.id"), index=True)
+    offer_id: Mapped[str] = mapped_column(String(200))
+    product_id: Mapped[str] = mapped_column(String(100), default="")
+    sku: Mapped[str | None] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(500), default="")
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    currency: Mapped[str] = mapped_column(String(3), default="RUB")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OzonStock(Base):
+    """Снапшот остатков на складах Ozon (чужой склад: без movements,
+    перезапись за прогон, история — fetched_at)."""
+    __table_args__ = ({"schema": S},)
+    __tablename__ = "ozon_stocks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{S}.connections.id"), index=True)
+    offer_id: Mapped[str] = mapped_column(String(200))
+    warehouse_id: Mapped[str] = mapped_column(String(100), default="")
+    qty: Mapped[int] = mapped_column(Integer, default=0)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OzonOrder(Base):
+    """Заказ Ozon (posting): идемпотентен по connection+posting_number.
+    sales_order_id — созданный draft (без FK: учёт в другой схеме)."""
+    __table_args__ = (
+        UniqueConstraint("connection_id", "posting_number", name="uq_ozon_orders_conn_posting"),
+        {"schema": S},
+    )
+    __tablename__ = "ozon_orders"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("erp_core.companies.id"), index=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{S}.connections.id"), index=True)
+    posting_number: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), default="new")  # new|delivered|cancelled
+    order_date: Mapped[str] = mapped_column(String(30), default="")
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    currency: Mapped[str] = mapped_column(String(3), default="RUB")
+    lines: Mapped[list] = mapped_column(JSONB, default=list)
+    sales_order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    mapping_error: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OzonTransaction(Base):
+    """Транзакция Ozon (комиссия/логистика/реклама/…): идемпотентна по
+    connection+operation_id; transaction_id — созданный расход в учёте."""
+    __table_args__ = (
+        UniqueConstraint("connection_id", "operation_id", name="uq_ozon_txns_conn_op"),
+        {"schema": S},
+    )
+    __tablename__ = "ozon_transactions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("erp_core.comcompanies.id"), index=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{S}.connections.id"), index=True)
+    operation_id: Mapped[str] = mapped_column(String(100))
+    operation_type: Mapped[str] = mapped_column(String(50), default="")
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    items: Mapped[list] = mapped_column(JSONB, default=list)
+    posted_at: Mapped[str] = mapped_column(String(30), default="")
+    transaction_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Recipe(Base):
     """No-code рецепт: триггер -> маппинг -> действие (заготовка магазина интеграций)."""
 

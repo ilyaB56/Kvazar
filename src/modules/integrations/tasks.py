@@ -166,6 +166,26 @@ def run_job(self, job_id: str) -> dict:
         connector = connector_registry.build(
             connection.connector_code, connection.config, decrypt_dict(connection.credentials_enc)
         )
+        # Ozon — куратор: пишет ozon_* и создаёт документы (ozon-спека §3.2)
+        if connection.connector_code == "ozon_seller":
+            from src.modules.integrations.ozon import run_ozon_sync
+
+            metrics = run_ozon_sync(db, kind=job.endpoint, connection=connection,
+                                    connector=connector)
+            ok = metrics.get("ok", False)
+            run = m.SyncRun(
+                sync_job_id=job.id,
+                status="success" if ok else "error",
+                items_in=metrics.get("items_in", 0),
+                items_out=metrics.get("items_in", 0) if ok else 0,
+                payload={k: v for k, v in metrics.items() if k != "error"},
+                error=metrics.get("error", ""),
+            )
+            db.add(run)
+            db.commit()
+            if not ok:
+                raise self.retry(exc=RuntimeError(str(metrics.get("error"))))
+            return {"ok": True, **metrics}
         mapping = db.get(m.FieldMapping, job.mapping_id) if job.mapping_id else None
 
         if job.direction == "fetch":

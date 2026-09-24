@@ -146,6 +146,13 @@ def create_connection(body: ConnectionIn, user: User = Depends(require_module("i
         config=body.config,
     )
     db.add(connection)
+    db.flush()
+    # Ozon: задания синхронизации по умолчанию — товары/час, заказы/15мин,
+    # транзакции/час (ozon-спека §3); идемпотентно
+    if body.connector_code == "ozon_seller":
+        from src.modules.integrations.ozon import seed_sync_jobs
+
+        seed_sync_jobs(db, connection)
     db.commit()
     db.refresh(connection)
     return connection

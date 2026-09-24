@@ -8,3 +8,4 @@ from src.modules.integrations.connectors import llm as _llm  # noqa: F401
 from src.modules.integrations.connectors import telegram as _telegram  # noqa: F401
 from src.modules.integrations.connectors import smtp as _smtp  # noqa: F401
 from src.modules.integrations.connectors import external_ai as _external_ai  # noqa: F401
+from src.modules.integrations.connectors import ozon as _ozon  # noqa: F401
