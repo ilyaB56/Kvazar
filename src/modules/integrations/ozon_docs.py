@@ -105,7 +105,45 @@ def on_order_cancelled(db, connection, ozon_order) -> None:
                            ozon_order.sales_order_id, exc)
 
 
+# тип операции Ozon → статья расходов (seed-справочник, §3.3.4)
+OZON_CATEGORIES = {
+    "commission": "Комиссия Ozon",
+    "logistics": "Логистика Ozon",
+    "advertising": "Реклама Ozon",
+}
+
+
+def expense_category(operation_type: str) -> str:
+    lowered = (operation_type or "").lower()
+    if any(k in lowered for k in ("логист", "last mile", "delivery",
+                                  "миля", "fulfillment")):
+        return OZON_CATEGORIES["logistics"]
+    if any(k in lowered for k in ("реклам", "advertis", "promotion", "трафарет")):
+        return OZON_CATEGORIES["advertising"]
+    # комиссия и прочие удержания (возвраты — приходят с минусом)
+    return OZON_CATEGORIES["commission"]
+
+
 def create_expense(db, connection, ozon_transaction) -> None:
-    """Этап C: транзакция Ozon → расход по статье («Комиссия Ozon» и др.,
-    seed-справочник); одна транзакция на операцию (§10.1)."""
-    raise NotImplementedError  # этап C
+    """Этап C: операция Ozon → расход по статье (контрагент «Ozon»),
+    одна транзакция на операцию (§10.1); transfer не проводим (§10.2).
+
+    Закрытый период / ошибка API → FlowError: расход не создан,
+    transaction_id остаётся NULL — ретрай на следующем sync (§7.10).
+    """
+    api = _api(db, connection.company_id)
+    category_name = expense_category(ozon_transaction.operation_type)
+    category_id = api.find_or_create_category(category_name)
+    cp_id = api.find_or_create({"name": OZON_COUNTERPARTY}, "Ozon")
+    amount = abs(ozon_transaction.amount)
+    if amount == 0:
+        ozon_transaction.transaction_id = None
+        return
+    description = (f"Ozon: {ozon_transaction.operation_type} "
+                   f"(операция {ozon_transaction.operation_id})")
+    account_id = api.default_account_id()
+    txn = api.create_expense(
+        counterparty_id=cp_id, category_id=category_id, account_id=account_id,
+        amount=f"{amount:.4f}", operated_at=(ozon_transaction.posted_at or "")[:10],
+        description=description)
+    ozon_transaction.transaction_id = txn["id"]

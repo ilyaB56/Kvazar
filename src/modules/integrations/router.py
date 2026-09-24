@@ -7,6 +7,8 @@ import hashlib
 import json
 import uuid
 
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
@@ -592,6 +594,163 @@ def _payment_out(payment: m.OnlinePayment, rw: bool) -> PaymentOut:
         error_reason=payment.error_reason, created_at=payment.created_at,
     )
     return out
+
+
+# ---------- Ozon Seller: списки, sync, push, маржа (§5) ----------
+
+def _ozon_scoped(db, user, connection_id: uuid.UUID):
+    scoped = getattr(user, "token_org", None) or user.company_id
+    connection = db.get(m.Connection, connection_id)
+    if connection is None or connection.connector_code != "ozon_seller" \
+            or (scoped is not None
+                and connection.company_id != uuid.UUID(str(scoped))):
+        raise HTTPException(404, "Ozon connection not found")
+    return connection
+
+
+@router.get("/ozon/products")
+def ozon_products(connection_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")),
+                  db: Session = Depends(get_db)):
+    _ozon_scoped(db, user, connection_id)
+    return db.scalars(select(m.OzonProduct).where(
+        m.OzonProduct.connection_id == connection_id)
+        .order_by(m.OzonProduct.offer_id)).all()
+
+
+@router.get("/ozon/stocks")
+def ozon_stocks(connection_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")),
+                db: Session = Depends(get_db)):
+    _ozon_scoped(db, user, connection_id)
+    return db.scalars(select(m.OzonStock).where(
+        m.OzonStock.connection_id == connection_id)).all()
+
+
+@router.get("/ozon/orders")
+def ozon_orders(connection_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")),
+                db: Session = Depends(get_db)):
+    _ozon_scoped(db, user, connection_id)
+    return db.scalars(select(m.OzonOrder).where(
+        m.OzonOrder.connection_id == connection_id)
+        .order_by(m.OzonOrder.created_at.desc())).all()
+
+
+@router.get("/ozon/transactions")
+def ozon_transactions(connection_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")),
+                      db: Session = Depends(get_db)):
+    _ozon_scoped(db, user, connection_id)
+    return db.scalars(select(m.OzonTransaction).where(
+        m.OzonTransaction.connection_id == connection_id)
+        .order_by(m.OzonTransaction.created_at.desc())).all()
+
+
+class OzonSyncIn(BaseModel):
+    connection_id: uuid.UUID
+    kinds: list[str] = Field(default_factory=lambda: ["products"])
+
+
+@router.post("/ozon/sync")
+def ozon_sync(body: OzonSyncIn, user: User = Depends(require_module("integrations")),
+              db: Session = Depends(get_db)):
+    """Внеочередной прогон (синхронно): kinds — products|stocks|orders|
+    transactions."""
+    connection = _ozon_scoped(db, user, body.connection_id)
+    connector = connector_registry.build(
+        connection.connector_code, connection.config,
+        decrypt_dict(connection.credentials_enc))
+    from . import ozon as ozon_mod
+
+    out = {}
+    for kind in body.kinds:
+        out[kind] = ozon_mod.run_ozon_sync(db, kind=kind,
+                                           connection=connection,
+                                           connector=connector)
+        if not out[kind].get("ok"):
+            raise HTTPException(409, f"{kind}: {out[kind].get('error')}")
+    return out
+
+
+@router.post("/ozon/push-stocks")
+def ozon_push_stocks(body: OzonSyncIn, user: User = Depends(require_module("integrations")),
+                     db: Session = Depends(get_db)):
+    """Push наших остатков на Ozon (§3.3.5): смапленные items → суммарный
+    остаток по складам → POST /v1/product/import/stocks."""
+    connection = _ozon_scoped(db, user, body.connection_id)
+    mappings = db.scalars(select(m.ItemMapping).where(
+        m.ItemMapping.connection_id == connection.id,
+        m.ItemMapping.is_active.is_(True))).all()
+    offer_by_item = {mp.item_id: mp.external_item_id for mp in mappings}
+    from src.modules.mgmt_accounting.features.inventory import service as inv_svc
+
+    stocks = []
+    for item_id, offer_id in offer_by_item.items():
+        rows = inv_svc.stock_balances(db, item_id=item_id,
+                                      company_id=connection.company_id)
+        qty = sum(int(float(r["qty"])) for r in rows) if rows else 0
+        stocks.append({"offer_id": offer_id, "product_id": 0, "stock": qty})
+    connector = connector_registry.build(
+        connection.connector_code, connection.config,
+        decrypt_dict(connection.credentials_enc))
+    result = connector.push(payload={"stocks": stocks})
+    if not result.ok:
+        raise HTTPException(409, result.error)
+    return {"pushed": len(stocks)}
+
+
+@router.get("/ozon/margin")
+def ozon_margin(connection_id: uuid.UUID, date_from: str, date_to: str,
+                include_cost: bool = False,
+                user: User = Depends(require_module("integrations", "ro")),
+                db: Session = Depends(get_db)):
+    """«Ozon: комиссия и прибыль» (§5): выручка (delivered за период) −
+    комиссии/логистика/реклама − себестоимость (avg_cost, флаг
+    include_cost — решение ревью §10.3)."""
+    connection = _ozon_scoped(db, user, connection_id)
+    orders = db.scalars(select(m.OzonOrder).where(
+        m.OzonOrder.connection_id == connection_id,
+        m.OzonOrder.status == "delivered")).all()
+    in_period = [o for o in orders
+                 if date_from <= (o.order_date or "")[:10] <= date_to]
+    revenue = sum((o.amount or Decimal("0") for o in in_period), Decimal("0"))
+    from .ozon_docs import expense_category
+
+    fees = logistics = advertising = Decimal("0")
+    for t in db.scalars(select(m.OzonTransaction).where(
+            m.OzonTransaction.connection_id == connection_id)).all():
+        if not (date_from <= (t.posted_at or "")[:10] <= date_to):
+            continue
+        if str(t.operation_type).lower() == "transfer":
+            continue  # выплаты — не комиссия (§10.2)
+        name = expense_category(t.operation_type)
+        amount = abs(t.amount or Decimal("0"))
+        if name == "Логистика Ozon":
+            logistics += amount
+        elif name == "Реклама Ozon":
+            advertising += amount
+        else:
+            fees += amount
+    cost = Decimal("0")
+    if include_cost:
+        from src.modules.mgmt_accounting.features.inventory import models as inv_m
+
+        avg_by_item = {row[0]: row[1] for row in db.execute(
+            select(inv_m.Item.id, inv_m.Item.avg_cost).where(
+                inv_m.Item.company_id == connection.company_id)).all()
+            if row[1] is not None}
+        item_by_offer = {mp.external_item_id: mp.item_id for mp in
+                         db.scalars(select(m.ItemMapping).where(
+                             m.ItemMapping.connection_id == connection_id)).all()}
+        for o in in_period:
+            for line in o.lines or []:
+                item_id = item_by_offer.get(str(line.get("offer_id", "")))
+                if item_id and item_id in avg_by_item:
+                    cost += (avg_by_item[item_id] or Decimal("0")) * Decimal(str(line.get("qty", 1)))
+    profit = revenue - fees - logistics - advertising - cost
+    return {"date_from": date_from, "date_to": date_to,
+            "orders_count": len(in_period),
+            "revenue": str(revenue), "fees": str(fees),
+            "logistics": str(logistics), "advertising": str(advertising),
+            "cost": str(cost), "include_cost": include_cost,
+            "profit": str(profit)}
 
 
 @router.get("/payments", response_model=list[PaymentOut] | Page[PaymentOut])

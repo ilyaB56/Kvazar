@@ -76,6 +76,41 @@ class AccountingApi:
                             f"{method} {path} → {response.status_code}: {detail}")
         return response.json() if response.content else {}
 
+    def find_or_create_category(self, name: str) -> str:
+        """Категория по имени (kind=expense), создаём при отсутствии —
+        для статей Ozon (Комиссия/Логистика/Реклама)."""
+        rows = self._call("GET", "/accounting/categories?limit=200")
+        items = rows.get("items", rows) if isinstance(rows, dict) else rows
+        for row in items or []:
+            if row.get("name") == name and row.get("kind") == "expense":
+                return row["id"]
+        created = self._call("POST", "/accounting/categories",
+                             {"name": name, "kind": "expense"})
+        return created["id"]
+
+    def create_expense(self, *, counterparty_id: str, category_id: str,
+                       account_id: str, amount: str, operated_at: str,
+                       description: str) -> dict:
+        """Расход (kind=expense) с проведением; закрытый период → FlowError."""
+        return self._call("POST", "/accounting/transactions", {
+            "kind": "expense", "operated_at": operated_at or None,
+            "amount": amount, "currency": "RUB",
+            "account_id": account_id, "counterparty_id": counterparty_id,
+            "category_id": category_id, "description": description,
+            "post_immediately": True,
+        })
+
+    def default_account_id(self) -> str:
+        """Первый RUB-счёт (для расходов Ozon без явного счёта)."""
+        rows = self._call("GET", "/accounting/accounts?limit=50")
+        items = rows.get("items", rows) if isinstance(rows, dict) else rows
+        for row in items or []:
+            if row.get("currency") == "RUB" and row.get("is_active", True):
+                return row["id"]
+        if items:
+            return items[0]["id"]
+        raise FlowError("no_account", "нет счетов для расходов Ozon")
+
     def find_or_create(self, buyer: dict, fallback_name: str) -> str:
         data = self._call("POST", "/accounting/counterparties/find-or-create", {
             "email": buyer.get("email", ""),

@@ -191,11 +191,10 @@ def test_stage_b_orders_to_erp(client, ozon_mock):
         order = client.get(f"{API}/accounting/sales-orders/{row.sales_order_id}",
                            headers=headers).json()
         assert order["status"] == "draft"
-        counterparty = client.get(
-            f"{API}/accounting/counterparties?q=Ozon&limit=20", headers=headers
-        ).json()
-        cp_ids = {c["id"] for c in counterparty["items"]} if isinstance(counterparty, dict) else {c["id"] for c in counterparty}
-        assert order["counterparty_id"] in cp_ids
+        from src.modules.mgmt_accounting import models as acc_m
+
+        cp_db = db.get(acc_m.Counterparty, order["counterparty_id"])
+        assert cp_db.name == "Ozon"
         lines = {l["item_id"]: l for l in order["lines"]}
         from decimal import Decimal as _D
         assert _D(str(lines[item_a["id"]]["unit_price"])) == _D("1500.00")

@@ -149,13 +149,25 @@ def _sync_orders(db, connection, connector) -> dict:
             "mapping_errors": mapping_errors}
 
 
+def _try_expense(db, connection, row) -> None:
+    """Создать расход по операции; ошибка (закрытый период и т.п.) не
+    валит sync — transaction_id останется NULL, ретрай на следующем
+    прогоне (§7.10)."""
+    from . import ozon_docs
+    from .ozon_docs import FlowError
+
+    try:
+        ozon_docs.create_expense(db, connection, row)
+    except FlowError as exc:
+        logger.warning("ozon expense pending (manual): op=%s err=%s",
+                       row.operation_id, str(exc)[:160])
+
+
 def _sync_transactions(db, connection, connector) -> dict:
     """Транзакции → ozon_transactions (+ расход по операцию — этап C)."""
     result = connector.fetch("transactions")
     if not result.ok:
         return {"ok": False, "error": result.error}
-    from . import ozon_docs
-
     new_count = 0
     total = Decimal("0")
     for op in result.data or []:
@@ -166,6 +178,11 @@ def _sync_transactions(db, connection, connector) -> dict:
             m.OzonTransaction.connection_id == connection.id,
             m.OzonTransaction.operation_id == operation_id))
         if exists is not None:
+            # ретрай расхода: операция есть, расход не создан (закрытый
+            # период/ошибка API — §7.10 manual-очередь)
+            if exists.transaction_id is None and exists.amount \
+                    and str(exists.operation_type).lower() != "transfer":
+                _try_expense(db, connection, exists)
             continue
         row = m.OzonTransaction(
             company_id=connection.company_id, connection_id=connection.id,
@@ -181,11 +198,7 @@ def _sync_transactions(db, connection, connector) -> dict:
         # расход по статье (одна транзакция на операцию — §10.1);
         # transfer в v1 не проводим (§10.2)
         if str(op.get("operation_type", "")).lower() != "transfer":
-            try:
-                ozon_docs.create_expense(db, connection, row)
-            except NotImplementedError:
-                # этап C (комиссии → расходы) — следующий коммит
-                logger.info("ozon expense skipped until stage C: op=%s", operation_id)
+            _try_expense(db, connection, row)
     db.commit()
     if new_count:
         events.publish(db, "integration.ozon.transactions.synced", {

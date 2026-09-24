@@ -211,7 +211,7 @@ class OzonTransaction(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("erp_core.comcompanies.id"), index=True)
+        ForeignKey("erp_core.companies.id"), index=True)
     connection_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey(f"{S}.connections.id"), index=True)
     operation_id: Mapped[str] = mapped_column(String(100))

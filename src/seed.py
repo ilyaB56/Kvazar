@@ -95,6 +95,7 @@ def ensure_ai_self_api(db, company_id, admin_user_id=None) -> None:
 
     from sqlalchemy import select as _select
 
+    from src.core.models import ApiToken
     from src.modules.integrations import models as im
     from src.modules.integrations.crypto import decrypt_dict, encrypt_dict
 
@@ -105,7 +106,7 @@ def ensure_ai_self_api(db, company_id, admin_user_id=None) -> None:
     if existing is not None:
         # самолечение старых сидов: токен без владельца даёт ApiPrincipal.id
         # = id токена → FK users при created_by (баг этапа B); восстанавливаем
-        from src.core.models import ApiToken, User as _User
+        from src.core.models import User as _User
 
         owner_id = admin_user_id
         if owner_id is None:
