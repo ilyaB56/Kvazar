@@ -207,7 +207,7 @@ onBeforeUnmount(stopPolling)
     <!-- Бэкапы -->
     <Card class="border-zinc-200 shadow-sm dark:border-zinc-800">
       <CardContent class="p-0">
-        <PaginatedList ref="backupsList" :fetch-page="fetchBackupsPage" v-slot="{ items: backupRows, loading }">
+        <PaginatedList ref="backupsList" bar-class="px-4" :fetch-page="fetchBackupsPage" v-slot="{ items: backupRows, loading }">
           <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3">
             <p class="text-sm font-semibold min-w-0 truncate">{{ t('system.backups') }}</p>
             <Button variant="emerald" size="sm" class="gap-1.5" :disabled="creating" @click="createBackup">

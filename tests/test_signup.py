@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import os
+import socketserver
+import threading
 import uuid
 
 import httpx
@@ -208,7 +210,6 @@ def test_signup_reject_and_rate_limit(client):
 
 
 def _cleanup(email: str):
-    from datetime import UTC, datetime
 
     from sqlalchemy import text
 
