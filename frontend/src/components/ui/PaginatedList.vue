@@ -20,10 +20,12 @@ const props = withDefaults(defineProps<{
   resetKey?: string | number
   pageSize?: number
   dangerThreshold?: number
+  barClass?: string
 }>(), {
   resetKey: '',
   pageSize: 50,
   dangerThreshold: 5000,
+  barClass: '',
 })
 
 const emit = defineEmits<{ loaded: [total: number] }>()
@@ -128,13 +130,11 @@ defineExpose({ reload })
 </script>
 
 <template>
-  <div>
-    <slot
-      :items="items" :loading="initialLoading"
-      :total="total" :shown="shown" :reload="reload"
-    />
-
-    <div v-if="!initialLoading" class="flex flex-wrap items-center justify-between gap-3 pt-1">
+  <div class="space-y-3">
+    <!-- Панель пагинации — ВВЕРХУ, не убегает при скролле. pt-3 — воздух от
+    панели/карточки сверху; barClass добавляет px-*, когда список живёт внутри
+    карточки без паддингов (например, p-0 в SystemView). -->
+    <div v-if="!initialLoading" class="flex flex-wrap items-center justify-between gap-3 pt-3" :class="barClass">
       <p class="text-xs text-muted-foreground">
         {{ t('pagination.shownOf', { shown: n(shown), total: n(total) }) }}
       </p>
@@ -147,8 +147,9 @@ defineExpose({ reload })
         </Button>
         <div class="flex items-center gap-1.5">
           <Input
-            v-model="customCount" type="number" min="1" max="100000"
-            class="h-8 w-[110px]" :placeholder="t('pagination.countPlaceholder')"
+            v-model="customCount" type="text" inputmode="numeric"
+            class="h-8 w-[110px] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            :placeholder="n(shown)"
             @keydown.enter="loadCustom"
           />
           <Button variant="ghost" size="sm" :disabled="loadingMore" @click="loadCustom">
@@ -157,6 +158,12 @@ defineExpose({ reload })
         </div>
       </div>
     </div>
+
+    <slot
+      :items="items" :loading="initialLoading"
+      :total="total" :shown="shown" :reload="reload"
+    />
+
     <p v-if="loadingMore" class="pt-1 text-xs text-muted-foreground">
       {{ t('pagination.loading') }}
     </p>
