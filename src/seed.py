@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from src.config import get_settings
 from src.core.auth import hash_password
-from src.core.models import ApiToken, Company, ModuleRegistry, User
+from src.core.models import Company, ModuleRegistry, User
 from src.core.plugins import MANIFESTS
 from src.db import SessionLocal
 from src.modules.integrations import models as im
@@ -96,13 +96,31 @@ def ensure_ai_self_api(db, company_id, admin_user_id=None) -> None:
     from sqlalchemy import select as _select
 
     from src.modules.integrations import models as im
-    from src.modules.integrations.crypto import encrypt_dict
+    from src.modules.integrations.crypto import decrypt_dict, encrypt_dict
 
     existing = db.scalar(_select(im.Connection).where(
         im.Connection.name == "ai-self-api",
         im.Connection.company_id == company_id,
         im.Connection.is_active.is_(True)))
     if existing is not None:
+        # самолечение старых сидов: токен без владельца даёт ApiPrincipal.id
+        # = id токена → FK users при created_by (баг этапа B); восстанавливаем
+        from src.core.models import ApiToken, User as _User
+
+        owner_id = admin_user_id
+        if owner_id is None:
+            owner = db.scalar(_select(_User).where(
+                _User.company_id == company_id,
+                _User.role == "admin").order_by(_User.created_at))
+            owner_id = owner.id if owner else None
+        if owner_id is not None:
+            import hashlib as _hl
+            key = decrypt_dict(existing.credentials_enc).get("api_key", "")
+            token = db.scalar(_select(ApiToken).where(
+                ApiToken.token_hash == _hl.sha256(str(key).encode()).hexdigest()))
+            if token is not None and token.owner_user_id is None:
+                token.owner_user_id = owner_id
+                db.flush()
         return
     token = _secrets.token_urlsafe(32)
     db.add(ApiToken(

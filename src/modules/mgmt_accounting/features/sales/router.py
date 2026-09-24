@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, BeforeValidator, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from src.core import events
@@ -256,6 +256,24 @@ def confirm_order(order_id: uuid.UUID, user: WriteUser, db: Session = Depends(ge
     db.commit()
     db.refresh(order)
     return _order_with_lines(db, order)
+
+
+@router.delete("/sales-orders/{order_id}", status_code=204)
+def delete_draft_order(order_id: uuid.UUID, user: WriteUser,
+                       db: Session = Depends(get_db),
+                       scoped: CompanyScoped = None):
+    """Удалить черновик (ozon-спека §3.3.3: отмена на Ozon → черновик
+    убираем; подтверждённый — только сторно вручную). 409 — не draft."""
+    order = _get_order(db, order_id, scoped)
+    if order.status != "draft":
+        raise HTTPException(409, "Only draft orders can be deleted")
+    # строк без каскада: сначала их (FK sales_order_lines_order_id),
+    # bulk + flush — ORM-порядок удалений не гарантирует children-first
+    db.execute(delete(m.SalesOrderLine).where(
+        m.SalesOrderLine.order_id == order.id))
+    db.flush()
+    db.delete(order)
+    db.commit()
 
 
 @router.post("/sales-orders/{order_id}/cancel", response_model=OrderOut)

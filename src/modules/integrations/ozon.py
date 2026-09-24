@@ -127,14 +127,17 @@ def _sync_orders(db, connection, connector) -> dict:
             row.status = status
             row.updated_at = now
         db.flush()
-        # автосоздание sales_orders (draft): если включено и не создан
-        if row.sales_order_id is None and not row.mapping_error \
+        # автосоздание sales_orders (draft): если включено и не создан;
+        # ретрай после маппинга — успех сбрасывает mapping_error (§7.4)
+        if row.sales_order_id is None and row.status != "cancelled" \
                 and (connection.config or {}).get("auto_create_orders") == "on":
             created, mapping_error = ozon_docs.create_sales_order(db, connection, row)
             created_docs += 1 if created else 0
             if mapping_error:
                 row.mapping_error = True
                 mapping_errors += 1
+            elif row.mapping_error:
+                row.mapping_error = False
     db.commit()
     if new_orders or cancelled:
         events.publish(db, "integration.ozon.orders.synced", {
@@ -178,7 +181,11 @@ def _sync_transactions(db, connection, connector) -> dict:
         # расход по статье (одна транзакция на операцию — §10.1);
         # transfer в v1 не проводим (§10.2)
         if str(op.get("operation_type", "")).lower() != "transfer":
-            ozon_docs.create_expense(db, connection, row)
+            try:
+                ozon_docs.create_expense(db, connection, row)
+            except NotImplementedError:
+                # этап C (комиссии → расходы) — следующий коммит
+                logger.info("ozon expense skipped until stage C: op=%s", operation_id)
     db.commit()
     if new_count:
         events.publish(db, "integration.ozon.transactions.synced", {
