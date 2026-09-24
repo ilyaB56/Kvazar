@@ -168,6 +168,40 @@ def test_connection(connection_id: uuid.UUID, user: User = Depends(require_modul
     return {"ok": result.ok, "error": result.error}
 
 
+class ConnectionPatch(BaseModel):
+    """Деактивация/активация и переименование. Удаления нет сознательно:
+    на connection ссылаются платежи/задания/события — история сохраняется,
+    «выключение» — это is_active=false."""
+    model_config = {"json_schema_extra": {"example": {
+        "name": "ЮKassa (прод)", "is_active": False}}}
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    is_active: bool | None = None
+
+
+@router.patch("/connections/{connection_id}", response_model=ConnectionOut)
+def patch_connection(connection_id: uuid.UUID, body: ConnectionPatch,
+                     user: User = Depends(require_module("integrations")),
+                     db: Session = Depends(get_db)):
+    """Изменить is_active (деактивация вместо удаления) и/или name."""
+    connection = db.get(m.Connection, connection_id)
+    if connection is None:
+        raise HTTPException(404, "Connection not found")
+    if body.name is not None:
+        connection.name = body.name
+    if body.is_active is not None:
+        connection.is_active = body.is_active
+    from src.core.models import AuditEvent
+
+    db.add(AuditEvent(
+        action="connection.updated", entity_type="connection",
+        entity_id=str(connection.id),
+        payload={"name": body.name, "is_active": body.is_active}))
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
 # ---------- Webhooks (входящие) ----------
 
 @router.get("/webhooks", response_model=list[WebhookOut] | Page[WebhookOut])

@@ -28,6 +28,16 @@ export default {
       system: 'System',
     },
   },
+  connections: {
+    deactivate: 'Deactivate',
+    activate: 'Activate',
+    deactivateConfirm: 'Deactivate connection "{name}"? History is preserved (no deletion).',
+    activateConfirm: 'Activate connection "{name}"?',
+    externalAiWarning: 'AI chat will switch to the local model (Ollama).',
+    deactivated: 'Connection deactivated',
+    activated: 'Connection activated',
+    inactive: 'off',
+  },
   integrations: {
     overview: 'Overview',
     statusConnected: 'Connected',

@@ -6,8 +6,8 @@
 // scroll); поиск — локальный по загруженным строкам.
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Copy, Link2, Plus } from 'lucide-vue-next'
-import { get, post } from '../api/client'
+import { Copy, Link2, Plus, Power, PowerOff } from 'lucide-vue-next'
+import { get, patch, post } from '../api/client'
 import type { Connection, ConnectorType, TestResult, Webhook, WebhookCreated } from '../api/types'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
@@ -44,6 +44,31 @@ const testing = ref<Record<string, boolean>>({})
 
 function fetchConnectionsPage(offset: number, limit: number) {
   return get<PageOf<Connection>>(`/integrations/connections?limit=${limit}&offset=${offset}`)
+}
+
+// деактивация вместо удаления: история платежей/заданий сохраняется
+const toggling = ref<Record<string, boolean>>({})
+
+async function toggleConnection(row: Connection) {
+  if (toggling.value[row.id]) return
+  const turningOff = row.is_active
+  let message = turningOff
+    ? t('connections.deactivateConfirm', { name: row.name })
+    : t('connections.activateConfirm', { name: row.name })
+  if (turningOff && row.connector_code === 'external_ai') {
+    message += '\n' + t('connections.externalAiWarning')
+  }
+  if (!window.confirm(message)) return
+  toggling.value[row.id] = true
+  try {
+    await patch(`/integrations/connections/${row.id}`, { is_active: !row.is_active })
+    toast.success(turningOff ? t('connections.deactivated') : t('connections.activated'))
+    await connectionsList.value?.reload()
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    toggling.value[row.id] = false
+  }
 }
 
 async function testConnection(row: Connection) {
@@ -198,8 +223,15 @@ onMounted(async () => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="row in filterConnections(connRows)" :key="row.id" class="border-t border-zinc-100 dark:border-zinc-800/70">
-                    <td class="px-3 py-2 font-medium">{{ row.name }}</td>
+                  <tr v-for="row in filterConnections(connRows)" :key="row.id"
+                      class="border-t border-zinc-100 dark:border-zinc-800/70"
+                      :class="!row.is_active && 'opacity-60'">
+                    <td class="px-3 py-2 font-medium">
+                      {{ row.name }}
+                      <Badge v-if="!row.is_active" variant="secondary" class="ml-1.5 text-[10px]">
+                        {{ t('connections.inactive') }}
+                      </Badge>
+                    </td>
                     <td class="px-3 py-2 text-muted-foreground">{{ connectorNames[row.connector_code] ?? row.connector_code }}</td>
                     <td class="px-3 py-2">
                       <Badge v-if="row.last_check_ok === true" class="bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
@@ -214,12 +246,23 @@ onMounted(async () => {
                       {{ row.is_active ? t('connections.yes') : t('connections.no') }}
                     </td>
                     <td class="px-3 py-2 text-right">
-                      <Button
-                        variant="outline" size="sm" :disabled="testing[row.id]"
-                        @click="testConnection(row)"
-                      >
-                        {{ testing[row.id] ? t('connections.testing') : t('connections.test') }}
-                      </Button>
+                      <div class="flex items-center justify-end gap-1">
+                        <Button
+                          variant="outline" size="sm" :disabled="testing[row.id]"
+                          @click="testConnection(row)"
+                        >
+                          {{ testing[row.id] ? t('connections.testing') : t('connections.test') }}
+                        </Button>
+                        <Button
+                          variant="ghost" size="icon" class="h-8 w-8"
+                          :title="row.is_active ? t('connections.deactivate') : t('connections.activate')"
+                          :disabled="toggling[row.id]"
+                          @click="toggleConnection(row)"
+                        >
+                          <PowerOff v-if="row.is_active" class="h-4 w-4 text-amber-500" />
+                          <Power v-else class="h-4 w-4 text-emerald-500" />
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 </tbody>

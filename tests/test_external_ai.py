@@ -121,6 +121,34 @@ def test_connector_anthropic_style(mock_ai):
     assert request["body"]["messages"] == [{"role": "user", "content": "вопрос"}]
 
 
+def test_patch_connection_toggle_and_rename(client):
+    """PATCH /integrations/connections/{id}: is_active + name (удаления
+    нет — деактивация сохраняет историю)."""
+    headers = _admin(client)
+    conn = client.post(f"{API}/integrations/connections", json={
+        "name": f"patch-me-{RUN}", "connector_code": "http_rest",
+        "credentials": {}, "config": {"base_url": "http://api:8000"},
+    }, headers=headers)
+    assert conn.status_code == 201, conn.text
+    cid = conn.json()["id"]
+    try:
+        off = client.patch(f"{API}/integrations/connections/{cid}",
+                           json={"is_active": False, "name": f"переименован-{RUN}"},
+                           headers=headers)
+        assert off.status_code == 200, off.text
+        assert off.json()["is_active"] is False
+        assert off.json()["name"] == f"переименован-{RUN}"
+        on = client.patch(f"{API}/integrations/connections/{cid}",
+                          json={"is_active": True}, headers=headers)
+        assert on.status_code == 200 and on.json()["is_active"] is True
+        missing = client.patch(f"{API}/integrations/connections/"
+                               "00000000-0000-0000-0000-000000000001",
+                               json={"is_active": True}, headers=headers)
+        assert missing.status_code == 404
+    finally:
+        _deactivate(cid)
+
+
 def _deactivate(conn_id: str):
     from sqlalchemy import text
 
