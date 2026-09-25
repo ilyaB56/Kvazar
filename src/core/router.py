@@ -1160,6 +1160,73 @@ def platform_approve_signup(request_id: uuid.UUID, admin: PlatformAdmin,
     }
 
 
+# ---------- Платформа: egress allowlist (security-plan P1 п.7) ----------
+
+class EgressSettingsOut(BaseModel):
+    allowlist: list[str]
+    strict: bool
+
+
+class EgressSettingsIn(BaseModel):
+    allowlist: list[str]
+    strict: bool
+
+
+def _egress_settings(db) -> tuple[list[str], bool]:
+    """Эффективные значения: платформенные Setting поверх env-дефолтов."""
+    from src.modules.integrations.connectors.egress import egress_settings
+
+    rows = {row.key: row for row in db.scalars(select(Setting).where(
+        Setting.key.in_(("connector_allowlist", "connector_allowlist_strict")),
+        Setting.company_id.is_(None))).all()}
+    env_list, env_strict = egress_settings()
+    allowlist = env_list
+    if "connector_allowlist" in rows and isinstance(rows["connector_allowlist"].value, list):
+        allowlist = [str(d).strip().lower() for d in rows["connector_allowlist"].value]
+    strict = bool(rows["connector_allowlist_strict"].value)         if "connector_allowlist_strict" in rows else env_strict
+    return allowlist, strict
+
+
+def _set_platform_setting(db, key: str, value) -> None:
+    row = db.scalar(select(Setting).where(
+        Setting.key == key, Setting.company_id.is_(None)))
+    if row is None:
+        db.add(Setting(key=key, value=value, company_id=None))
+    else:
+        row.value = value
+
+
+@router.get("/platform/egress-settings", response_model=EgressSettingsOut)
+def platform_get_egress(admin: PlatformAdmin, db: Session = Depends(get_db)):
+    allowlist, strict = _egress_settings(db)
+    return {"allowlist": allowlist, "strict": strict}
+
+
+@router.put("/platform/egress-settings", response_model=EgressSettingsOut)
+def platform_put_egress(body: EgressSettingsIn, admin: PlatformAdmin,
+                        db: Session = Depends(get_db)):
+    """Белый список доменов исходящих запросов + строгий режим
+    (security-plan P1 п.7). Управляет платформенный админ с экрана
+    Интеграции; изменения применяются сразу (кэш 10 c сбрасывается)."""
+    import re as _re
+
+    for domain in body.allowlist:
+        if not _re.fullmatch(r"[a-z0-9.-]{2,253}", domain.strip().lower()):
+            raise HTTPException(422, f"invalid domain: {domain}")
+    allowlist = sorted({d.strip().lower() for d in body.allowlist if d.strip()})
+    _set_platform_setting(db, "connector_allowlist", allowlist)
+    _set_platform_setting(db, "connector_allowlist_strict", bool(body.strict))
+    db.add(AuditEvent(
+        user_id=admin.id, action="platform.egress.updated",
+        entity_type="setting", entity_id="connector_allowlist",
+        payload={"strict": body.strict, "count": len(allowlist)}))
+    db.commit()
+    from src.modules.integrations.connectors.egress import reset_egress_cache
+
+    reset_egress_cache()
+    return {"allowlist": allowlist, "strict": bool(body.strict)}
+
+
 @router.post("/platform/signup-requests/{request_id}/reject")
 def platform_reject_signup(request_id: uuid.UUID, admin: PlatformAdmin,
                            db: Session = Depends(get_db)):

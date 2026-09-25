@@ -39,6 +39,18 @@ export default {
     inactive: 'off',
   },
   integrations: {
+    egressTitle: 'Network security (domain allowlist)',
+    egressHint: 'Connector requests go only to allowlisted domains. Strict mode blocks unknown domains.',
+    egressStrict: 'Strict mode',
+    egressDomainPlaceholder: 'api.example.com',
+    egressAddDomain: 'Add domain',
+    egressAddConfirm: 'Add domain "{domain}" to the allowlist?',
+    egressRemoveConfirm: 'Remove domain "{domain}" from the allowlist? Connections to it will stop working in strict mode.',
+    egressInvalidDomain: 'Invalid domain (latin letters, dots and hyphens only)',
+    egressStrictWarning: 'Enable strict mode? New connectors to unknown domains will be blocked.',
+    egressRemove: 'Remove domain',
+    egressSaved: 'Network settings saved',
+
     overview: 'Overview',
     statusConnected: 'Connected',
     statusError: 'Error',

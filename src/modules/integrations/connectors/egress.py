@@ -41,13 +41,60 @@ def _allowed(host: str, allowlist: list[str]) -> bool:
     )
 
 
+# эффективные настройки egress: платформенные Setting (управляет
+# платформенный админ, /platform/egress-settings) поверх env-дефолтов;
+# кэш 10 c — check_egress вызывается на каждый сетевой вызов
+_egress_cache: dict = {"at": 0.0, "allowlist": None, "strict": None}
+_EGRESS_TTL = 10.0
+
+
+def egress_settings() -> tuple[list[str], bool]:
+    """(allowlist, strict) с учётом платформенных настроек."""
+    import time
+
+    now = time.monotonic()
+    if _egress_cache["allowlist"] is not None and now - _egress_cache["at"] < _EGRESS_TTL:
+        return _egress_cache["allowlist"], _egress_cache["strict"]
+    settings = get_settings()
+    allowlist = [d.strip().lower() for d in settings.connector_allowlist.split(",")
+                 if d.strip()]
+    strict = settings.connector_allowlist_strict
+    try:
+        from src.core.models import Setting
+        from src.db import SessionLocal
+        from sqlalchemy import select
+
+        db = SessionLocal()
+        try:
+            rows = {row.key: row for row in db.scalars(select(Setting).where(
+                Setting.key.in_(("connector_allowlist", "connector_allowlist_strict")),
+                Setting.company_id.is_(None))).all()}
+            if "connector_allowlist" in rows:
+                value = rows["connector_allowlist"].value
+                if isinstance(value, list):
+                    allowlist = [str(d).strip().lower() for d in value if str(d).strip()]
+            if "connector_allowlist_strict" in rows:
+                strict = bool(rows["connector_allowlist_strict"].value)
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001 — БД недоступна → env-дефолты
+        logger.warning("egress: settings read failed, env defaults", exc_info=True)
+    _egress_cache.update({"at": now, "allowlist": allowlist, "strict": strict})
+    return allowlist, strict
+
+
+def reset_egress_cache() -> None:
+    """После изменения настроек платформенным админом (PUT)."""
+    _egress_cache["at"] = 0.0
+
+
 def check_egress(url: str) -> None:
     """Разрешён ли домен: строгий режим запрещает всё вне списка."""
-    settings = get_settings()
-    allowlist = [d.strip().lower() for d in settings.connector_allowlist.split(",")]
+    allowlist, strict = egress_settings()
     host = _host(url).lower()
-    if not _allowed(host, allowlist) and settings.connector_allowlist_strict:
-        raise EgressBlocked(f"host {host} is not in the connector allowlist")
+    if not _allowed(host, allowlist) and strict:
+        raise EgressBlocked(
+            f"домен {host} не в белом списке; добавьте через платформенного админа")
 
 
 def log_egress(*, connector: str, url: str, status: int | str, error: str = "") -> None:

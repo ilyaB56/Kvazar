@@ -20,7 +20,9 @@ RUN apt-get update \
 
 COPY . .
 # dev-группа: pytest/ruff — полный набор гоняется в живом контейнере
-RUN pip install --no-cache-dir -e .[dev]
+# pip-audit чист: PYSEC в pip гасятся обновлением самого pip
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -e .[dev]
 
 EXPOSE 8000
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

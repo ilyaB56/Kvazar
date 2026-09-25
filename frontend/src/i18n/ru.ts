@@ -28,6 +28,18 @@ export default {
     },
   },
   integrations: {
+    egressTitle: 'Безопасность сети (белый список доменов)',
+    egressHint: 'Исходящие запросы коннекторов — только к доменам из списка. Строгий режим блокирует незнакомые домены.',
+    egressStrict: 'Строгий режим',
+    egressDomainPlaceholder: 'api.example.ru',
+    egressAddDomain: 'Добавить домен',
+    egressAddConfirm: 'Добавить домен «{domain}» в белый список?',
+    egressRemoveConfirm: 'Убрать домен «{domain}» из белого списка? Подключения к нему перестанут работать в строгом режиме.',
+    egressInvalidDomain: 'Некорректный домен (только латиница, точки и дефисы)',
+    egressStrictWarning: 'Включить строгий режим? Новые коннекторы к незнакомым доменам будут заблокированы.',
+    egressRemove: 'Убрать домен',
+    egressSaved: 'Настройки сети сохранены',
+
     connections: 'Подключения',
     sync: 'Синхронизации',
     notifications: 'Уведомления',

@@ -15,9 +15,10 @@ import { useRouter } from 'vue-router'
 import {
   Activity, ArrowDownToLine, ArrowUpFromLine, Clock3, Cpu, Play, PlugZap, ShieldCheck,
 } from 'lucide-vue-next'
-import { get, post } from '../api/client'
+import { get, post, put } from '../api/client'
 import {
-  Badge, Button, Card, CardContent, EmptyState, PaginatedList, Skeleton, useToast,
+  Badge, Button, Card, CardContent, Dialog, EmptyState, Input, PaginatedList,
+  Skeleton, Switch, useToast,
 } from '../components/ui'
 import type { PageOf } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
@@ -107,6 +108,68 @@ async function loadAll() {
 }
 onMounted(loadAll)
 
+// ----- Безопасность сети: egress allowlist (P1 п.7, платформенный) -----
+interface EgressSettings { allowlist: string[]; strict: boolean }
+const egress = ref<EgressSettings | null>(null)
+const egressDomain = ref('')
+const egressStrictLocal = ref(false)
+const egressSaving = ref(false)
+
+async function loadEgress() {
+  if (!auth.user?.is_platform_admin) return
+  try {
+    egress.value = await get<EgressSettings>('/platform/egress-settings')
+    egressStrictLocal.value = egress.value.strict
+  } catch { /* не платформенный или недоступно */ }
+}
+onMounted(loadEgress)
+
+function addDomain() {
+  const domain = egressDomain.value.trim().toLowerCase()
+  if (!domain || !egress.value) return
+  if (!/^[a-z0-9.-]{2,253}$/.test(domain)) {
+    toast.error(t('integrations.egressInvalidDomain'))
+    return
+  }
+  if (egress.value.allowlist.includes(domain)) return
+  if (!window.confirm(t('integrations.egressAddConfirm', { domain }))) return
+  egress.value = { ...egress.value, allowlist: [...egress.value.allowlist, domain].sort() }
+  void saveEgress()
+  egressDomain.value = ''
+}
+
+function removeDomain(domain: string) {
+  if (!egress.value) return
+  if (!window.confirm(t('integrations.egressRemoveConfirm', { domain }))) return
+  egress.value = { ...egress.value, allowlist: egress.value.allowlist.filter((d) => d !== domain) }
+  void saveEgress()
+}
+
+function toggleStrict(value: boolean) {
+  if (!egress.value) return
+  if (value && !window.confirm(t('integrations.egressStrictWarning'))) return
+  egressStrictLocal.value = value
+  egress.value = { ...egress.value, strict: value }
+  void saveEgress()
+}
+
+async function saveEgress() {
+  if (!egress.value || egressSaving.value) return
+  egressSaving.value = true
+  try {
+    egress.value = await put<EgressSettings>('/platform/egress-settings', {
+      allowlist: egress.value.allowlist, strict: egress.value.strict,
+    })
+    egressStrictLocal.value = egress.value.strict
+    toast.success(t('integrations.egressSaved'))
+  } catch (error) {
+    toast.apiError(error)
+    await loadEgress()
+  } finally {
+    egressSaving.value = false
+  }
+}
+
 let refreshTimer: number | undefined
 onMounted(() => {
   refreshTimer = window.setInterval(() => { if (!paused.value) void loadAll() }, 10_000)
@@ -190,6 +253,53 @@ const kpis = computed(() => [
         <p class="mt-0.5 text-[11px] text-muted-foreground">{{ kpi.sub }}</p>
       </div>
     </div>
+
+    <!-- Безопасность сети: egress allowlist (P1 п.7, платформенный админ) -->
+    <Card v-if="egress" class="border-zinc-200 shadow-sm dark:border-zinc-800">
+      <CardContent class="p-5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="flex items-center gap-2 text-sm font-semibold">
+            <ShieldCheck class="h-4 w-4 text-emerald-600" />
+            {{ t('integrations.egressTitle') }}
+          </p>
+          <label class="flex items-center gap-2 text-xs text-muted-foreground">
+            {{ t('integrations.egressStrict') }}
+            <Switch
+              :model-value="egressStrictLocal"
+              :disabled="egressSaving"
+              @update:model-value="toggleStrict"
+            />
+          </label>
+        </div>
+        <p class="mt-1 text-xs text-muted-foreground">{{ t('integrations.egressHint') }}</p>
+
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <Input
+            v-model="egressDomain" :placeholder="t('integrations.egressDomainPlaceholder')"
+            class="h-9 max-w-xs" :disabled="egressSaving"
+            @keydown.enter="addDomain"
+          />
+          <Button variant="outline" size="sm" :disabled="egressSaving" @click="addDomain">
+            {{ t('integrations.egressAddDomain') }}
+          </Button>
+        </div>
+
+        <div class="mt-3 flex flex-wrap gap-1.5">
+          <span
+            v-for="domain in egress.allowlist" :key="domain"
+            class="group inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2.5 py-1 font-mono text-xs dark:bg-zinc-800"
+          >
+            {{ domain }}
+            <button
+              type="button" class="text-zinc-400 transition-colors hover:text-red-500"
+              :title="t('integrations.egressRemove')" :disabled="egressSaving"
+              @click="removeDomain(domain)"
+            >×</button>
+          </span>
+          <span v-if="!egress.allowlist.length" class="text-xs text-muted-foreground">—</span>
+        </div>
+      </CardContent>
+    </Card>
 
     <div class="grid grid-cols-1 gap-4 xl:grid-cols-3">
       <!-- Реестр коннекторов -->
