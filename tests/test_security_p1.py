@@ -92,6 +92,37 @@ def test_egress_strict_mode(client):
         reset_egress_cache()
 
 
+def test_http_rest_egress_blocked(client):
+    """HttpRestConnector ходит через egress-контроль: strict + незнакомый
+    домен → EgressBlocked в ConnectorResult.error (не сырой httpx)."""
+    from src.modules.integrations.connectors.builtin import registry
+    from src.modules.integrations.connectors.egress import reset_egress_cache
+
+    headers = _platform(client)
+    before = client.get(f"{API}/platform/egress-settings", headers=headers).json()
+    try:
+        allowlist = [d for d in before["allowlist"] if d not in ("evil.example.com",)]
+        put = client.put(f"{API}/platform/egress-settings", json={
+            "allowlist": allowlist, "strict": True}, headers=headers)
+        assert put.status_code == 200
+        reset_egress_cache()
+
+        conn = registry.build("http_rest",
+                              {"base_url": "https://evil.example.com/api",
+                               "auth_style": "none"}, {})
+        result = conn.fetch("/data")
+        assert not result.ok
+        assert "не в белом списке" in result.error
+        assert "платформенного админа" in result.error
+        probe = conn.test_connection()
+        assert not probe.ok and "не в белом списке" in probe.error
+    finally:
+        client.put(f"{API}/platform/egress-settings", json={
+            "allowlist": before["allowlist"], "strict": before["strict"]},
+            headers=headers)
+        reset_egress_cache()
+
+
 def test_rotate_secrets_key(client):
     """Ротация SECRETS_KEY: credentials_enc + code_enc + token_enc
     перешифрованы новым ключом; обратная ротация возвращает env-ключ —
