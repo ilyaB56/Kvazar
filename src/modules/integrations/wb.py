@@ -165,6 +165,8 @@ def _sync_transactions(db, connection, connector) -> dict:
     result = connector.fetch("transactions")
     if not result.ok:
         return {"ok": False, "error": result.error}
+    from .wb_docs import is_payment
+
     new_count = 0
     total = Decimal("0")
     for op in result.data or []:
@@ -176,9 +178,9 @@ def _sync_transactions(db, connection, connector) -> dict:
             m.WBTransaction.operation_id == operation_id))
         if exists is not None:
             # ретрай расхода: операция есть, расход не создан (§7.11);
-            # payment (выплата) не проводим вовсе (§10.2)
+            # выплата не проводим вовсе (§10.2)
             if exists.transaction_id is None and exists.amount \
-                    and str(exists.operation_type).lower() != "payment":
+                    and not is_payment(exists.operation_type):
                 _try_expense(db, connection, exists)
             continue
         row = m.WBTransaction(
@@ -192,8 +194,8 @@ def _sync_transactions(db, connection, connector) -> dict:
         new_count += 1
         amount = _dec(op.get("amount")) or Decimal("0")
         total += amount
-        # выплата (payment) — записана, но денег не проводим (§10.2)
-        if str(op.get("operation_type", "")).lower() != "payment":
+        # выплата — записана, но денег не проводим (§10.2)
+        if not is_payment(str(op.get("operation_type", ""))):
             _try_expense(db, connection, row)
     db.commit()
     if new_count:

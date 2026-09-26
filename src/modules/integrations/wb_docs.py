@@ -30,6 +30,14 @@ WB_CATEGORIES = {
 }
 
 
+def is_payment(operation_type: str) -> bool:
+    """Выплата WB (денежный поток) — записываем, но НЕ проводим как
+    расход (§10.2): payment/выплата/оплата продавцу/transfer."""
+    lowered = (operation_type or "").lower()
+    return any(k in lowered for k in (
+        "payment", "выплат", "оплата продавц", "transfer", "перевод продавц"))
+
+
 def expense_category(operation_type: str) -> str:
     lowered = (operation_type or "").lower()
     if any(k in lowered for k in ("комисси", "commission")):

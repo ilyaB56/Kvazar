@@ -907,7 +907,9 @@ def wb_margin(connection_id: uuid.UUID, date_from: str, date_to: str,
             m.WBTransaction.connection_id == connection_id)).all():
         if not (date_from <= (t.posted_at or "")[:10] <= date_to):
             continue
-        if str(t.operation_type).lower() == "payment":
+        from .wb_docs import is_payment as _is_payment
+
+        if _is_payment(t.operation_type):
             continue  # выплаты — не комиссия (§10.2)
         buckets[expense_category(t.operation_type)] += abs(t.amount or Decimal("0"))
     cost = Decimal("0")
