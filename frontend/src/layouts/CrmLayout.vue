@@ -13,7 +13,8 @@ const auth = useAuthStore()
 
 const tabs = computed(() => [
   ...(auth.moduleLevel('crm') !== 'none'
-    ? [{ key: 'deals', label: t('crm.tabDeals') }]
+    ? [{ key: 'deals', label: t('crm.tabDeals') },
+       { key: 'funnel', label: t('crm.tabFunnel') }]
     : []),
   ...(auth.moduleLevel('accounting') !== 'none'
     ? [{ key: 'orders', label: t('crm.tabOrders') }]

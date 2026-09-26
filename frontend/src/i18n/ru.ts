@@ -502,7 +502,11 @@ export default {
   },
   crm: {
     tabDeals: 'Сделки',
+    tabFunnel: 'Воронка',
     tabOrders: 'Заказы',
+    stageWon: 'Выиграна',
+    stageLost: 'Проиграна',
+    kanbanDropHere: 'Перетащите сделку сюда',
     title: 'Продажи',
     subtitle: 'Сделки, коммуникации и воронка',
     newDeal: 'Новая сделка',

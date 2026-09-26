@@ -8,7 +8,7 @@
 // ресурсов (POST /accounting/sales/orders c crm_deal_id).
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   CheckCircle2, ChevronDown, Circle, ListChecks, MessageSquare, Plus,
   Printer, ShoppingCart, Trophy,
@@ -25,6 +25,7 @@ import { useAuthStore } from '../stores/auth'
 import { formatMoney2, isPositiveDecimalString } from '../utils/money'
 
 const { t, d } = useI18n()
+const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const toast = useToast()
@@ -123,6 +124,9 @@ watch([query, stageFilter], () => {
 onMounted(async () => {
   try {
     await loadStages()
+    // переход из канбана/списка: сразу открыть карточку сделки
+    const wanted = route.query.deal
+    if (typeof wanted === 'string' && wanted) await openCard(wanted)
   } catch {
     toast.error(t('errors.unknown'))
   } finally {

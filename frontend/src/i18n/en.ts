@@ -319,6 +319,10 @@ export default {
   },
   crm: {
     tabDeals: 'Deals',
+    tabFunnel: 'Funnel',
+    stageWon: 'Won',
+    stageLost: 'Lost',
+    kanbanDropHere: 'Drag a deal here',
     tabOrders: 'Orders',
     title: 'Sales',
     subtitle: 'Deals, communications and funnel',

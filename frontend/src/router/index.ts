@@ -169,6 +169,15 @@ const router = createRouter({
               },
             },
             {
+              path: 'funnel',
+              name: 'crm-funnel',
+              component: () => import('../views/CrmKanbanView.vue'),
+              meta: {
+                requiresAuth: true, module: 'crm', level: 'ro',
+                titleKey: 'route.crm', crumbKey: 'route.crmCrumb',
+              },
+            },
+            {
               path: 'orders',
               name: 'crm-orders',
               component: () => import('../views/SalesOrdersView.vue'),
