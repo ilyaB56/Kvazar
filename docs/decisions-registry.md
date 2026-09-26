@@ -1199,3 +1199,6 @@ auto при ≤8 ГБ, one-shot /platform/bootstrap (WordPress-паттерн:
 (update/backup/restore), 12 критериев на чистой Win11 VM.
 Ревью арх-чата пройдено: 8 развилок закрыты (§10). К утверждению
 основателем.*
+*Спека коробки УТВЕРЖДЕНА основателем 2026-09-26. Разработчику: этап A
+(Inno Setup + Docker silent + CI GHCR) → B (compose.box + bootstrap +
+quasar CLI) → C (тест на чистой Win11 VM).*
