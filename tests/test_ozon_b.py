@@ -195,7 +195,7 @@ def test_stage_b_orders_to_erp(client, ozon_mock):
 
         cp_db = db.get(acc_m.Counterparty, order["counterparty_id"])
         assert cp_db.name == "Ozon"
-        lines = {l["item_id"]: l for l in order["lines"]}
+        lines = {row["item_id"]: row for row in order["lines"]}
         from decimal import Decimal as _D
         assert _D(str(lines[item_a["id"]]["unit_price"])) == _D("1500.00")
         assert _D(str(lines[item_b["id"]]["qty"])) == _D("1")
