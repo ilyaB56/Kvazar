@@ -1184,3 +1184,18 @@ registry-поставка + Tailscale-гайд (документация).
 Параллельно: WB (разработчик) + спека коробки (analyst) + канбан
 (фронт). После WB: установщик. После коробки: мини-заезд на чистом
 мини-ПК. v1.1: Tauri + палитра.
+*WB-коннектор A+B+C принят 2026-09-26 (16743f2, f5822e3): 219
+passed (+7), ruff чист (E741×2 + noqa почищены арх-чатом). Паттерн
+Ozon: WBSellerConnector (Authorization API-Token), wb_* таблицы с
+UNIQUE(uid), vendor_code маппинг, статьи с fallback «WB: Прочее»,
+sync_jobs (товары/час, заказы/15мин, транзакции/час), push остатков,
+маржа, auto_create_orders off. Контрагент «WB». Два коннектора
+маркетплейсов готовы: Ozon + Wildberries.*
+*Спека установщика коробки готова (box-installer-spec.md, 405 строк):
+Inno Setup (~50 МБ), невидимый Docker Desktop (скачивание, silent,
+poll Engine), генерация прод-секретов, registry GHCR, .wslconfig
+auto при ≤8 ГБ, one-shot /platform/bootstrap (WordPress-паттерн:
+0 организаций → доступен, после — 409 навсегда), quasar CLI
+(update/backup/restore), 12 критериев на чистой Win11 VM.
+Ревью арх-чата пройдено: 8 развилок закрыты (§10). К утверждению
+основателем.*
