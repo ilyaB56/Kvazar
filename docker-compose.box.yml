@@ -1,0 +1,110 @@
+# Коробочная версия (box-installer-spec §3.6, этап A): образы из GHCR —
+# без build:, без дев-секретов: всё из .env (генерирует quasar-setup).
+# Запуск: docker compose -f docker-compose.box.yml --project-name quasar up -d
+# ИИ-профиль — docker-compose.ai.yml (override, чекбокс установщика).
+# После рестарта Docker-движка контейнеры поднимаются сами (restart:
+# unless-stopped) — коробка переживает перезагрузку Windows.
+name: quasar
+
+x-app-env: &app_env
+  # ВСЁ из .env коробки (установщик генерирует: секреты ≥32 байт,
+  # BACKUP_KEY ≠ SECRETS_KEY, CORS с LAN-IP)
+  DATABASE_URL: postgresql+psycopg2://erp:${POSTGRES_PASSWORD:?из .env}@db:5432/erp
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET: ${JWT_SECRET:?из .env}
+  SECRETS_KEY: ${SECRETS_KEY:?из .env}
+  CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:8080"]}
+  BACKUP_KEY: ${BACKUP_KEY:?из .env}
+  BACKUP_DIR: /backups
+  BACKUP_RETENTION: ${BACKUP_RETENTION:-7}
+  BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-03:00}
+  UPDATE_MANIFEST_URL: ${UPDATE_MANIFEST_URL:-file:///app/deploy/test-manifest.json}
+  CONNECTOR_ALLOWLIST: ${CONNECTOR_ALLOWLIST:-yookassa.net,api.yookassa.ru,securepay.tinkoff.ru,api.telegram.org,api-seller.ozon.ru,seller-api.wildberries.ru,localhost,127.0.0.1}
+  CONNECTOR_ALLOWLIST_STRICT: ${CONNECTOR_ALLOWLIST_STRICT:-true}
+  AI_PROVIDER: ${AI_PROVIDER:-llm_mock}
+  AI_CHAT_MODEL: ${AI_CHAT_MODEL:-qwen2.5:3b-instruct}
+  AI_EMBED_MODEL: bge-m3
+  AI_MAX_TOOL_STEPS: "5"
+
+services:
+  db:
+    restart: unless-stopped
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: erp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?из .env}
+      POSTGRES_DB: erp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    restart: unless-stopped
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    restart: unless-stopped
+    # GHCR (CI: .github/workflows/release-images.yml); версия — из .env
+    # QUASAR_VERSION (latest для дев-коробки)
+    image: ${QUASAR_API_IMAGE:-ghcr.io/quasar-erp/quasar-api:latest}
+    command: sh -c "alembic upgrade head && python -m src.seed && uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    environment: *app_env
+    ports:
+      # наружу API не публикуем (security-p0 п.5): web-прокси + localhost
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - erp_backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    restart: unless-stopped
+    image: ${QUASAR_API_IMAGE:-ghcr.io/quasar-erp/quasar-api:latest}
+    command: celery -A src.worker.celery_app worker --loglevel=info -Q integrations,default
+    environment: *app_env
+    volumes:
+      - erp_backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    restart: unless-stopped
+    image: ${QUASAR_API_IMAGE:-ghcr.io/quasar-erp/quasar-api:latest}
+    command: celery -A src.worker.celery_app beat --loglevel=info
+    environment: *app_env
+    volumes:
+      - erp_backups:/backups
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  web:
+    restart: unless-stopped
+    image: ${QUASAR_WEB_IMAGE:-ghcr.io/quasar-erp/quasar-web:latest}
+    ports:
+      # 0.0.0.0 — доступ по LAN (сценарий §4: сотрудник открывает
+      # http://<IP-сервера>:8080); порт настраивает установщик при занятом
+      - "${WEB_PORT:-8080}:80"
+    environment:
+      WEB_TLS: ${WEB_TLS:-0}
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  erp_backups:

@@ -1227,6 +1227,73 @@ def platform_put_egress(body: EgressSettingsIn, admin: PlatformAdmin,
     return {"allowlist": allowlist, "strict": bool(body.strict)}
 
 
+# ---------- Bootstrap коробки (box-installer-spec §3.9, этап A) ----------
+
+class BootstrapIn(BaseModel):
+    """Мастер первой настройки quasar-setup: организация + её админ.
+    One-shot: доступен только при 0 организаций, после — 409 навсегда
+    (паттерн Grafana first-run; окно = до создания первой org)."""
+    model_config = {"json_schema_extra": {"example": {
+        "company_name": "ООО «Ромашка»", "admin_full_name": "Иван Иванов",
+        "admin_email": "director@romashka.ru", "admin_password": "Strong1pass",
+    }}}
+
+    company_name: str = Field(min_length=2, max_length=255)
+    admin_full_name: str = Field(default="", max_length=255)
+    admin_email: str = Field(min_length=5, max_length=255)
+    admin_password: str = Field(min_length=8, max_length=128)
+
+
+@router.post("/platform/bootstrap", status_code=201)
+def platform_bootstrap(body: BootstrapIn, db: Session = Depends(get_db)):
+    """Без авторизации, ТОЛЬКО пока в системе 0 организаций (§10.3):
+    переиспользует платформенный сервисный слой POST /platform/orgs —
+    сиды организации, ai-self-api, 2FA-дедлайн +7 дней. Второй вызов —
+    409 навсегда (нет ни одной организации = вызов ещё возможен)."""
+    if db.scalar(select(Company).limit(1)) is not None:
+        raise HTTPException(409, "Bootstrap is only available on an empty system")
+    if db.scalar(select(User).where(User.email == body.admin_email)):
+        raise HTTPException(409, f"Email already exists: {body.admin_email}")
+    if validate_password(body.admin_password):
+        raise HTTPException(422, "password_policy")
+
+    company = Company(name=body.company_name, is_active=True)
+    db.add(company)
+    db.flush()
+    from src.seed import ensure_ai_self_api, seed_company_data
+
+    seed_company_data(db, company.id)
+    org_admin = User(
+        email=body.admin_email,
+        password_hash=hash_password(body.admin_password),
+        full_name=body.admin_full_name,
+        role="admin",
+        company_id=company.id,
+        # 2FA-дедлайн как у одобренных signup (этап D-ревью)
+        totp_setup_deadline=datetime.now(UTC) + timedelta(days=7),
+    )
+    db.add(org_admin)
+    db.flush()
+    ensure_ai_self_api(db, company.id, admin_user_id=org_admin.id)
+    db.add(AuditEvent(
+        user_id=org_admin.id, action="platform.org.bootstrap",
+        entity_type="company", entity_id=str(company.id),
+        payload={"name": company.name, "admin_email": org_admin.email}))
+    events.publish(db, "platform.org.bootstrap", {
+        "company_id": str(company.id), "name": company.name,
+        "admin_email": org_admin.email,
+    })
+    db.commit()
+    db.refresh(company)
+    db.refresh(org_admin)
+    return {
+        "id": str(company.id), "name": company.name, "is_active": True,
+        "users_count": 1, "created_at": company.created_at,
+        "admin": {"id": str(org_admin.id), "email": org_admin.email,
+                  "full_name": org_admin.full_name, "role": "admin"},
+    }
+
+
 @router.post("/platform/signup-requests/{request_id}/reject")
 def platform_reject_signup(request_id: uuid.UUID, admin: PlatformAdmin,
                            db: Session = Depends(get_db)):

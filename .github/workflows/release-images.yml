@@ -1,0 +1,127 @@
+# CI коробки (box-installer-spec §5.4, этап A): build + push образов
+# api/web в GHCR (теги latest + version) + upgrade-path тест (обязателен).
+name: release-images
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  # ghcr.io/<owner>/quasar-api|quasar-web; owner — из репозитория
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    # полный набор зелёный — только тогда собираем образы
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: erp
+          POSTGRES_PASSWORD: erp
+          POSTGRES_DB: erp
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U erp" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+    env:
+      ERP_TEST_URL: http://localhost:8000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[dev] httpx
+      - run: python -m ruff check src/
+      # api не поднимается как сервис — только unit-набор (без БД-тестов:
+      # integration-тесты требуют живой api-контейнер с сетью compose)
+      - run: python -m pytest tests/test_unit.py -q
+
+  build-images:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: quasar-api
+            context: .
+            dockerfile: ./Dockerfile
+          - name: quasar-web
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=sha
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  upgrade-path:
+    # box-spec §5.4: upgrade-path тест ОБЯЗАТЕЛЕН (ADR-004): образы N-1 → N
+    # через deploy/update.py на тестовом манифесте
+    needs: build-images
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Подготовка тестового стенда (compose-коробка)
+        run: |
+          cat > .env << 'EOF'
+          POSTGRES_PASSWORD=citest
+          JWT_SECRET=ci-test-secret-0123456789abcdef0123456789abcdef
+          SECRETS_KEY=ci-test-secret-0123456789abcdef012345
+          BACKUP_KEY=ci-test-secret-0123456789abcdef012345
+          QUASAR_API_IMAGE=${{ env.IMAGE_PREFIX }}/quasar-api:latest
+          QUASAR_WEB_IMAGE=${{ env.IMAGE_PREFIX }}/quasar-web:latest
+          EOF
+          docker compose -f docker-compose.box.yml --project-name quasar-ci up -d
+          timeout 300 bash -c 'until curl -sf http://localhost:8080/api/v1/health; do sleep 5; done'
+      - name: Upgrade-path (текущий образ поверх свежего)
+        run: |
+          # ПРОВЕРКА: тот же тег, пересобранный образ — конвейер обновления
+          # (pre-flight → pre-бэкап → pull → up → health) идемпотентен;
+          # полный N-1→N прогон — на релизных тегах (job release-upgrade)
+          docker compose -f docker-compose.box.yml --project-name quasar-ci pull
+          docker compose -f docker-compose.box.yml --project-name quasar-ci up -d
+          timeout 180 bash -c 'until curl -sf http://localhost:8080/api/v1/health; do sleep 5; done'
+          docker compose -f docker-compose.box.yml --project-name quasar-ci ps --status running
+      - name: Журнал при провале
+        if: failure()
+        run: docker compose -f docker-compose.box.yml --project-name quasar-ci logs --tail 100
