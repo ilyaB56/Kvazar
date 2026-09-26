@@ -15,6 +15,7 @@ pre_update-бэкапа в основную БД, прежние образы, �
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -177,6 +178,43 @@ def switch_images(manifest_images: dict, pull: bool) -> dict:
     return previous
 
 
+# ---------- Шаг 4b: compose-файл из манифеста (§10.6) ----------
+
+COMPOSE_KEY = "compose_file"
+
+
+def apply_compose_file(manifest: dict, compose_dir: Path) -> None:
+    """docker-compose.box.yml в манифесте с sha256: сверить и заменить.
+
+    Манифест: {"compose_file": {"url": "https://…/docker-compose.box.yml",
+    "sha256": "…"}}. Отсутствие ключа — старый манифест, пропускаем.
+    Текущий файл сохраняем рядом (.bak) для отката вручную."""
+    entry = manifest.get(COMPOSE_KEY)
+    if not entry:
+        log("манифест без compose_file — файл стека не меняем")
+        return
+    target = compose_dir / "docker-compose.box.yml"
+    data: bytes
+    url = entry["url"]
+    if url.startswith("file://"):
+        data = Path(url[len("file://"):]).read_bytes()
+    else:
+        with urlopen(Request(url), timeout=30) as response:
+            data = response.read()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != entry["sha256"]:
+        raise RuntimeError(f"sha256 compose-файла не совпал: {digest} != {entry['sha256']} — СТОП")
+    if target.exists():
+        current = hashlib.sha256(target.read_bytes()).hexdigest()
+        if current == digest:
+            log("compose-файл актуален (sha256 совпал)")
+            return
+        target.rename(target.with_suffix(".yml.bak"))
+        log("compose-файл изменён — прежний сохранён как .bak")
+    target.write_bytes(data)
+    log(f"compose-файл обновлён из манифеста ({digest[:12]}…)")
+
+
 # ---------- Шаги 6-7: health-check и авто-откат ----------
 
 def wait_health(timeout: int = HEALTH_TIMEOUT) -> bool:
@@ -270,6 +308,8 @@ def main() -> int:
 
         manifest = json.loads(LOCAL_MANIFEST.read_text(encoding="utf-8"))
         previous = switch_images(manifest["images"], args.pull)
+        stack_dir = ROOT / "stack" if (ROOT / "stack").exists() else ROOT
+        apply_compose_file(manifest, stack_dir)
 
         if not args.yes:
             answer = input(f"Применить {manifest['version']} (короткий простой)? [y/N] ")

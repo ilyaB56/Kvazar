@@ -1,0 +1,11 @@
+{
+  "version": "1.0.1",
+  "channel": "beta",
+  "changelog": "compose в манифесте (§10.6)",
+  "min_supported": "0.1.0",
+  "compose_file": {
+    "url": "file://C:/Users/днс/ZCodeProject/erp/docker-compose.box.yml",
+    "sha256": "c3a7d84fa13ce618b8e79f298516f6404bac7ec7d4117d82740a27f7de771c41"
+  },
+  "images": {}
+}

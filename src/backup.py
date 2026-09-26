@@ -64,6 +64,26 @@ def _restore_production(backup_id: str) -> int:
     return 0
 
 
+def _backup_row(backup_id: str):
+    from src.core.models import Backup as _B
+    from src.db import SessionLocal as _SL
+
+    db = _SL()
+    try:
+        row = db.get(_B, backup_id)
+        if row is None:
+            raise BackupError(f"Backup not found: {backup_id}")
+        return row
+    finally:
+        db.close()
+
+
+def _admin_url() -> str:
+    from src.core.backup import _db_container_url
+
+    return _db_container_url().rsplit("/", 1)[0]
+
+
 def _backup_tmp(backup):
     from src.core.backup import _backup_dir
 
@@ -80,6 +100,9 @@ def main() -> int:
 
     verify_parser = sub.add_parser("verify")
     verify_parser.add_argument("backup_id")
+
+    meta_parser = sub.add_parser("meta")
+    meta_parser.add_argument("backup_id")
 
     restore_parser = sub.add_parser("restore")
     restore_parser.add_argument("--backup-id", required=True)
@@ -101,6 +124,27 @@ def main() -> int:
             backup = verify_backup(args.backup_id)
             print(json.dumps({"id": str(backup.id), "status": backup.status}))
             return 0 if backup.status == "verified" else 1
+        if args.command == "meta":
+            # название организации и дата бэкапа (restore в erp_verify):
+            # CLI показывает их пользователю ПЕРЕД применением restore
+            from src.core.backup import restore_backup as _rb
+
+            backup_row = _backup_row(args.backup_id)
+            _rb(args.backup_id, target_db=VERIFY_DB)
+            query = ("SELECT string_agg(name, ', ') FROM erp_core.companies")
+            import subprocess as _sp
+
+            out = _sp.run(
+                ["psql", _admin_url() + f"/{VERIFY_DB}", "--no-password",
+                 "-t", "-A", "-c", query],
+                check=True, capture_output=True, timeout=60,
+            ).stdout.decode().strip()
+            print(json.dumps({
+                "id": str(backup_row.id), "file_name": backup_row.file_name,
+                "created_at": backup_row.created_at.isoformat(),
+                "organizations": out or "(пусто)",
+            }))
+            return 0
         if args.command == "restore":
             if args.drop or args.target == "erp":
                 return _restore_production(args.backup_id)
