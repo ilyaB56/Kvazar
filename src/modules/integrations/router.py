@@ -149,10 +149,14 @@ def create_connection(body: ConnectionIn, user: User = Depends(require_module("i
     )
     db.add(connection)
     db.flush()
-    # Ozon: задания синхронизации по умолчанию — товары/час, заказы/15мин,
-    # транзакции/час (ozon-спека §3); идемпотентно
+    # маркетплейсы: задания синхронизации по умолчанию — товары/час,
+    # заказы/15мин, транзакции/час (спеки §3); идемпотентно
     if body.connector_code == "ozon_seller":
         from src.modules.integrations.ozon import seed_sync_jobs
+
+        seed_sync_jobs(db, connection)
+    if body.connector_code == "wb_seller":
+        from src.modules.integrations.wb import seed_sync_jobs
 
         seed_sync_jobs(db, connection)
     db.commit()
@@ -749,6 +753,189 @@ def ozon_margin(connection_id: uuid.UUID, date_from: str, date_to: str,
             "orders_count": len(in_period),
             "revenue": str(revenue), "fees": str(fees),
             "logistics": str(logistics), "advertising": str(advertising),
+            "cost": str(cost), "include_cost": include_cost,
+            "profit": str(profit)}
+
+
+# ---------- Wildberries: списки, sync, push, маржа (§5) ----------
+
+def _wb_scoped(db, user, connection_id: uuid.UUID):
+    scoped = getattr(user, "token_org", None) or user.company_id
+    connection = db.get(m.Connection, connection_id)
+    if connection is None or connection.connector_code != "wb_seller" \
+            or (scoped is not None
+                and connection.company_id != uuid.UUID(str(scoped))):
+        raise HTTPException(404, "WB connection not found")
+    return connection
+
+
+@router.get("/wb/products")
+def wb_products(connection_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")),
+                db: Session = Depends(get_db)):
+    _wb_scoped(db, user, connection_id)
+    return db.scalars(select(m.WBProduct).where(
+        m.WBProduct.connection_id == connection_id)
+        .order_by(m.WBProduct.nm_id)).all()
+
+
+@router.get("/wb/stocks")
+def wb_stocks(connection_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")),
+              db: Session = Depends(get_db)):
+    _wb_scoped(db, user, connection_id)
+    return db.scalars(select(m.WBStock).where(
+        m.WBStock.connection_id == connection_id)).all()
+
+
+@router.get("/wb/orders")
+def wb_orders(connection_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")),
+              db: Session = Depends(get_db)):
+    _wb_scoped(db, user, connection_id)
+    return db.scalars(select(m.WBOrder).where(
+        m.WBOrder.connection_id == connection_id)
+        .order_by(m.WBOrder.created_at.desc())).all()
+
+
+@router.get("/wb/transactions")
+def wb_transactions(connection_id: uuid.UUID, user: User = Depends(require_module("integrations", "ro")),
+                    db: Session = Depends(get_db)):
+    _wb_scoped(db, user, connection_id)
+    return db.scalars(select(m.WBTransaction).where(
+        m.WBTransaction.connection_id == connection_id)
+        .order_by(m.WBTransaction.created_at.desc())).all()
+
+
+class WBSyncIn(BaseModel):
+    connection_id: uuid.UUID
+    kinds: list[str] = Field(default_factory=lambda: ["products"])
+
+
+@router.post("/wb/sync")
+def wb_sync(body: WBSyncIn, user: User = Depends(require_module("integrations")),
+            db: Session = Depends(get_db)):
+    """Внеочередной прогон (синхронно): kinds — products|stocks|orders|
+    transactions."""
+    connection = _wb_scoped(db, user, body.connection_id)
+    connector = connector_registry.build(
+        connection.connector_code, connection.config,
+        decrypt_dict(connection.credentials_enc))
+    from . import wb as wb_mod
+
+    out = {}
+    for kind in body.kinds:
+        out[kind] = wb_mod.run_wb_sync(db, kind=kind, connection=connection,
+                                       connector=connector)
+        if not out[kind].get("ok"):
+            raise HTTPException(409, f"{kind}: {out[kind].get('error')}")
+    return out
+
+
+class WBPushIn(BaseModel):
+    connection_id: uuid.UUID
+    warehouse_id: str = ""  # WB warehouseID; пусто — первый из config.warehouses
+
+
+@router.post("/wb/push-stocks")
+def wb_push_stocks(body: WBPushIn, user: User = Depends(require_module("integrations")),
+                   db: Session = Depends(get_db)):
+    """Push наших остатков на WB (§3.3.5): смапленные items (vendor_code) →
+    остаток по ПРИВЯЗАННОЙ локации (config.warehouses: WB warehouseID →
+    наш location_id) → PUT /api/v3/stocks/{warehouseId}."""
+    import json as _json
+
+    connection = _wb_scoped(db, user, body.connection_id)
+    try:
+        warehouses = _json.loads((connection.config or {}).get("warehouses") or "{}")
+    except ValueError:
+        warehouses = {}
+    if not warehouses:
+        raise HTTPException(422, "config.warehouses is empty (WB warehouseID → location_id)")
+    warehouse_id = body.warehouse_id or next(iter(warehouses))
+    location_id = warehouses.get(warehouse_id)
+    if not location_id:
+        raise HTTPException(422, f"warehouse {warehouse_id} not in config.warehouses")
+
+    mappings = db.scalars(select(m.ItemMapping).where(
+        m.ItemMapping.connection_id == connection.id,
+        m.ItemMapping.is_active.is_(True))).all()
+    # vendor_code → (наш item_id, nm_id из wb_products)
+    nm_by_vendor = {row.vendor_code: row.nm_id for row in db.scalars(
+        select(m.WBProduct).where(
+            m.WBProduct.connection_id == connection.id)).all()
+        if row.vendor_code}
+    from src.modules.mgmt_accounting.features.inventory import service as inv_svc
+
+    stocks = []
+    for mp in mappings:
+        rows = inv_svc.stock_balances(db, item_id=mp.item_id,
+                                      location_id=uuid.UUID(str(location_id)),
+                                      company_id=connection.company_id)
+        qty = sum(int(float(r["qty"])) for r in rows) if rows else 0
+        stocks.append({
+            "nmId": int(nm_by_vendor.get(mp.external_item_id, 0) or 0),
+            "vendorCode": mp.external_item_id,
+            "stock": qty,
+        })
+    connector = connector_registry.build(
+        connection.connector_code, connection.config,
+        decrypt_dict(connection.credentials_enc))
+    result = connector.push(payload={"warehouse_id": warehouse_id,
+                                     "stocks": stocks})
+    if not result.ok:
+        raise HTTPException(409, result.error)
+    return {"pushed": len(stocks), "warehouse_id": warehouse_id}
+
+
+@router.get("/wb/margin")
+def wb_margin(connection_id: uuid.UUID, date_from: str, date_to: str,
+              include_cost: bool = False,
+              user: User = Depends(require_module("integrations", "ro")),
+              db: Session = Depends(get_db)):
+    """«WB: комиссия и прибыль» (§5): выручка (delivered за период) −
+    комиссии/логистика/хранение/штрафы/налог/прочее − себестоимость
+    (avg_cost по маппингу vendor_code, флаг include_cost)."""
+    connection = _wb_scoped(db, user, connection_id)
+    orders = db.scalars(select(m.WBOrder).where(
+        m.WBOrder.connection_id == connection_id,
+        m.WBOrder.status == "delivered")).all()
+    in_period = [o for o in orders
+                 if date_from <= (o.order_date or "")[:10] <= date_to]
+    revenue = sum((o.amount or Decimal("0") for o in in_period), Decimal("0"))
+    from .wb_docs import WB_CATEGORIES, expense_category
+
+    buckets = {name: Decimal("0") for name in WB_CATEGORIES.values()}
+    for t in db.scalars(select(m.WBTransaction).where(
+            m.WBTransaction.connection_id == connection_id)).all():
+        if not (date_from <= (t.posted_at or "")[:10] <= date_to):
+            continue
+        if str(t.operation_type).lower() == "payment":
+            continue  # выплаты — не комиссия (§10.2)
+        buckets[expense_category(t.operation_type)] += abs(t.amount or Decimal("0"))
+    cost = Decimal("0")
+    if include_cost:
+        from src.modules.mgmt_accounting.features.inventory import models as inv_m
+
+        avg_by_item = {row[0]: row[1] for row in db.execute(
+            select(inv_m.Item.id, inv_m.Item.avg_cost).where(
+                inv_m.Item.company_id == connection.company_id)).all()
+            if row[1] is not None}
+        item_by_vendor = {mp.external_item_id: mp.item_id for mp in
+                          db.scalars(select(m.ItemMapping).where(
+                              m.ItemMapping.connection_id == connection_id)).all()}
+        for o in in_period:
+            for line in o.lines or []:
+                item_id = item_by_vendor.get(str(line.get("vendor_code", "")))
+                if item_id and item_id in avg_by_item:
+                    cost += (avg_by_item[item_id] or Decimal("0")) * Decimal(str(line.get("qty", 1)))
+    fees_total = sum(buckets.values(), Decimal("0"))
+    profit = revenue - fees_total - cost
+    return {"date_from": date_from, "date_to": date_to,
+            "orders_count": len(in_period),
+            "revenue": str(revenue),
+            **{key: str(buckets[name]) for key, name in (
+                ("fees", "Комиссия WB"), ("logistics", "Логистика WB"),
+                ("storage", "Хранение WB"), ("penalties", "Штрафы WB"),
+                ("tax", "Налог WB"), ("other", "WB: Прочее"))},
+            "fees_total": str(fees_total),
             "cost": str(cost), "include_cost": include_cost,
             "profit": str(profit)}
 
