@@ -33,7 +33,7 @@ REPLIES: list[dict] = []
 class _OpenAICompatMock(BaseHTTPRequestHandler):
     """Мок внешнего ИИ: поочерёдно отдаёт REPLIES; пишет запросы в LOG."""
 
-    def do_POST(self):  # noqa: NPT001/N802
+    def do_POST(self):  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
         LOG.append({"path": self.path, "auth": self.headers.get("Authorization", ""),
                     "x_api_key": self.headers.get("x-api-key", ""),

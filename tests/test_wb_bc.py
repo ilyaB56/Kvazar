@@ -192,12 +192,12 @@ def test_wb_stage_b_orders(client, wb_mock):
 
         cp = db.get(acc_m.Counterparty, order["counterparty_id"])
         assert cp.name == "WB"
-        lines = {l["item_id"]: l for l in order["lines"]}
+        lines = {row["item_id"]: row for row in order["lines"]}
         assert D(str(lines[item_b["id"]]["unit_price"])) == D("700.00")
         w1_order = client.get(
             f"{API}/accounting/sales-orders/{w1.sales_order_id}",
             headers=headers).json()
-        assert D(str({l["item_id"]: l for l in w1_order["lines"]}[item_a["id"]]["unit_price"])) == D("1490.00")
+        assert D(str({row["item_id"]: row for row in w1_order["lines"]}[item_a["id"]]["unit_price"])) == D("1490.00")
 
         # §7.5: отмена на WB → cancelled, черновик удалён
         for o in ORDERS:
