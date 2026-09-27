@@ -1,20 +1,20 @@
 @echo off
 setlocal EnableDelayedExpansion
 rem CLI-диспетчер коробки Квазар (box-installer-spec §3.11-3.12, этап B).
-rem Стек — проект quasar; все команды: прогресс, OK/ERROR, лог.
-rem quasar backup | quasar update | quasar restore X --yes | status | stop | start
+rem Стек — проект kvazar; все команды: прогресс, OK/ERROR, лог.
+rem kvazar backup | kvazar update | kvazar restore X --yes | status | stop | start
 
-set "QUASAR_HOME=%USERPROFILE%\Documents\Quasar"
-set "STACK=%QUASAR_HOME%\stack"
-set "COMPOSE=docker compose -f "%STACK%\docker-compose.box.yml" --project-name quasar"
-set "LOGDIR=%QUASAR_HOME%\logs"
+set "KVAZAR_HOME=%USERPROFILE%\Documents\Quasar"
+set "STACK=%KVAZAR_HOME%\stack"
+set "COMPOSE=docker compose -f "%STACK%\docker-compose.box.yml" --project-name kvazar"
+set "LOGDIR=%KVAZAR_HOME%\logs"
 if not exist "%LOGDIR%" mkdir "%LOGDIR%" >nul 2>&1
-set "LOGFILE=%LOGDIR%\quasar-cli.log"
+set "LOGFILE=%LOGDIR%\kvazar-cli.log"
 
 if "%~1"=="" goto :help
 for /f "tokens=1-3,*" %%a in ("%*") do set "SUB=%%a" & set "ARG1=%%b" & set "ARG2=%%c"
 
-echo [%DATE% %TIME%] quasar %* >>"%LOGFILE%"
+echo [%DATE% %TIME%] kvazar %* >>"%LOGFILE%"
 
 if /i "%SUB%"=="status"   goto :status
 if /i "%SUB%"=="stop"     goto :stop
@@ -53,7 +53,7 @@ goto :eof
 :update
 echo === Обновление Квазара ===
 echo 1/4 Проверяем обновления и подпись манифеста…
-docker compose -f "%STACK%\docker-compose.box.yml" --project-name quasar run --rm ^
+docker compose -f "%STACK%\docker-compose.box.yml" --project-name kvazar run --rm ^
   -e UPDATE_MANIFEST_URL api python deploy/update.py --pull --yes 2>&1 | tee -a "%LOGDIR%\update.log"
 if errorlevel 1 (
   echo ERROR: обновление не выполнено — авто-откат сработал или подпись не прошла.
@@ -77,12 +77,12 @@ echo     %BJSON%
 for /f "tokens=2 delims=:," %%f in ("!BJSON:") do set "FNAME=%%~f"
 set "FNAME=!FNAME:"=!"
 echo 2/3 Копируем в папку пользователя…
-if not exist "%QUASAR_HOME%\backups" mkdir "%QUASAR_HOME%\backups"
-%COMPOSE% cp api:/backups/!FNAME! "%QUASAR_HOME%\backups\" >nul 2>&1
+if not exist "%KVAZAR_HOME%\backups" mkdir "%KVAZAR_HOME%\backups"
+%COMPOSE% cp api:/backups/!FNAME! "%KVAZAR_HOME%\backups\" >nul 2>&1
 set "STAMP=%DATE:~6,4%%DATE:~3,2%%DATE:~0,2%-%TIME:~0,2%%TIME:~3,2%"
 set "STAMP=%STAMP: =0%"
-ren "%QUASAS_HOME%\backups\!FNAME!" quasar-%STAMP%.enc 2>nul
-ren "%QUASAR_HOME%\backups\!FNAME!" quasar-%STAMP%.enc 2>nul
+ren "%KVAZAR_HOME%\backups\!FNAME!" kvazar-%STAMP%.enc 2>nul
+ren "%KVAZAR_HOME%\backups\!FNAME!" kvazar-%STAMP%.enc 2>nul
 echo 3/3 Проверяем целостность (test-restore)…
 for /f "tokens=2 delims=:," %%b in ("!BJSON:") do set "BID=%%~b"
 set "BID=!BID:"=!"
@@ -90,20 +90,20 @@ set "BID=!BID:"=!"
 if errorlevel 1 (
   echo WARNING: verify не прошёл — бэкап создан, но проверка неудачна ^(см. выше^)
 ) else (
-  echo OK: бэкап проверён: %QUASAR_HOME%\backups\
+  echo OK: бэкап проверён: %KVAZAR_HOME%\backups\
 )
 goto :eof
 
 :restore
 if "%ARG1%"=="" (
-  echo Использование: quasar restore "C:\путь\к\бэкапу.enc" --yes
-  echo Сначала quasar backup покажет данные бэкапа — вы увидите организацию.
+  echo Использование: kvazar restore "C:\путь\к\бэкапу.enc" --yes
+  echo Сначала kvazar backup покажет данные бэкапа — вы увидите организацию.
   exit /b 1
 )
 if not "%ARG2%"=="--yes" (
   echo ВНИМАНИЕ: restore ПОЛНОСТЬЮ заменяет текущую базу данных.
   echo Файл: %ARG1%
-  echo Подтвердите: quasar restore "файл" --yes
+  echo Подтвердите: kvazar restore "файл" --yes
   exit /b 1
 )
 if not exist "%ARG1%" (
@@ -115,7 +115,7 @@ echo 1/5 Останавливаем приложение…
 %COMPOSE% stop api worker beat web >nul 2>&1
 echo 2/5 Копируем файл бэкапа в стек…
 for %%f in ("%ARG1%") do set "BFNAME=%%~nxf"
-docker cp "%ARG1%" quasar-api-1:/backups/!BFNAME!
+docker cp "%ARG1%" kvazar-api-1:/backups/!BFNAME!
 echo 3/5 Восстанавливаем базу…
 %COMPOSE% run --rm api python -m src.backup restore --backup-id "!BFNAME:.enc=!" --target erp --drop 2>&1 | tee -a "%LOGDIR%\restore.log"
 if errorlevel 1 (
@@ -143,9 +143,9 @@ goto :wait_loop
 
 :help
 echo Квазар — команды коробки:
-echo   quasar status                 — состояние стека, health, версия
-echo   quasar update                 — обновление (бэкап + подпись + авто-откат)
-echo   quasar backup                 — бэкап в Документы\Quasar\backups + проверка
-echo   quasar restore "файл" --yes   — восстановление из бэкапа
-echo   quasar stop / quasar start    — остановка/запуск стека
+echo   kvazar status                 — состояние стека, health, версия
+echo   kvazar update                 — обновление (бэкап + подпись + авто-откат)
+echo   kvazar backup                 — бэкап в Документы\Quasar\backups + проверка
+echo   kvazar restore "файл" --yes   — восстановление из бэкапа
+echo   kvazar stop / kvazar start    — остановка/запуск стека
 echo Журналы: %LOGDIR%

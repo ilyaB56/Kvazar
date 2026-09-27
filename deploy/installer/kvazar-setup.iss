@@ -2,9 +2,9 @@
 ; 2026-09-26; этап A). Inno Setup 6.x (вариант Р1 §3.2).
 ;
 ; Пользователь НИКОГДА не видит слово «Docker» — только «среда
-; выполнения» (§3.3). Сборка: iscc quasar-setup.iss (файлы стека —
+; выполнения» (§3.3). Сборка: iscc kvazar-setup.iss (файлы стека —
 ; рядом: docker-compose.box.yml, docker-compose.ai.yml,
-; deploy/keys/update-public.pem, bin/quasar.cmd).
+; deploy/keys/update-public.pem, bin/kvazar.cmd).
 ;
 ; Этап A покрывает: проверку системы, среду выполнения, .wslconfig,
 ; генерацию .env, up -d + health, bootstrap-мастер, ярлык, мьютекс,
@@ -27,7 +27,7 @@ PrivilegesRequired=lowest
 ; один установщик одновременно (§4 ошибочные: мьютекс)
 SetupMutex=QuasarSetupMutex
 DisableProgramGroupPage=yes
-OutputBaseFilename=quasar-setup
+OutputBaseFilename=kvazar-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -52,7 +52,7 @@ ru:WeakPassword=Пароль слишком простой: минимум 8 с�
 Source: "docker-compose.box.yml"; DestDir: "{app}\stack"; Flags: ignoreversion
 Source: "docker-compose.ai.yml"; DestDir: "{app}\stack"; Flags: ignoreversion
 Source: "..\keys\update-public.pem"; DestDir: "{app}\stack"; Flags: ignoreversion
-Source: "..\..\bin\quasar.cmd"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "..\..\bin\kvazar.cmd"; DestDir: "{app}\bin"; Flags: ignoreversion
 
 [Dirs]
 Name: "{app}\backups"; Name: "{app}\logs"
@@ -61,7 +61,7 @@ Name: "{app}\backups"; Name: "{app}\logs"
 ; ярлык «Квазар» → интерфейс (§3.9)
 Name: "{userdesktop}\Квазар"; Filename: "{#AppURL}"
 Name: "{userprograms}\Квазар"; Filename: "{#AppURL}"
-Name: "{userprograms}\Квазар\Обновить Квазар"; Filename: "{app}\bin\quasar.cmd"; Parameters: "update"
+Name: "{userprograms}\Квазар\Обновить Квазар"; Filename: "{app}\bin\kvazar.cmd"; Parameters: "update"
 
 [Code]
 var
@@ -77,7 +77,7 @@ end;
 
 function InitializeSetup(): Boolean;
 begin
-  LogPath := ExpandConstant('{tmp}\quasar-setup.log');
+  LogPath := ExpandConstant('{tmp}\kvazar-setup.log');
   Log('=== Установка Квазар {#AppVersion} ===');
   Result := True;
 end;
@@ -290,8 +290,8 @@ begin
   env :=
     '# Квазар — сгенерировано установщиком. СОХРАНИТЕ КОПИЮ: это ключи' + #13#10 +
     '# от ваших данных (бэкап .env = возможность восстановить доступ).' + #13#10 +
-    'QUASAR_API_IMAGE=ghcr.io/quasar-erp/quasar-api:{#AppVersion}' + #13#10 +
-    'QUASAR_WEB_IMAGE=ghcr.io/quasar-erp/quasar-web:{#AppVersion}' + #13#10 +
+    'QUASAR_API_IMAGE=ghcr.io/kvazar-erp/kvazar-api:{#AppVersion}' + #13#10 +
+    'QUASAR_WEB_IMAGE=ghcr.io/kvazar-erp/kvazar-web:{#AppVersion}' + #13#10 +
     'POSTGRES_PASSWORD=' + pgpwd + #13#10 +
     'JWT_SECRET=' + jwt + #13#10 +
     'SECRETS_KEY=' + secrets + #13#10 +
@@ -314,7 +314,7 @@ var
   code: Integer;
   cmdline: string;
 begin
-  cmdline := Format('/C docker compose -f "%s\stack\docker-compose.box.yml" --project-name quasar %s',
+  cmdline := Format('/C docker compose -f "%s\stack\docker-compose.box.yml" --project-name kvazar %s',
     [ExpandConstant('{app}'), Args]);
   if not Exec(ExpandConstant('{cmd}'), cmdline, ExpandConstant('{app}\stack'),
        SW_HIDE, ewWaitUntilTerminated, code) or (code <> 0) then
@@ -429,7 +429,7 @@ end;
 procedure DeinitializeSetup();
 begin
   Log('=== Завершение установщика ===');
-  // журнал — в %TEMP% (спека: quasar-setup.log; копируем в logs коробки
+  // журнал — в %TEMP% (спека: kvazar-setup.log; копируем в logs коробки
   // если установка дошла до создания каталога)
   if DirExists(ExpandConstant('{app}\logs')) then
     FileCopy(LogPath, ExpandConstant('{app}\logs\install.log'), False);

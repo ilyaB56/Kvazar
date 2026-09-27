@@ -1202,3 +1202,24 @@ auto при ≤8 ГБ, one-shot /platform/bootstrap (WordPress-паттерн:
 *Спека коробки УТВЕРЖДЕНА основателем 2026-09-26. Разработчику: этап A
 (Inno Setup + Docker silent + CI GHCR) → B (compose.box + bootstrap +
 quasar CLI) → C (тест на чистой Win11 VM).*
+*Канбан + коробка этап A приняты 2026-09-26 (ebc968d, cd737e7):
+222 passed, ruff чист. Канбан: колонки-стадии с суммами, карточки
+сделок, drag-n-drop (vue-draggable), move-правила соблюдаются,
+тёмная/светлая тема, вкладка «Воронка» в CRM. Коробка этап A:
+CI GHCR (release-images.yml 127 стр), docker-compose.box.yml (110
+стр, registry-образы, без build), docker-compose.ai.yml, Inno Setup
+установщик (436 стр), bootstrap one-shot (409 при существующих org),
+bin/quasar.cmd CLI, .wslconfig auto, .env генерация прод-секретов.*
+*Коробка этап B принят 2026-09-26 (a029fb6): 222 passed, ruff чист.
+CLI quasar.cmd (~179 стр): status/update/backup/restore/stop/start
+с прогрессом и понятным выводом; compose-файл в манифесте
+(deploy/update.py +40); CI: quasar-setup.exe артефакт + upgrade-path
+тест; docs/box-readme.md (114 стр): установка/обновление/бэкап/
+удаление, Tailscale-гайд, .wslconfig; src/backup.py +44 (restore_
+production, backup_tmp). КОРОБКА A+B ЗАВЕРШЕНА; остался тест на
+чистой Win11 VM (этап C — по готовности железа основателя).*
+*Латинское написание бренда: Kvazar (с K, не Quasar) — решение
+основателя 2026-09-26. Переименованы: файлы (quasar.cmd→kvazar.cmd,
+quasar-setup.iss→kvazar-setup.iss), образы (quasar-api→kvazar-api,
+quasar-web→kvazar-web), compose-проект, CLI-имя, README. Русское
+«Квазар» без изменений.*

@@ -12,7 +12,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # ghcr.io/<owner>/quasar-api|quasar-web; owner — из репозитория
+  # ghcr.io/<owner>/kvazar-api|kvazar-web; owner — из репозитория
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
 
 permissions:
@@ -59,10 +59,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - name: quasar-api
+          - name: kvazar-api
             context: .
             dockerfile: ./Dockerfile
-          - name: quasar-web
+          - name: kvazar-web
             context: ./frontend
             dockerfile: ./frontend/Dockerfile
     steps:
@@ -108,26 +108,26 @@ jobs:
           JWT_SECRET=ci-test-secret-0123456789abcdef0123456789abcdef
           SECRETS_KEY=ci-test-secret-0123456789abcdef012345
           BACKUP_KEY=ci-test-secret-0123456789abcdef012345
-          QUASAR_API_IMAGE=${{ env.IMAGE_PREFIX }}/quasar-api:latest
-          QUASAR_WEB_IMAGE=${{ env.IMAGE_PREFIX }}/quasar-web:latest
+          QUASAR_API_IMAGE=${{ env.IMAGE_PREFIX }}/kvazar-api:latest
+          QUASAR_WEB_IMAGE=${{ env.IMAGE_PREFIX }}/kvazar-web:latest
           EOF
-          docker compose -f docker-compose.box.yml --project-name quasar-ci up -d
+          docker compose -f docker-compose.box.yml --project-name kvazar-ci up -d
           timeout 300 bash -c 'until curl -sf http://localhost:8080/api/v1/health; do sleep 5; done'
       - name: Upgrade-path (текущий образ поверх свежего)
         run: |
           # ПРОВЕРКА: тот же тег, пересобранный образ — конвейер обновления
           # (pre-flight → pre-бэкап → pull → up → health) идемпотентен;
           # полный N-1→N прогон — на релизных тегах (job release-upgrade)
-          docker compose -f docker-compose.box.yml --project-name quasar-ci pull
-          docker compose -f docker-compose.box.yml --project-name quasar-ci up -d
+          docker compose -f docker-compose.box.yml --project-name kvazar-ci pull
+          docker compose -f docker-compose.box.yml --project-name kvazar-ci up -d
           timeout 180 bash -c 'until curl -sf http://localhost:8080/api/v1/health; do sleep 5; done'
-          docker compose -f docker-compose.box.yml --project-name quasar-ci ps --status running
+          docker compose -f docker-compose.box.yml --project-name kvazar-ci ps --status running
       - name: Журнал при провале
         if: failure()
-        run: docker compose -f docker-compose.box.yml --project-name quasar-ci logs --tail 100
+        run: docker compose -f docker-compose.box.yml --project-name kvazar-ci logs --tail 100
 
   installer:
-    # quasar-setup.exe (Inno Setup 6) — артефакт релиза (box-spec §5.4)
+    # kvazar-setup.exe (Inno Setup 6) — артефакт релиза (box-spec §5.4)
     needs: build-images
     runs-on: windows-latest
     if: github.event_name != 'pull_request'
@@ -141,28 +141,28 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path build/installer, build/bin, build/keys | Out-Null
           Copy-Item docker-compose.box.yml, docker-compose.ai.yml build/installer/
-          Copy-Item bin/quasar.cmd build/bin/
+          Copy-Item bin/kvazar.cmd build/bin/
           if (Test-Path deploy/keys/update-public.pem) {
             Copy-Item deploy/keys/update-public.pem build/keys/
           } else {
             New-Item -ItemType File -Path build/keys/update-public.pem | Out-Null
           }
-      - name: Компиляция quasar-setup.exe
+      - name: Компиляция kvazar-setup.exe
         shell: pwsh
         run: |
           $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
           if (-not (Test-Path $iscc)) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
-          & $iscc deploy/installer/quasar-setup.iss /Obuild /Fquasar-setup
+          & $iscc deploy/installer/kvazar-setup.iss /Obuild /Fkvazar-setup
       - name: Артефакт сборки
         uses: actions/upload-artifact@v4
         with:
-          name: quasar-setup
-          path: build/quasar-setup.exe
+          name: kvazar-setup
+          path: build/kvazar-setup.exe
       - name: Приложить к GitHub Release (на тегах)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/quasar-setup.exe
+          files: build/kvazar-setup.exe
 
   upgrade-simulation:
     # Симуляция upgrade-path (приёмка B): контракт манифестов — версия/

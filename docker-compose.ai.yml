@@ -3,7 +3,7 @@
 # (RAM ≥ 8 ГБ; на ≤ 8 ГБ установщик не предлагает — инцидент 2026-09-11).
 # Использование:
 #   docker compose -f docker-compose.box.yml -f docker-compose.ai.yml \
-#     --project-name quasar up -d
+#     --project-name kvazar up -d
 # + .env: AI_PROVIDER=ollama, AI_CHAT_MODEL (3b на слабом железе)
 services:
   ollama:

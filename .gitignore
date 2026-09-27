@@ -22,3 +22,5 @@ deploy/update.log
 # рабочие артефакты агента
 .zcode-tmp/
 frontend/patch_*.py
+node_modules/
+package*.json
