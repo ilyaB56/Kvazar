@@ -12,8 +12,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # ghcr.io/<owner>/kvazar-api|kvazar-web; owner — из репозитория
-  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
+  # owner в lowercase для Docker (GHCR не принимает заглавные)
 
 permissions:
   contents: read
@@ -67,6 +66,10 @@ jobs:
             dockerfile: ./frontend/Dockerfile
     steps:
       - uses: actions/checkout@v4
+      - name: Set lowercase owner (GHCR requires lowercase)
+        run: echo "OWNER_LC=${OWNER,,}" >> $GITHUB_ENV
+        env:
+          OWNER: ${{ github.repository_owner }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         if: github.event_name != 'pull_request'
@@ -77,7 +80,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.name }}
+          images: ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/${{ matrix.name }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
@@ -100,6 +103,10 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
+      - name: Set lowercase owner (GHCR requires lowercase)
+        run: echo "OWNER_LC=${OWNER,,}" >> $GITHUB_ENV
+        env:
+          OWNER: ${{ github.repository_owner }}
       - uses: docker/setup-buildx-action@v3
       - name: Подготовка тестового стенда (compose-коробка)
         run: |
@@ -108,8 +115,8 @@ jobs:
           JWT_SECRET=ci-test-secret-0123456789abcdef0123456789abcdef
           SECRETS_KEY=ci-test-secret-0123456789abcdef012345
           BACKUP_KEY=ci-test-secret-0123456789abcdef012345
-          QUASAR_API_IMAGE=${{ env.IMAGE_PREFIX }}/kvazar-api:latest
-          QUASAR_WEB_IMAGE=${{ env.IMAGE_PREFIX }}/kvazar-web:latest
+          QUASAR_API_IMAGE=ghcr.io/${{ env.OWNER_LC }}/kvazar-api:latest
+          QUASAR_WEB_IMAGE=ghcr.io/${{ env.OWNER_LC }}/kvazar-web:latest
           EOF
           docker compose -f docker-compose.box.yml --project-name kvazar-ci up -d
           timeout 300 bash -c 'until curl -sf http://localhost:8080/api/v1/health; do sleep 5; done'
