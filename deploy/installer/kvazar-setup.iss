@@ -314,8 +314,8 @@ var
   code: Integer;
   cmdline: string;
 begin
-  cmdline := Format('/C docker compose -f "%s\stack\docker-compose.box.yml" --project-name kvazar %s',
-    [ExpandConstant('{app}'), Args]);
+  cmdline := Format('/C docker compose -f "%s\stack\docker-compose.box.yml" --project-name kvazar %s', [
+    ExpandConstant('{app}'), Args]);
   if not Exec(ExpandConstant('{cmd}'), cmdline, ExpandConstant('{app}\stack'),
        SW_HIDE, ewWaitUntilTerminated, code) or (code <> 0) then
     RaiseException(Format('Команда «%s» не удалась (код %d). Журнал: %s',
