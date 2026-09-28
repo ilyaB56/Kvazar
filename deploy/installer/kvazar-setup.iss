@@ -318,8 +318,8 @@ begin
     ExpandConstant('{app}'), Args]);
   if not Exec(ExpandConstant('{cmd}'), cmdline, ExpandConstant('{app}\stack'),
        SW_HIDE, ewWaitUntilTerminated, code) or (code <> 0) then
-    RaiseException(Format('Команда «%s» не удалась (код %d). Журнал: %s',
-      [Args, code, LogPath]));
+    RaiseException(Format('Команда «%s» не удалась (код %d). Журнал: %s', [
+      Args, code, LogPath]));
 end;
 
 function WaitForHealth(TimeoutSec: Integer): Boolean;
@@ -379,8 +379,8 @@ begin
   end;
 
   tmp := ExpandConstant('{tmp}\boot.json');
-  json := Format('{"company_name":"%s","admin_full_name":"%s","admin_email":"%s","admin_password":"%s"}',
-    [name_, full_, email, password]);
+  json := Format('{"company_name":"%s","admin_full_name":"%s","admin_email":"%s","admin_password":"%s"}', [
+    name_, full_, email, password]);
   SaveStringToFile(tmp, json, False);
   Exec(ExpandConstant('{cmd}'),
     Format('/C curl -s -o nul -w "%%{http_code}" -X POST -H "Content-Type: application/json" -d @"%s" http://localhost:8080/api/v1/platform/bootstrap > "%s.boot"', [tmp, tmp]),
