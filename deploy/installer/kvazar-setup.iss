@@ -48,14 +48,18 @@ ru.OrgSubtitle=Создайте организацию и учётную зап�
 ru.WeakPassword=Пароль слишком простой: минимум 8 символов, буквы и цифры
 
 [Files]
-; стек коробки (compose из registry + публичный ключ обновлений)
-Source: "docker-compose.box.yml"; DestDir: "{app}\stack"; Flags: ignoreversion
-Source: "docker-compose.ai.yml"; DestDir: "{app}\stack"; Flags: ignoreversion
+; стек коробки (compose из registry + публичный ключ обновлений).
+; Пути — относительно каталога скрипта (deploy/installer/): compose в
+; корне репозитория, ключ — в deploy/keys/
+Source: "..\..\docker-compose.box.yml"; DestDir: "{app}\stack"; Flags: ignoreversion
+Source: "..\..\docker-compose.ai.yml"; DestDir: "{app}\stack"; Flags: ignoreversion
 Source: "..\keys\update-public.pem"; DestDir: "{app}\stack"; Flags: ignoreversion
 Source: "..\..\bin\kvazar.cmd"; DestDir: "{app}\bin"; Flags: ignoreversion
 
 [Dirs]
-Name: "{app}\backups"; Name: "{app}\logs"
+; Inno не допускает несколько Name: в одной строке — каждая запись отдельно
+Name: "{app}\backups"
+Name: "{app}\logs"
 
 [Icons]
 ; ярлык «Квазар» → интерфейс (§3.9)
@@ -86,14 +90,20 @@ end;
 
 function TotalRamGb(): Integer;
 var
-  wmi, items, item: Variant;
+  locator, wmi, items: Variant;
+  i: Integer;
 begin
   Result := 0;
   try
-    wmi := CreateOleObject('WbemScripting.SWbemLocator').ConnectServer('.', 'root\cimv2');
+    // цепочка CreateOleObject(...).ConnectServer(...) не компилируется —
+    // член вызывается только от переменной Variant
+    locator := CreateOleObject('WbemScripting.SWbemLocator');
+    wmi := locator.ConnectServer('.', 'root\cimv2');
     items := wmi.ExecQuery('SELECT TotalPhysicalMemory FROM Win32_ComputerSystem');
-    for item in items do
-      Result := Round(item.TotalPhysicalMemory / 1073741824);
+    // for..in по Variant-коллекции не поддерживается Pascal Script —
+    // только индексный обход (SWbemObjectSet.ItemIndex)
+    for i := 0 to items.Count - 1 do
+      Result := Round(items.ItemIndex(i).TotalPhysicalMemory / 1073741824);
   except
     Log('WMI RAM: ' + AddPeriod(GetExceptionMessage));
   end;
@@ -101,14 +111,16 @@ end;
 
 function VirtualizationEnabled(): Boolean;
 var
-  wmi, items, item: Variant;
+  locator, wmi, items: Variant;
+  i: Integer;
 begin
   Result := False;
   try
-    wmi := CreateOleObject('WbemScripting.SWbemLocator').ConnectServer('.', 'root\cimv2');
+    locator := CreateOleObject('WbemScripting.SWbemLocator');
+    wmi := locator.ConnectServer('.', 'root\cimv2');
     items := wmi.ExecQuery('SELECT VirtualizationFirmwareEnabled FROM Win32_Processor');
-    for item in items do
-      Result := item.VirtualizationFirmwareEnabled;
+    for i := 0 to items.Count - 1 do
+      Result := items.ItemIndex(i).VirtualizationFirmwareEnabled;
   except
     Result := True; // не удалось проверить — не блокируем (Docker сообщит)
     Log('WMI VT-x: ' + AddPeriod(GetExceptionMessage));
@@ -124,65 +136,8 @@ begin
   Result := (code = 0);
 end;
 
-function NextButtonClick(CurPageID: Integer): Boolean;
-var
-  ram, free_mb: Integer;
-begin
-  Result := True;
-  if CurPageID = wpSelectDir then
-  begin
-    // ОС: Win10/11 (Inno сам не стартует на старых — доп. проверка билда)
-    if (GetWindowsVersionMajor < 10) then
-    begin
-      MsgBox('Квазар требует Windows 10 (1809+) или Windows 11.',
-        mbError, MB_OK);
-      Result := False;
-      Exit;
-    end;
-
-    // RAM: ≥6 ГБ предупреждение, <4 — блок (§7.9)
-    ram := TotalRamGb();
-    Log(Format('RAM: %d ГБ', [ram]));
-    if ram < 4 then
-    begin
-      MsgBox('Требуется не менее 4 ГБ оперативной памяти (рекомендуется 6+).',
-        mbError, MB_OK);
-      Result := False;
-      Exit;
-    end;
-    if ram < 6 then
-      if MsgBox(Format('Обнаружено %d ГБ ОЗУ. Квазар будет работать, но ' +
-        'медленно; ИИ-ассистент недоступен. Продолжить?', [ram]),
-        mbConfirmation, MB_YESNO) = IDNO then
-      begin
-        Result := False;
-        Exit;
-      end;
-    AiChecked := ram >= 8; // ИИ-опция только на 8+ ГБ (§10.8)
-
-    // диск ≥ 10 ГБ
-    free_mb := (GetSpaceOnDisk(ExpandConstant('{sd}')) div (1024 * 1024)) *
-      1024; // МБ
-    Log(Format('Свободно на системном диске: %d МБ', [free_mb]));
-    if free_mb < 10 * 1024 then
-    begin
-      MsgBox('Требуется не менее 10 ГБ свободного места на системном диске.',
-        mbError, MB_OK);
-      Result := False;
-      Exit;
-    end;
-
-    // виртуализация (VT-x/AMD-V) — блокирующе (§4 ошибочные)
-    if not VirtualizationEnabled() then
-    begin
-      MsgBox('Виртуализация (VT-x / AMD-V) выключена в BIOS.' #13#10 +
-        'Включите её в настройках BIOS/UEFI материнской платы и запустите ' +
-        'установку заново.', mbError, MB_OK);
-      Result := False;
-      Exit;
-    end;
-  end;
-end;
+// NextButtonClick — в конце файла (после BootstrapOrg): Pascal требует
+// объявления до использования
 
 // ---------- §3.5 Среда выполнения (никогда «Docker») ----------
 
@@ -227,10 +182,11 @@ begin
   WizardForm.StatusLabel.Caption := ExpandConstant('{cm:RuntimeStep}');
   tmp := ExpandConstant('{tmp}\runtime-installer.exe');
   Log('Скачиваем среду выполнения…');
-  // официальный стабильный URL установщика среды (~500 МБ)
-  if not DownloadTemporaryFile(
+  // официальный стабильный URL установщика среды (~500 МБ);
+  // сигнатура: (Url, BaseName, RequiredSHA256OfFile, OnDownloadProgress)
+  if DownloadTemporaryFile(
       'https://desktop.docker.com/win/main/amd64/Docker Desktop Installer.exe',
-      'runtime-installer.exe', nil) then
+      'runtime-installer.exe', '', nil) = 0 then
     RaiseException('Не удалось скачать среду выполнения — проверьте интернет');
   Log('Среда выполнения скачана, устанавливаем (тихо)…');
   cmdline := Format('"%s" install --quiet --accept-license --always-run-service', [tmp]);
@@ -258,13 +214,21 @@ function RunCapture(Exe, Params: string): string;
 var
   code: Integer;
   tmp: string;
+  buf: AnsiString; // var-параметр LoadStringFromFile — строго AnsiString
+  txt: string;
 begin
+  Result := '';
   tmp := ExpandConstant('{tmp}\quasar-gen.out');
   Exec(ExpandConstant('{cmd}'),
     Format('/C %s %s > "%s" 2>&1', [Exe, Params, tmp]), '',
     SW_HIDE, ewWaitUntilTerminated, code);
-  LoadStringFromFile(tmp, Result);
-  StringChangeEx(Result, #13#10, '', True);
+  buf := '';
+  if LoadStringFromFile(tmp, buf) then
+  begin
+    txt := buf;
+    StringChangeEx(txt, #13#10, '', True);
+    Result := txt;
+  end;
 end;
 
 procedure GenerateEnv();
@@ -331,7 +295,9 @@ begin
   waited := 0;
   while waited < TimeoutSec do
   begin
-    Exec(ExpandConstant('{cmd}'), '/C curl -sf http://localhost:8080/api/v1/health >nul 2>&1',
+    // /health — корень приложения (nginx: location = /health); /api/v1/health
+    // не существует и всегда 404
+    Exec(ExpandConstant('{cmd}'), '/C curl -sf http://localhost:8080/health >nul 2>&1',
       '', SW_HIDE, ewWaitUntilTerminated, code);
     if code = 0 then
     begin
@@ -363,7 +329,8 @@ end;
 
 function BootstrapOrg(): Boolean;
 var
-  name_, full_, email, password, json, tmp: string;
+  name_, full_, email, password, json, tmp, httpCode: string;
+  http: AnsiString;
   code: Integer;
 begin
   Result := False;
@@ -385,16 +352,22 @@ begin
   Exec(ExpandConstant('{cmd}'),
     Format('/C curl -s -o nul -w "%%{http_code}" -X POST -H "Content-Type: application/json" -d @"%s" http://localhost:8080/api/v1/platform/bootstrap > "%s.boot"', [tmp, tmp]),
     '', SW_HIDE, ewWaitUntilTerminated, code);
-  LoadStringFromFile(tmp + '.boot', Result);
-  Log('bootstrap http: ' + Result);
-  Result := (Result = '201') or (Result = '200');
+  // Result функции Boolean — HTTP-код читаем в локальную AnsiString
+  // (var-параметр LoadStringFromFile), затем конвертируем
+  http := '';
+  LoadStringFromFile(tmp + '.boot', http);
+  httpCode := http;
+  Log('bootstrap http: ' + httpCode);
+  Result := (httpCode = '201') or (httpCode = '200');
   if not Result then
-    MsgBox('Не удалось создать организацию (код ' + Result + ').' + #13#10 +
+    MsgBox('Не удалось создать организацию (код ' + httpCode + ').' #13#10 +
       'Возможно, она уже создана — попробуйте войти.', mbError, MB_OK);
 end;
 
+// Inno 6.3+: 8 параметров (MemoComponentsInfo/MemoGroupInfo/MemoTasksInfo
+// вместо прежнего MemoComponentsInfoLine)
 function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo,
-  MemoTypeInfo, MemoComponentsInfoLine: String): String;
+  MemoTypeInfo, MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
 begin
   // после установки — сразу первая настройка (§3.3 шаг 7)
   CreateOrgWizard();
@@ -418,9 +391,73 @@ begin
   end;
 end;
 
-function NextButtonClick2(CurPageID: Integer): Boolean;
+// Единый обработчик «Далее»: проверки системы (wpSelectDir) + bootstrap
+// первой настройки (OrgPage). Прежний NextButtonClick2 никогда не
+// вызывался — имя не является событием Inno, мастер пропускал создание
+// организации без проверки.
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  ram: Integer;
+  free_mb, total_mb: Cardinal;
+  winver: TWindowsVersion;
 begin
   Result := True;
+  if CurPageID = wpSelectDir then
+  begin
+    // ОС: Win10/11 (Inno сам не стартует на старых — доп. проверка билда);
+    // GetWindowsVersionMajor удалён в Inno 6 — используем GetWindowsVersionEx
+    GetWindowsVersionEx(winver);
+    if (winver.Major < 10) then
+    begin
+      MsgBox('Квазар требует Windows 10 (1809+) или Windows 11.',
+        mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+
+    // RAM: ≥6 ГБ предупреждение, <4 — блок (§7.9)
+    ram := TotalRamGb();
+    Log(Format('RAM: %d ГБ', [ram]));
+    if ram < 4 then
+    begin
+      MsgBox('Требуется не менее 4 ГБ оперативной памяти (рекомендуется 6+).',
+        mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    if ram < 6 then
+      if MsgBox(Format('Обнаружено %d ГБ ОЗУ. Квазар будет работать, но ' +
+        'медленно; ИИ-ассистент недоступен. Продолжить?', [ram]),
+        mbConfirmation, MB_YESNO) = IDNO then
+      begin
+        Result := False;
+        Exit;
+      end;
+    AiChecked := ram >= 8; // ИИ-опция только на 8+ ГБ (§10.8)
+
+    // диск ≥ 10 ГБ (InMegabytes=True → сразу мегабайты)
+    GetSpaceOnDisk(ExpandConstant('{sd}'), True, free_mb, total_mb);
+    Log(Format('Свободно на системном диске: %d МБ', [free_mb]));
+    if free_mb < 10 * 1024 then
+    begin
+      MsgBox('Требуется не менее 10 ГБ свободного места на системном диске.',
+        mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+
+    // виртуализация (VT-x/AMD-V) — блокирующе (§4 ошибочные)
+    if not VirtualizationEnabled() then
+    begin
+      MsgBox('Виртуализация (VT-x / AMD-V) выключена в BIOS.' #13#10 +
+        'Включите её в настройках BIOS/UEFI материнской платы и запустите ' +
+        'установку заново.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+  end;
+
+  // страница первой настройки (после установки): создаём организацию
   if (OrgPage <> nil) and (CurPageID = OrgPage.ID) then
     Result := BootstrapOrg();
 end;
@@ -431,5 +468,5 @@ begin
   // журнал — в %TEMP% (спека: kvazar-setup.log; копируем в logs коробки
   // если установка дошла до создания каталога)
   if DirExists(ExpandConstant('{app}\logs')) then
-    FileCopy(LogPath, ExpandConstant('{app}\logs\install.log'), False);
+    CopyFile(LogPath, ExpandConstant('{app}\logs\install.log'), False);
 end;

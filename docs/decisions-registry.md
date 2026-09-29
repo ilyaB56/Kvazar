@@ -1223,3 +1223,30 @@ production, backup_tmp). КОРОБКА A+B ЗАВЕРШЕНА; остался �
 quasar-setup.iss→kvazar-setup.iss), образы (quasar-api→kvazar-api,
 quasar-web→kvazar-web), compose-проект, CLI-имя, README. Русское
 «Квазар» без изменений.*
+*CI-коробка починена 2026-09-29: компилятор ISCC поставлен локально
+(winget, Inno 6.7.3), установщик доведён до чистой компиляции за 9
+итераций вместо гонки по CI. Найдено и исправлено: (1) ГЛАВНОЕ —
+health-эндпоинт живёт на /health (main.py, корень приложения; nginx:
+точный location = /health), маршрута /api/v1/health НЕ существует;
+неверный URL стоял в CI upgrade-path (exit 124: контейнеры зелёные,
+curl вечно 404), bin/kvazar.cmd (:status, :wait_health) и WaitForHealth
+установщика — исправлено везде на /health; deploy/update.py уже был
+правильный (127.0.0.1:8000/health напрямую в api). (2) Inno-синтаксис:
+[Dirs] не допускает два Name: в строке; CustomMessages через ru. (не
+ru:); for..in по Variant-коллекции WMI не поддерживается — только
+Count/ItemIndex(i), и вызов метода от результата CreateOleObject(...)
+не компилируется — только от переменной; LoadStringFromFile требует
+var AnsiString (не String) и Result нельзя передавать как var;
+DownloadTemporaryFile — 4 параметра (Url, BaseName, RequiredSHA256,
+OnProgress); GetWindowsVersionMajor удалён в Inno 6 → GetWindowsVersionEx
++ TWindowsVersion.Major; GetSpaceOnDisk(Path, InMegabytes, var Free,
+var Total); UpdateReadyMemo в Inno 6.3+ — 8 параметров; FileCopy→
+CopyFile; [Files]-пути относительно каталога .iss (compose в корне
+репо — ..\..\), CI-шаг подготовки файлов удалён как мёртвый.
+(3) Функциональный баг: NextButtonClick2 не является событием Inno —
+bootstrap-мастер организации никогда не вызывался; объединён в единый
+NextButtonClick (проверки системы + OrgPage→BootstrapOrg). Локальная
+сборка чистая: build/kvazar-setup.exe 2.1 МБ, 0 предупреждений.
+Уроки: ISPP-ошибки ловить локально (iscc < 1 сек), не пушить в CI
+вслепую; health-URL — один канонический на систему (/health), его
+проверять grep-ом по репо при появлении новых consumers.*

@@ -24,3 +24,4 @@ deploy/update.log
 frontend/patch_*.py
 node_modules/
 package*.json
+build/

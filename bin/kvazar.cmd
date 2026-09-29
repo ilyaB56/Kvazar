@@ -30,7 +30,7 @@ echo === Состояние Квазара ===
 %COMPOSE% ps
 echo.
 echo Health-check:
-curl -sf -o nul -w "  web/api: HTTP %%{http_code}\n" http://localhost:8080/api/v1/health 2>nul
+curl -sf -o nul -w "  web/api: HTTP %%{http_code}\n" http://localhost:8080/health 2>nul
 if errorlevel 1 echo   web/api: НЕ ОТВЕЧАЕТ ^(стек поднимается или остановлен^)
 echo   версия: 
 curl -sf http://localhost:8080/api/v1/system/version 2>nul
@@ -132,7 +132,7 @@ goto :eof
 :wait_health
 set /a WAITED=0
 :wait_loop
-curl -sf -o nul http://localhost:8080/api/v1/health 2>nul && (echo OK: Квазар готов — http://localhost:8080 & goto :eof)
+curl -sf -o nul http://localhost:8080/health 2>nul && (echo OK: Квазар готов — http://localhost:8080 & goto :eof)
 set /a WAITED+=5
 if %WAITED% GEQ %1 (
   echo ERROR: Квазар не ответил за %1 секунд — журнал: %LOGFILE%
