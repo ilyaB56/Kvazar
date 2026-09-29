@@ -57,7 +57,10 @@ def test_bootstrap_contract_on_empty_system():
     assert "0 организаций" in doc or "409" in doc
 
     src = inspect.getsource(fn)
-    assert "select(Company).limit(1)" in src, "нет гварда пустой системы"
+    # гвард: 409 при наличии организаций С пользователями (безлюдная
+    # служебная «Основная» из миграции 0027 не блокирует — чистая
+    # установка коробки, инцидент 2026-09-29)
+    assert "User.company_id == Company.id" in src, "нет гварда пустой системы"
     assert "seed_company_data" in src, "не переиспользует сиды организаций"
     assert "ensure_ai_self_api" in src, "нет ai-self-api для ИИ-инструментов"
     assert "totp_setup_deadline" in src, "нет 2FA-дедлайна админа"

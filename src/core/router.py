@@ -1250,7 +1250,13 @@ def platform_bootstrap(body: BootstrapIn, db: Session = Depends(get_db)):
     переиспользует платформенный сервисный слой POST /platform/orgs —
     сиды организации, ai-self-api, 2FA-дедлайн +7 дней. Второй вызов —
     409 навсегда (нет ни одной организации = вызов ещё возможен)."""
-    if db.scalar(select(Company).limit(1)) is not None:
+    # «пустая» = нет организаций С пользователями: миграция 0027 всегда
+    # создаёт служебную безлюдную «Основную» (эталон стадий CRM, владелец
+    # платформенных заданий) — она bootstrap не блокирует (инцидент чистой
+    # установки: коробка получала вечный 409 на первой настройке)
+    used = db.scalar(
+        select(Company.id).join(User, User.company_id == Company.id).limit(1))
+    if used is not None:
         raise HTTPException(409, "Bootstrap is only available on an empty system")
     if db.scalar(select(User).where(User.email == body.admin_email)):
         raise HTTPException(409, f"Email already exists: {body.admin_email}")

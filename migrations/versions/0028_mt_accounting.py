@@ -64,12 +64,11 @@ MAIN = f"(SELECT id FROM {CORE}.companies WHERE name = 'Основная')"
 
 
 def upgrade() -> None:
-    # 1) колонки (nullable) + backfill; accounts.company_id существовала
-    # (nullable, v1) — здесь доводим до NOT NULL, поэтому add_column с
-    # IF-семантикой через проверку ниже не нужен: колонка есть всегда,
-    # но после нашего же downgrade её нет — добавляем как остальным
-    op.add_column("accounts", sa.Column("company_id", UUID(as_uuid=True),
-                                        nullable=True), schema=S)
+    # 1) колонки (nullable) + backfill. ВАЖНО: accounts.company_id уже
+    # существует с 0003 (nullable, «v1 — одноконтурная система») — для
+    # accounts НЕ add_column (на чистой базе падало DuplicateColumn,
+    # инцидент CI exit 124: коробка не ставилась на чистую БД), а сразу
+    # backfill + FK + NOT NULL. Симметрично downgrade: колонку не дропаем.
     for table in TABLES:
         op.add_column(table, sa.Column("company_id", UUID(as_uuid=True),
                                        nullable=True), schema=S)

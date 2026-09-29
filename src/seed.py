@@ -26,6 +26,14 @@ def _seed_cbr_chain(db) -> None:
         db.flush()
     job = db.scalar(select(im.SyncJob).where(im.SyncJob.name == "Курсы ЦБ"))
     if job is None:
+        # sync_jobs.company_id NOT NULL (0030): задание принадлежит служебной
+        # «Основной» (создаётся миграцией 0027; сюда — на случай БД без
+        # миграций, например тестовой)
+        main = db.scalar(select(Company).where(Company.name == "Основная"))
+        if main is None:
+            main = Company(name="Основная", is_active=True)
+            db.add(main)
+            db.flush()
         db.add(im.SyncJob(
             name="Курсы ЦБ",
             connection_id=connection.id,
@@ -33,6 +41,7 @@ def _seed_cbr_chain(db) -> None:
             cron="30 0 * * *",
             endpoint="",
             emit_event="integration.rates.fetched",
+            company_id=main.id,
         ))
 
 
@@ -210,6 +219,10 @@ def run() -> None:
                 password_hash=hash_password(get_settings().seed_admin_password),
                 full_name="Administrator",
                 role="admin",
+                # без организации → обязан быть платформенным (CHECK 0027:
+                # company_id IS NULL = is_platform_admin; инцидент чистой
+                # установки: seed ломал старт на свежей БД)
+                is_platform_admin=True,
             ))
         for m in MANIFESTS:
             row = db.scalar(select(ModuleRegistry).where(ModuleRegistry.name == m.name))
