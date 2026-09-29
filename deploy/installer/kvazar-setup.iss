@@ -90,20 +90,23 @@ end;
 
 function TotalRamGb(): Integer;
 var
-  locator, wmi, items: Variant;
+  locator, wmi, items, item: Variant;
   i: Integer;
 begin
   Result := 0;
   try
-    // цепочка CreateOleObject(...).ConnectServer(...) не компилируется —
-    // член вызывается только от переменной Variant
     locator := CreateOleObject('WbemScripting.SWbemLocator');
     wmi := locator.ConnectServer('.', 'root\cimv2');
     items := wmi.ExecQuery('SELECT TotalPhysicalMemory FROM Win32_ComputerSystem');
-    // for..in по Variant-коллекции не поддерживается Pascal Script —
-    // только индексный обход (SWbemObjectSet.ItemIndex)
+    // два подводных камня Pascal Script: (1) член — только от переменной,
+    // не цепочкой от вызова; (2) WMI отдаёт uint64 СТРОКОЙ (OleStr), и
+    // арифметика над ним идёт через Int32 → Overflow на >2 ГБ. Лечим
+    // явным StrToFloat (строка без разделителей — безопасно в любой локали)
     for i := 0 to items.Count - 1 do
-      Result := Round(items.ItemIndex(i).TotalPhysicalMemory / 1073741824);
+    begin
+      item := items.ItemIndex(i);
+      Result := Round(StrToFloat(item.TotalPhysicalMemory) / 1073741824);
+    end;
   except
     Log('WMI RAM: ' + AddPeriod(GetExceptionMessage));
   end;
@@ -111,7 +114,7 @@ end;
 
 function VirtualizationEnabled(): Boolean;
 var
-  locator, wmi, items: Variant;
+  locator, wmi, items, item: Variant;
   i: Integer;
 begin
   Result := False;
@@ -120,7 +123,13 @@ begin
     wmi := locator.ConnectServer('.', 'root\cimv2');
     items := wmi.ExecQuery('SELECT VirtualizationFirmwareEnabled FROM Win32_Processor');
     for i := 0 to items.Count - 1 do
-      Result := items.ItemIndex(i).VirtualizationFirmwareEnabled;
+    begin
+      item := items.ItemIndex(i);
+      Result := item.VirtualizationFirmwareEnabled;
+    end;
+    // под Hyper-V/WSL2 флаг маскируется (False при реально включённом
+    // VT) — поэтому вызывающая сторона при False не блокирует сразу,
+    // а спрашивает подтверждение / проверяет живой Docker
   except
     Result := True; // не удалось проверить — не блокируем (Docker сообщит)
     Log('WMI VT-x: ' + AddPeriod(GetExceptionMessage));
@@ -446,14 +455,22 @@ begin
       Exit;
     end;
 
-    // виртуализация (VT-x/AMD-V) — блокирующе (§4 ошибочные)
-    if not VirtualizationEnabled() then
+    // виртуализация (VT-x/AMD-V): WMI ложно отвечает False под Hyper-V/
+    // WSL2, поэтому блокируем только когда Docker ещё не работает и
+    // пользователь подтвердил продолжение (§4 ошибочные + инцидент
+    // ложного отказа 2026-09-29)
+    if not VirtualizationEnabled() and not DockerReady() then
     begin
-      MsgBox('Виртуализация (VT-x / AMD-V) выключена в BIOS.' #13#10 +
-        'Включите её в настройках BIOS/UEFI материнской платы и запустите ' +
-        'установку заново.', mbError, MB_OK);
-      Result := False;
-      Exit;
+      if MsgBox('Не удалось подтвердить включённость виртуализации ' +
+        '(VT-x / AMD-V).' #13#10#13#10 +
+        'Если она выключена в BIOS — установка не сможет запустить среду ' +
+        'выполнения. Если на компьютере уже включён Hyper-V или WSL — это ' +
+        'ложное срабатывание, продолжайте.' #13#10#13#10 +
+        'Продолжить установку?', mbConfirmation, MB_YESNO) = IDNO then
+      begin
+        Result := False;
+        Exit;
+      end;
     end;
   end;
 
