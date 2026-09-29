@@ -38,14 +38,14 @@ ShowLanguageDialog=no
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [CustomMessages]
-ru:SysCheckTitle=Проверка системы
-ru:RuntimeStep=Устанавливаем среду выполнения…%nЭто может занять несколько минут
-ru:ImagesStep=Загружаем компоненты Квазара…
-ru:DbStep=Запускаем базу данных…
-ru:SetupStep=Применяем настройки…
-ru:OrgTitle=Первая настройка Квазара
-ru:OrgSubtitle=Создайте организацию и учётную запись администратора
-ru:WeakPassword=Пароль слишком простой: минимум 8 символов, буквы и цифры
+ru.SysCheckTitle=Проверка системы
+ru.RuntimeStep=Устанавливаем среду выполнения…%nЭто может занять несколько минут
+ru.ImagesStep=Загружаем компоненты Квазара…
+ru.DbStep=Запускаем базу данных…
+ru.SetupStep=Применяем настройки…
+ru.OrgTitle=Первая настройка Квазара
+ru.OrgSubtitle=Создайте организацию и учётную запись администратора
+ru.WeakPassword=Пароль слишком простой: минимум 8 символов, буквы и цифры
 
 [Files]
 ; стек коробки (compose из registry + публичный ключ обновлений)
