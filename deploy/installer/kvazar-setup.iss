@@ -172,6 +172,7 @@ procedure EnsureRuntime();
 var
   code: Integer;
   tmp, cmdline: string;
+  RuntimePage: TDownloadWizardPage;
 begin
   if DockerReady() then
   begin
@@ -190,13 +191,34 @@ begin
 
   WizardForm.StatusLabel.Caption := ExpandConstant('{cm:RuntimeStep}');
   tmp := ExpandConstant('{tmp}\runtime-installer.exe');
-  Log('Скачиваем среду выполнения…');
-  // официальный стабильный URL установщика среды (~500 МБ);
-  // сигнатура: (Url, BaseName, RequiredSHA256OfFile, OnDownloadProgress)
-  if DownloadTemporaryFile(
-      'https://desktop.docker.com/win/main/amd64/Docker Desktop Installer.exe',
-      'runtime-installer.exe', '', nil) = 0 then
-    RaiseException('Не удалось скачать среду выполнения — проверьте интернет');
+  Log('Скачиваем среду выполнения (~500 МБ)…');
+  // официальный стабильный URL установщика среды; НЕ DownloadTemporaryFile
+  // c nil-колбэком — то скачивание шло без всякого индикации и на слабом
+  // канале часами висело «молча» (инцидент 5 часов 2026-10-01). Стандартная
+  // страница загрузки показывает прогресс и кнопку отмены
+  RuntimePage := CreateDownloadPage('Среда выполнения Квазара',
+    'Скачиваем компоненты среды выполнения (~500 МБ).' #13#10 +
+    'Разовая загрузка: на медленном соединении — десятки минут. ' +
+    'Если скорость нулевая дольше 5 минут — нажмите «Отмена», скачайте ' +
+    'Docker Desktop Installer.exe браузером с desktop.docker.com, ' +
+    'установите и запустите его, затем повторите установку Квазара — ' +
+    'этот этап будет пропущен.', nil);
+  RuntimePage.Add(
+    'https://desktop.docker.com/win/main/amd64/Docker Desktop Installer.exe',
+    'runtime-installer.exe', '');
+  RuntimePage.Show;
+  try
+    try
+      RuntimePage.Download;
+    except
+      Log('Скачивание среды: ' + AddPeriod(GetExceptionMessage));
+      RaiseException('Не удалось скачать среду выполнения. Скачайте ' +
+        'Docker Desktop Installer.exe браузером с desktop.docker.com, ' +
+        'установите и запустите его, затем повторите установку Квазара.');
+    end;
+  finally
+    RuntimePage.Hide;
+  end;
   Log('Среда выполнения скачана, устанавливаем (тихо)…');
   cmdline := Format('"%s" install --quiet --accept-license --always-run-service', [tmp]);
   ExecAsOriginalUser(ExpandConstant('{cmd}'), '/C ' + cmdline, '',
