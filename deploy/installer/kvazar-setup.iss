@@ -1,14 +1,14 @@
 ; Квазар — коробочный установщик v1 (box-installer-spec, УТВЕРЖДЕНА
 ; 2026-09-26; этап A). Inno Setup 6.x (вариант Р1 §3.2).
 ;
-; Пользователь НИКОГДА не видит слово «Docker» — только «среда
-; выполнения» (§3.3). Сборка: iscc kvazar-setup.iss (файлы стека —
-; рядом: docker-compose.box.yml, docker-compose.ai.yml,
+; ИЗМЕНЕНИЕ 2026-10-03 (решение основателя): Docker Desktop ставится
+; ЯВНО, своим штатным мастером (тихая установка удалена после серии
+; инцидентов: права, WSL2, PATH, циклы перезагрузки). Установщик
+; Квазара: объясняет, скачивает с прогрессом, запускает мастер,
+; ждёт движок, дальше — образы Квазара, база, мастер организации.
+; Сборка: iscc kvazar-setup.iss (файлы стека — рядом:
+; docker-compose.box.yml, docker-compose.ai.yml,
 ; deploy/keys/update-public.pem, bin/kvazar.cmd).
-;
-; Этап A покрывает: проверку системы, среду выполнения, .wslconfig,
-; генерацию .env, up -d + health, bootstrap-мастер, ярлык, мьютекс,
-; журнал. Этап B (по спеке): деинсталлятор-вопросы, порт-выбор UI.
 
 #define AppName "Квазар"
 #define AppVersion "1.0.0"
@@ -184,93 +184,36 @@ begin
   end;
 end;
 
-function FindDockerDesktop(): string;
-begin
-  // per-user установка — в {localappdata}\Docker, машинная — в
-  // Program Files ({commonpf}; {programfiles} — НЕ существующая
-  // константа Inno, runtime-краш, инцидент 2026-10-01)
-  Result := '';
-  if FileExists(ExpandConstant('{localappdata}\Docker\Docker Desktop.exe')) then
-    Result := ExpandConstant('{localappdata}\Docker\Docker Desktop.exe')
-  else if FileExists(ExpandConstant('{localappdata}\Docker\Docker\Docker Desktop.exe')) then
-    Result := ExpandConstant('{localappdata}\Docker\Docker\Docker Desktop.exe')
-  else if FileExists(ExpandConstant('{commonpf}\Docker\Docker\Docker Desktop.exe')) then
-    Result := ExpandConstant('{commonpf}\Docker\Docker\Docker Desktop.exe');
-end;
-
-function WslPresent(): Boolean;
-var
-  code: Integer;
-begin
-  // wsl --status у некоторых сборок возвращает ненулевой код даже при
-  // рабочем WSL (зацикливание «перезагрузите» — инцидент 2026-10-03):
-  // считаем WSL установленным по ЛЮБОМУ из трёх сигналов
-  Result := False;
-  Exec(ExpandConstant('{cmd}'), '/C wsl --status >nul 2>&1', '',
-    SW_HIDE, ewWaitUntilTerminated, code);
-  Log(Format('wsl --status: код %d', [code]));
-  if code = 0 then
-    Result := True
-  else
-  begin
-    Exec(ExpandConstant('{cmd}'), '/C wsl --version >nul 2>&1', '',
-      SW_HIDE, ewWaitUntilTerminated, code);
-    Log(Format('wsl --version: код %d', [code]));
-    if code = 0 then
-      Result := True
-    else
-      // признак установленного WSL в реестре (читается без прав)
-      if RegKeyExists(HKEY_LOCAL_MACHINE,
-           'SOFTWARE\Microsoft\Windows\CurrentVersion\Lxss') then
-      begin
-        Result := True;
-        Log('WSL: найден ключ реестра Lxss');
-      end;
-  end;
-end;
-
-procedure EnsureWsl();
-var
-  code: Integer;
-begin
-  if WslPresent() then
-    Exit;
-  Log('WSL отсутствует — включаем компоненты (требуется права, до 2 мин)');
-  WizardForm.StatusLabel.Caption :=
-    'Включаем компонент Windows для среды выполнения.' +
-    'Разрешите запрос прав администратора.';
-  // wsl --install --no-launch: включает WSL2 + VirtualMachinePlatform;
-  // после него Windows ТРЕБУЕТ перезагрузку — установка Квазара
-  // продолжится со следующего запуска (инцидент 2026-10-03: без WSL
-  // тихая установка Docker писала пустой каталог, мастер закрывался)
-  Exec(ExpandConstant('{cmd}'),
-    '/C powershell -NoProfile -Command "$p = Start-Process -FilePath ' +
-    '''wsl.exe'' -ArgumentList ''--install'',''--no-launch'' -Verb RunAs ' +
-    '-Wait -PassThru; exit $p.ExitCode"',
-    '', SW_HIDE, ewWaitUntilTerminated, code);
-  Log(Format('wsl --install: код %d', [code]));
-  if code = 0 then
-    RaiseException('Включён компонент Windows, необходимый среде ' +
-      'выполнения. ПЕРЕЗАГРУЗИТЕ компьютер и запустите установку ' +
-      'Квазара снова — она продолжится с этого места.')
-  else
-    RaiseException('Не удалось включить компонент Windows (код ' +
-      IntToStr(code) + '). Запустите командную строку от администратора ' +
-      'и выполните: wsl --install --no-launch, перезагрузитесь и ' +
-      'запустите установку Квазара снова.');
-end;
+// Решение основателя 2026-10-03: Docker Desktop ставится ЯВНО, своим
+// штатным мастером. Тихая установка удалена после 6 итераций инцидентов
+// (код 3 без прав, PATH-слепота, пустой каталог без WSL2, циклы
+// «перезагрузите»). FindDockerDesktop/WslPresent/EnsureWsl убраны:
+// мастер Docker сам повышает права, включает WSL2 и объясняет
+// перезагрузку — всё то, что мы пытались делать тихо и ломалось.
 
 procedure EnsureRuntime();
 var
   code: Integer;
-  tmp, cmdline: string;
+  tmp: string;
   RuntimePage: TDownloadWizardPage;
 begin
   if DockerReady() then
   begin
-    Log('Среда выполнения уже готова — пропускаем установку');
+    Log('Docker готов — пропускаем установку');
     Exit;
   end;
+
+  // ЯВНАЯ установка Docker (решение основателя 2026-10-03): объясняем
+  // и спрашиваем согласие, дальше — обычный мастер Docker
+  if MsgBox('Для работы Квазара нужен Docker Desktop — бесплатная ' +
+      'программа, которая запускает Квазар на вашем компьютере.' + #13#10#13#10 +
+      'Сейчас мы скачаем его (~500 МБ) и откроем обычный мастер ' +
+      'установки.' #13#10 +
+      '• Если мастер запросит права администратора — нажмите «Да».' #13#10 +
+      '• Если попросит перезагрузить компьютер — перезагрузитесь и ' +
+      'запустите установку Квазара снова, она продолжится.' + #13#10#13#10 +
+      'Продолжить?', mbConfirmation, MB_YESNO) = IDNO then
+    Abort;
 
   // .wslconfig ДО первого старта Engine при RAM ≤ 8 ГБ (§3.5.4,
   // инцидент 2026-09-11: OOM на дешёвом железе)
@@ -281,24 +224,17 @@ begin
     Log('.wslconfig записан (RAM ≤ 8 ГБ: memory=5GB, swap=2GB)');
   end;
 
-  // WSL2 обязателен для Docker Desktop; ставим до скачивания среды,
-  // иначе тихая установка Docker молча не ставит приложение
-  EnsureWsl();
-
-  WizardForm.StatusLabel.Caption := ExpandConstant('{cm:RuntimeStep}');
+  WizardForm.StatusLabel.Caption := 'Скачиваем Docker Desktop (~500 МБ)…';
   tmp := ExpandConstant('{tmp}\runtime-installer.exe');
-  Log('Скачиваем среду выполнения (~500 МБ)…');
-  // официальный стабильный URL установщика среды; НЕ DownloadTemporaryFile
-  // c nil-колбэком — то скачивание шло без всякого индикации и на слабом
-  // канале часами висело «молча» (инцидент 5 часов 2026-10-01). Стандартная
-  // страница загрузки показывает прогресс и кнопку отмены
-  RuntimePage := CreateDownloadPage('Среда выполнения Квазара',
-    'Скачиваем компоненты среды выполнения (~500 МБ).' #13#10 +
-    'Разовая загрузка: на медленном соединении — десятки минут. ' +
-    'Если скорость нулевая дольше 5 минут — нажмите «Отмена», скачайте ' +
-    'Docker Desktop Installer.exe браузером с desktop.docker.com, ' +
-    'установите и запустите его, затем повторите установку Квазара — ' +
-    'этот этап будет пропущен.', nil);
+  Log('Скачиваем Docker Desktop (~500 МБ)…');
+  // страница загрузки с прогрессом и отменой (не DownloadTemporaryFile
+  // с nil-колбэком — то скачивание шло без индикации, инцидент 5 часов)
+  RuntimePage := CreateDownloadPage('Docker Desktop',
+    'Скачиваем Docker Desktop (~500 МБ).' #13#10 +
+    'На медленном соединении — десятки минут. Если скорость нулевая ' +
+    'дольше 5 минут — нажмите «Отмена», скачайте установщик Docker ' +
+    'браузером с desktop.docker.com и запустите его сами, затем ' +
+    'повторите установку Квазара — этот этап будет пропущен.', nil);
   RuntimePage.Add(
     'https://desktop.docker.com/win/main/amd64/Docker Desktop Installer.exe',
     'runtime-installer.exe', '');
@@ -307,80 +243,44 @@ begin
     try
       RuntimePage.Download;
     except
-      Log('Скачивание среды: ' + AddPeriod(GetExceptionMessage));
-      RaiseException('Не удалось скачать среду выполнения. Скачайте ' +
-        'Docker Desktop Installer.exe браузером с desktop.docker.com, ' +
-        'установите и запустите его, затем повторите установку Квазара.');
+      Log('Скачивание Docker: ' + AddPeriod(GetExceptionMessage));
+      RaiseException('Не удалось скачать Docker Desktop. Скачайте ' +
+        'установщик браузером с desktop.docker.com, установите его ' +
+        'и запустите, затем повторите установку Квазара.');
     end;
   finally
     RuntimePage.Hide;
   end;
-  Log('Среда выполнения скачана, устанавливаем (тихо)…');
-  // --always-run-service ТРЕБУЕТ прав администратора (док. Docker) и в
-  // per-user установщике даёт код 3 — не используем (инцидент 2026-10-01);
-  // обычный app-режим Docker для коробки достаточен
-  cmdline := Format('"%s" install --quiet --accept-license', [tmp]);
-  ExecAsOriginalUser(ExpandConstant('{cmd}'), '/C ' + cmdline, '',
-    SW_HIDE, ewWaitUntilTerminated, code);
-  Log(Format('Установка среды (per-user): код %d', [code]));
-  if code <> 0 then
-  begin
-    // не прошло без прав (нет WSL2/фич) — однократный UAC: PowerShell
-    // Start-Process -Verb RunAs сам покажет диалог и дождётся завершения
-    Log('Тихая установка без прав не прошла — повтор с повышением (UAC)');
-    WizardForm.StatusLabel.Caption :=
-      'Windows запросит права администратора для установки среды выполнения.';
-    cmdline := Format(
-      '-NoProfile -Command "$p = Start-Process -FilePath ''%s'' ' +
-      '-ArgumentList ''install'',''--quiet'',''--accept-license'' ' +
-      '-Verb RunAs -Wait -PassThru; exit $p.ExitCode"', [tmp]);
-    Exec(ExpandConstant('{cmd}'), '/C powershell ' + cmdline, '',
-      SW_HIDE, ewWaitUntilTerminated, code);
-    Log(Format('Установка среды (UAC): код %d', [code]));
-  end;
 
-  // после тихой установки Docker сам не стартует (движок холодный
-  // 1–3 мин, если включён автостарт при входе); даём 3 мин, затем
-  // запускаем приложение руками
-  if not WaitRuntimeReady(180) then
+  // обычный мастер Docker: сам повышает права, включает WSL2,
+  // корректно просит перезагрузку — всё, что тихий режим ломал
+  Log('Запускаем мастер установки Docker Desktop');
+  WizardForm.StatusLabel.Caption :=
+    'Следуйте мастеру установки Docker на экране.';
+  ExecAsOriginalUser(tmp, 'install --accept-license', '', SW_SHOW,
+    ewWaitUntilTerminated, code);
+  Log(Format('Мастер Docker: код %d', [code]));
+
+  // мастер обычно сам запускает Docker Desktop; первый старт движка
+  // медленный (1–5 мин) — ждём до 10, затем инструкция + ещё 10
+  WizardForm.StatusLabel.Caption :=
+    'Запускаем Docker (первый старт — до 10 минут)…';
+  if not WaitRuntimeReady(600) then
   begin
-    Log('Движок не поднялся сам — ищем Docker Desktop');
-    Log(Format('Каталоги Docker: localappdata=%d, commonpf=%d, docker.exe найден=%d', [
-      Integer(DirExists(ExpandConstant('{localappdata}\Docker'))),
-      Integer(DirExists(ExpandConstant('{commonpf}\Docker'))),
-      Integer(DockerExe() <> 'docker')]));
-    cmdline := FindDockerDesktop();
-    if cmdline = '' then
-    begin
-      // тихая установка не оставила приложения (нет WSL2/артефакты
-      // прошлой установки) — показываем обычный мастер Docker: он сам
-      // запросит права и объяснит про перезагрузку
-      Log('Docker Desktop.exe не найден — запускаем мастер установки среды');
-      WizardForm.StatusLabel.Caption :=
-        'Устанавливаем среду выполнения — следуйте мастеру на экране.';
-      ExecAsOriginalUser(tmp, 'install --accept-license', '', SW_SHOW,
-        ewWaitUntilTerminated, code);
-      Log(Format('Мастер среды: код %d', [code]));
-      cmdline := FindDockerDesktop();
-    end;
-    if cmdline <> '' then
-    begin
-      Log('Стартуем Docker Desktop: ' + cmdline);
-      Exec(ExpandConstant('{cmd}'), '/C start "" "' + cmdline + '"', '',
-        SW_HIDE, ewNoWait, code);
-    end
-    else
-      Log('Docker Desktop.exe не найден и после мастера');
-    if not WaitRuntimeReady(300) then
-      RaiseException('Среда выполнения не запустилась.' #13#10 +
-        '1) Если Windows просила перезагрузку (включение компонентов) — ' +
-        'перезагрузитесь и запустите установку Квазара снова, она ' +
-        'продолжится.' #13#10 +
-        '2) Если в BIOS выключена виртуализация (VT-x / AMD-V / SVM) — ' +
-        'включите её в BIOS/UEFI и повторите установку.' #13#10 +
-        'Журнал: ' + LogPath);
+    Log('Docker не поднялся сразу — инструкция, второе ожидание');
+    MsgBox('Docker ещё запускается.' #13#10#13#10 +
+      '1) Если мастер Docker просил перезагрузку — перезагрузитесь и ' +
+      'запустите установку Квазара снова, она продолжится.' #13#10 +
+      '2) Иначе откройте Docker Desktop из меню «Пуск», дождитесь, ' +
+      'пока иконка кита в трее станет неподвижной (статус Running), ' +
+      'и нажмите «ОК» — подождём ещё 10 минут.', mbInformation, MB_OK);
+    if not WaitRuntimeReady(600) then
+      RaiseException('Docker не запустился. Запустите Docker Desktop из ' +
+        'меню «Пуск», дождитесь статуса Running (иконка кита в трее) и ' +
+        'запустите установку Квазара снова — она продолжится с этого ' +
+        'места. Журнал: ' + LogPath);
   end;
-  Log('Среда выполнения готова');
+  Log('Docker готов');
 end;
 
 // ---------- §3.6 Генерация .env ----------
