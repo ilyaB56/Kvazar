@@ -220,17 +220,40 @@ begin
     RuntimePage.Hide;
   end;
   Log('Среда выполнения скачана, устанавливаем (тихо)…');
-  cmdline := Format('"%s" install --quiet --accept-license --always-run-service', [tmp]);
+  // --always-run-service ТРЕБУЕТ прав администратора (док. Docker) и в
+  // per-user установщике даёт код 3 — не используем (инцидент 2026-10-01);
+  // обычный app-режим Docker для коробки достаточен
+  cmdline := Format('"%s" install --quiet --accept-license', [tmp]);
   ExecAsOriginalUser(ExpandConstant('{cmd}'), '/C ' + cmdline, '',
     SW_HIDE, ewWaitUntilTerminated, code);
-  Log(Format('Установка среды: код %d', [code]));
+  Log(Format('Установка среды (per-user): код %d', [code]));
+  if code <> 0 then
+  begin
+    // не прошло без прав (нет WSL2/фич) — однократный UAC: PowerShell
+    // Start-Process -Verb RunAs сам покажет диалог и дождётся завершения
+    Log('Тихая установка без прав не прошла — повтор с повышением (UAC)');
+    WizardForm.StatusLabel.Caption :=
+      'Windows запросит права администратора для установки среды выполнения.';
+    cmdline := Format(
+      '-NoProfile -Command "$p = Start-Process -FilePath ''%s'' ' +
+      '-ArgumentList ''install'',''--quiet'',''--accept-license'' ' +
+      '-Verb RunAs -Wait -PassThru; exit $p.ExitCode"', [tmp]);
+    Exec(ExpandConstant('{cmd}'), '/C powershell ' + cmdline, '',
+      SW_HIDE, ewWaitUntilTerminated, code);
+    Log(Format('Установка среды (UAC): код %d', [code]));
+  end;
 
-  // Engine поднимается до 10 мин (§3.5.3); при необходимости стартуем UI
+  // Engine поднимается до 10 мин (§3.5.3); при необходимости стартуем UI.
+  // per-user установка Docker — в %LOCALAPPDATA%\Docker, машинная — в
+  // Program Files: проверяем оба
   if not WaitRuntimeReady(300) then
   begin
     Log('Движок не поднялся сам — стартуем вручную');
-    Exec(ExpandConstant('{cmd}'),
-      '/C start "" "%ProgramFiles%\Docker\Docker\Docker Desktop.exe"', '',
+    if FileExists(ExpandConstant('{localappdata}\Docker\Docker Desktop.exe')) then
+      cmdline := ExpandConstant('{localappdata}\Docker\Docker Desktop.exe')
+    else
+      cmdline := ExpandConstant('{programfiles}\Docker\Docker\Docker Desktop.exe');
+    Exec(ExpandConstant('{cmd}'), '/C start "" "' + cmdline + '"', '',
       SW_HIDE, ewNoWait, code);
     if not WaitRuntimeReady(300) then
       RaiseException('Среда выполнения не запустилась за 10 минут. ' +
