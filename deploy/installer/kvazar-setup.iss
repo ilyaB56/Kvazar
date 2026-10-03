@@ -136,12 +136,44 @@ begin
   end;
 end;
 
+function DockerExe(): string;
+var
+  p: string;
+begin
+  // PATH НАШЕГО процесса не обновляется установкой Docker (окружение
+  // наследуется до неё) — после установки CLI ищем по известным путям
+  Result := 'docker';
+  p := ExpandConstant('{commonpf}\Docker\Docker\resources\bin\docker.exe');
+  if FileExists(p) then
+    Result := p
+  else
+  begin
+    p := ExpandConstant('{localappdata}\Docker\resources\bin\docker.exe');
+    if FileExists(p) then
+      Result := p;
+  end;
+end;
+
+function RunDocker(Args: string; var Code: Integer): Boolean;
+var
+  exe: string;
+begin
+  exe := DockerExe();
+  if exe = 'docker' then
+    // из PATH (Docker установлен давно) — через cmd с заглушкой вывода
+    Result := Exec(ExpandConstant('{cmd}'),
+      '/C docker ' + Args + ' >nul 2>&1', '',
+      SW_HIDE, ewWaitUntilTerminated, Code)
+  else
+    // полный путь — напрямую, без cmd (кавычки путей с пробелами)
+    Result := Exec(exe, Args, '', SW_HIDE, ewWaitUntilTerminated, Code);
+end;
+
 function DockerReady(): Boolean;
 var
   code: Integer;
 begin
-  Exec(ExpandConstant('{cmd}'), '/C docker info >nul 2>&1', '',
-    SW_HIDE, ewWaitUntilTerminated, code);
+  RunDocker('info', code);
   Result := (code = 0);
 end;
 
@@ -166,6 +198,20 @@ begin
     Sleep(3000);
     waited := waited + 3;
   end;
+end;
+
+function FindDockerDesktop(): string;
+begin
+  // per-user установка — в {localappdata}\Docker, машинная — в
+  // Program Files ({commonpf}; {programfiles} — НЕ существующая
+  // константа Inno, runtime-краш, инцидент 2026-10-01)
+  Result := '';
+  if FileExists(ExpandConstant('{localappdata}\Docker\Docker Desktop.exe')) then
+    Result := ExpandConstant('{localappdata}\Docker\Docker Desktop.exe')
+  else if FileExists(ExpandConstant('{localappdata}\Docker\Docker\Docker Desktop.exe')) then
+    Result := ExpandConstant('{localappdata}\Docker\Docker\Docker Desktop.exe')
+  else if FileExists(ExpandConstant('{commonpf}\Docker\Docker\Docker Desktop.exe')) then
+    Result := ExpandConstant('{commonpf}\Docker\Docker\Docker Desktop.exe');
 end;
 
 procedure EnsureRuntime();
@@ -243,22 +289,30 @@ begin
     Log(Format('Установка среды (UAC): код %d', [code]));
   end;
 
-  // Engine поднимается до 10 мин (§3.5.3); после тихой установки Docker
-  // сам НЕ стартует — запускаем приложение. per-user ставит в
-  // {localappdata}\Docker, машинная — в Program Files ({commonpf};
-  // {programfiles} — НЕ существующая константа Inno, runtime-краш
-  // «Unknown constant», инцидент 2026-10-01)
-  if not WaitRuntimeReady(300) then
+  // после тихой установки Docker сам не стартует (движок холодный
+  // 1–3 мин, если включён автостарт при входе); даём 3 мин, затем
+  // запускаем приложение руками
+  if not WaitRuntimeReady(180) then
   begin
-    Log('Движок не поднялся сам — стартуем вручную');
-    if FileExists(ExpandConstant('{localappdata}\Docker\Docker Desktop.exe')) then
-      cmdline := ExpandConstant('{localappdata}\Docker\Docker Desktop.exe')
-    else if FileExists(ExpandConstant('{localappdata}\Docker\Docker\Docker Desktop.exe')) then
-      cmdline := ExpandConstant('{localappdata}\Docker\Docker\Docker Desktop.exe')
-    else if FileExists(ExpandConstant('{commonpf}\Docker\Docker\Docker Desktop.exe')) then
-      cmdline := ExpandConstant('{commonpf}\Docker\Docker\Docker Desktop.exe')
-    else
-      cmdline := '';
+    Log('Движок не поднялся сам — ищем Docker Desktop');
+    Log(Format('Каталоги Docker: localappdata=%d, commonpf=%d, docker.exe найден=%d', [
+      Integer(DirExists(ExpandConstant('{localappdata}\Docker'))),
+      Integer(DirExists(ExpandConstant('{commonpf}\Docker'))),
+      Integer(DockerExe() <> 'docker')]));
+    cmdline := FindDockerDesktop();
+    if cmdline = '' then
+    begin
+      // тихая установка не оставила приложения (нет WSL2/артефакты
+      // прошлой установки) — показываем обычный мастер Docker: он сам
+      // запросит права и объяснит про перезагрузку
+      Log('Docker Desktop.exe не найден — запускаем мастер установки среды');
+      WizardForm.StatusLabel.Caption :=
+        'Устанавливаем среду выполнения — следуйте мастеру на экране.';
+      ExecAsOriginalUser(tmp, 'install --accept-license', '', SW_SHOW,
+        ewWaitUntilTerminated, code);
+      Log(Format('Мастер среды: код %d', [code]));
+      cmdline := FindDockerDesktop();
+    end;
     if cmdline <> '' then
     begin
       Log('Стартуем Docker Desktop: ' + cmdline);
@@ -266,10 +320,12 @@ begin
         SW_HIDE, ewNoWait, code);
     end
     else
-      Log('Docker Desktop.exe не найден — ждём, движок может подниматься сам');
+      Log('Docker Desktop.exe не найден и после мастера');
     if not WaitRuntimeReady(300) then
-      RaiseException('Среда выполнения не запустилась за 10 минут. ' +
-        'Откройте журнал: ' + LogPath);
+      RaiseException('Среда выполнения не запустилась. Если Windows ' +
+        'просила перезагрузку (включение компонентов) — перезагрузитесь ' +
+        'и запустите установку Квазара снова, она продолжится. ' +
+        'Журнал: ' + LogPath);
   end;
   Log('Среда выполнения готова');
 end;
@@ -342,12 +398,14 @@ end;
 procedure Compose(Args: string);
 var
   code: Integer;
-  cmdline: string;
+  ok: Boolean;
 begin
-  cmdline := Format('/C docker compose -f "%s\stack\docker-compose.box.yml" --project-name kvazar %s', [
-    ExpandConstant('{app}'), Args]);
-  if not Exec(ExpandConstant('{cmd}'), cmdline, ExpandConstant('{app}\stack'),
-       SW_HIDE, ewWaitUntilTerminated, code) or (code <> 0) then
+  // через RunDocker: после установки Docker PATH нашего процесса не
+  // знает docker — вызываем по полному пути (инцидент «движок не
+  // поднялся» при работающем Docker, 2026-10-01)
+  ok := RunDocker(Format('compose -f "%s\stack\docker-compose.box.yml" --project-name kvazar %s', [
+    ExpandConstant('{app}'), Args]), code);
+  if not ok or (code <> 0) then
     RaiseException(Format('Команда «%s» не удалась (код %d). Журнал: %s', [
       Args, code, LogPath]));
 end;
