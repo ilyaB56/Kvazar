@@ -1334,3 +1334,11 @@ app/cm/cmd/commonpf/localappdata/sd/tmp/userdocs — валидны. Урок:
 ExpandConstant с непроверенной константой не ловится компилятором ISCC
 — это runtime-ошибка; при добавлении константы сверяться со списком
 ishelp или тестовым прогоном.*
+*Флак Docker Hub в CI 2026-10-01: setup-buildx-action падал «connection
+reset by peer» на auth.docker.io при boot строителя (moby/buildkit) —
+известная флуктуация: раннеры GitHub ходят на Docker Hub с общих IP.
+Фикс устойчивости: (1) build-images — вместо action ручной шаг с 5
+ретраями docker pull buildkit и create --use из локального образа
+(boot строителя больше не ходит в сеть); (2) upgrade-path —
+setup-buildx удалён вовсе (в job нет ни одной сборки, только pull +
+compose). Текущий упавший запуск — транзиентен, лечится re-run.*
