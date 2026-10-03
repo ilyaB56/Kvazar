@@ -243,18 +243,30 @@ begin
     Log(Format('Установка среды (UAC): код %d', [code]));
   end;
 
-  // Engine поднимается до 10 мин (§3.5.3); при необходимости стартуем UI.
-  // per-user установка Docker — в %LOCALAPPDATA%\Docker, машинная — в
-  // Program Files: проверяем оба
+  // Engine поднимается до 10 мин (§3.5.3); после тихой установки Docker
+  // сам НЕ стартует — запускаем приложение. per-user ставит в
+  // {localappdata}\Docker, машинная — в Program Files ({commonpf};
+  // {programfiles} — НЕ существующая константа Inno, runtime-краш
+  // «Unknown constant», инцидент 2026-10-01)
   if not WaitRuntimeReady(300) then
   begin
     Log('Движок не поднялся сам — стартуем вручную');
     if FileExists(ExpandConstant('{localappdata}\Docker\Docker Desktop.exe')) then
       cmdline := ExpandConstant('{localappdata}\Docker\Docker Desktop.exe')
+    else if FileExists(ExpandConstant('{localappdata}\Docker\Docker\Docker Desktop.exe')) then
+      cmdline := ExpandConstant('{localappdata}\Docker\Docker\Docker Desktop.exe')
+    else if FileExists(ExpandConstant('{commonpf}\Docker\Docker\Docker Desktop.exe')) then
+      cmdline := ExpandConstant('{commonpf}\Docker\Docker\Docker Desktop.exe')
     else
-      cmdline := ExpandConstant('{programfiles}\Docker\Docker\Docker Desktop.exe');
-    Exec(ExpandConstant('{cmd}'), '/C start "" "' + cmdline + '"', '',
-      SW_HIDE, ewNoWait, code);
+      cmdline := '';
+    if cmdline <> '' then
+    begin
+      Log('Стартуем Docker Desktop: ' + cmdline);
+      Exec(ExpandConstant('{cmd}'), '/C start "" "' + cmdline + '"', '',
+        SW_HIDE, ewNoWait, code);
+    end
+    else
+      Log('Docker Desktop.exe не найден — ждём, движок может подниматься сам');
     if not WaitRuntimeReady(300) then
       RaiseException('Среда выполнения не запустилась за 10 минут. ' +
         'Откройте журнал: ' + LogPath);
