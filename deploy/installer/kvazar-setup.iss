@@ -329,20 +329,72 @@ begin
   end;
 end;
 
+function NextLine(var S: string): string;
+var
+  p: Integer;
+begin
+  p := Pos(#13#10, S);
+  if p = 0 then
+  begin
+    Result := S;
+    S := '';
+  end
+  else
+  begin
+    Result := Copy(S, 1, p - 1);
+    Delete(S, 1, p + 2);
+  end;
+end;
+
 procedure GenerateEnv();
 var
   env: string;
   jwt, secrets, pgpwd, backupKey, cors: string;
+  exe, pyscript, outp, cmdline: string;
+  buf: AnsiString;
+  txt: string;
+  code: Integer;
 begin
   WizardForm.StatusLabel.Caption := ExpandConstant('{cm:SetupStep}');
 
-  // секреты ≥32 байт, все уникальны (§3.6; PRNG операционной системы)
-  jwt := RunCapture('powershell -NoProfile -Command "[Convert]::ToBase64String((1..48|%{Get-Random -Maximum 256}) -as [byte[]])"', '');
-  secrets := RunCapture('python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"', '');
-  if secrets = '' then
+  // Ключи генерирует контейнер уже скачанного образа Квазара: OS-PRNG
+  // внутри Linux, никаких PowerShell/политик машины (инцидент «Не
+  // удалось сгенерировать ключ» на ужесточённой Windows, 2026-10-03).
+  // Четыре строки: fernet(SECRETS) / urlsafe48(JWT) / alnum32(PG) /
+  // fernet(BACKUP)
+  exe := DockerExe();
+  pyscript := 'import secrets,string; from cryptography.fernet import Fernet; ' +
+    'print(Fernet.generate_key().decode()); ' +
+    'print(secrets.token_urlsafe(48)); ' +
+    'print(''''.join(secrets.choice(string.ascii_letters+string.digits) ' +
+    'for _ in range(32))); ' +
+    'print(Fernet.generate_key().decode())';
+  outp := ExpandConstant('{tmp}\kvazar-keys.out');
+  cmdline := Format('/C ""%s" run --rm --entrypoint python ' +
+    'ghcr.io/ilyab56/kvazar-api:latest -c "%s" > "%s" 2>&1"', [
+    exe, pyscript, outp]);
+  Exec(ExpandConstant('{cmd}'), cmdline, '', SW_HIDE, ewWaitUntilTerminated, code);
+  Log(Format('keygen (docker): код %d', [code]));
+  buf := '';
+  if (code = 0) and LoadStringFromFile(outp, buf) then
+  begin
+    txt := buf;
+    secrets := NextLine(txt);
+    jwt := NextLine(txt);
+    pgpwd := NextLine(txt);
+    backupKey := NextLine(txt);
+  end;
+
+  // фолбэк — PowerShell (машины, где docker run недоступен по какой-то
+  // причине, но политики не ужесточены)
+  if (Length(jwt) < 32) or (Length(secrets) < 32) or (Length(pgpwd) < 24) then
+  begin
+    Log('keygen через docker не удался — фолбэк PowerShell');
+    jwt := RunCapture('powershell -NoProfile -Command "[Convert]::ToBase64String((1..48|%{Get-Random -Maximum 256}) -as [byte[]])"', '');
     secrets := RunCapture('powershell -NoProfile -Command "[Convert]::ToBase64String((1..32|%{Get-Random -Maximum 256}) -as [byte[]]).TrimEnd(''='').Replace(''+'',''-'').Replace(''/'',''_'')"', '');
-  pgpwd := RunCapture('powershell -NoProfile -Command "-join((48..57)+(65..90)+(97..122)|Get-Random -Count 32|%{[char]$_})"', '');
-  backupKey := RunCapture('powershell -NoProfile -Command "[Convert]::ToBase64String((1..32|%{Get-Random -Maximum 256}) -as [byte[]])"', '');
+    pgpwd := RunCapture('powershell -NoProfile -Command "-join((48..57)+(65..90)+(97..122)|Get-Random -Count 32|%{[char]$_})"', '');
+    backupKey := RunCapture('powershell -NoProfile -Command "[Convert]::ToBase64String((1..32|%{Get-Random -Maximum 256}) -as [byte[]])"', '');
+  end;
 
   if (Length(jwt) < 32) or (Length(secrets) < 32) or (Length(pgpwd) < 24) then
     RaiseException('Не удалось сгенерировать ключи — журнал: ' + LogPath);
@@ -352,8 +404,8 @@ begin
   env :=
     '# Квазар — сгенерировано установщиком. СОХРАНИТЕ КОПИЮ: это ключи' + #13#10 +
     '# от ваших данных (бэкап .env = возможность восстановить доступ).' + #13#10 +
-    'QUASAR_API_IMAGE=ghcr.io/kvazar-erp/kvazar-api:{#AppVersion}' + #13#10 +
-    'QUASAR_WEB_IMAGE=ghcr.io/kvazar-erp/kvazar-web:{#AppVersion}' + #13#10 +
+    'QUASAR_API_IMAGE=ghcr.io/ilyab56/kvazar-api:latest' + #13#10 +
+    'QUASAR_WEB_IMAGE=ghcr.io/ilyab56/kvazar-web:latest' + #13#10 +
     'POSTGRES_PASSWORD=' + pgpwd + #13#10 +
     'JWT_SECRET=' + jwt + #13#10 +
     'SECRETS_KEY=' + secrets + #13#10 +
@@ -444,9 +496,25 @@ begin
   email := OrgPage.Values[2];
   password := OrgPage.Values[3];
 
-  if (Length(name_) < 2) or (Pos('@', email) = 0) or (Length(password) < 8) then
+  // раздельные сообщения: одно «пароль слишком простой» на три разных
+  // поля сбивало с толку (инцидент 2026-10-03 — длинный пароль отклонялся
+  // из-за email/названия, а вина сваливалась на пароль)
+  if Length(name_) < 2 then
   begin
-    MsgBox(ExpandConstant('{cm:WeakPassword}'), mbError, MB_OK);
+    MsgBox('Поле «Название организации»: введите не менее 2 символов.',
+      mbError, MB_OK);
+    Exit;
+  end;
+  if Pos('@', email) = 0 then
+  begin
+    MsgBox('Поле «Email»: нужен адрес электронной почты со знаком @ ' +
+      '(например, ivan@firma.ru).', mbError, MB_OK);
+    Exit;
+  end;
+  if Length(password) < 8 then
+  begin
+    MsgBox('Поле «Пароль»: минимум 8 символов (буквы и цифры).',
+      mbError, MB_OK);
     Exit;
   end;
 
