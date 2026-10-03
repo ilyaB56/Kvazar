@@ -29,7 +29,9 @@ x-app-env: &app_env
 services:
   db:
     restart: unless-stopped
-    image: pgvector/pgvector:pg16
+    # зеркало в нашем GHCR (CI: mirror-base) — коробка не зависит от
+    # Docker Hub (сети клиентов его троттлят, инцидент 2026-10-03)
+    image: ${QUASAR_DB_IMAGE:-ghcr.io/ilyab56/kvazar-db:pg16}
     environment:
       POSTGRES_USER: erp
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?из .env}
@@ -44,7 +46,8 @@ services:
 
   redis:
     restart: unless-stopped
-    image: redis:7-alpine
+    # зеркало в нашем GHCR (CI: mirror-base)
+    image: ${QUASAR_REDIS_IMAGE:-ghcr.io/ilyab56/kvazar-redis:7-alpine}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -55,7 +58,7 @@ services:
     restart: unless-stopped
     # GHCR (CI: .github/workflows/release-images.yml); версия — из .env
     # QUASAR_VERSION (latest для дев-коробки)
-    image: ${QUASAR_API_IMAGE:-ghcr.io/kvazar-erp/kvazar-api:latest}
+    image: ${QUASAR_API_IMAGE:-ghcr.io/ilyab56/kvazar-api:latest}
     command: sh -c "alembic upgrade head && python -m src.seed && uvicorn src.main:app --host 0.0.0.0 --port 8000"
     environment: *app_env
     ports:
@@ -71,7 +74,7 @@ services:
 
   worker:
     restart: unless-stopped
-    image: ${QUASAR_API_IMAGE:-ghcr.io/kvazar-erp/kvazar-api:latest}
+    image: ${QUASAR_API_IMAGE:-ghcr.io/ilyab56/kvazar-api:latest}
     command: celery -A src.worker.celery_app worker --loglevel=info -Q integrations,default
     environment: *app_env
     volumes:
@@ -84,7 +87,7 @@ services:
 
   beat:
     restart: unless-stopped
-    image: ${QUASAR_API_IMAGE:-ghcr.io/kvazar-erp/kvazar-api:latest}
+    image: ${QUASAR_API_IMAGE:-ghcr.io/ilyab56/kvazar-api:latest}
     command: celery -A src.worker.celery_app beat --loglevel=info
     environment: *app_env
     volumes:
@@ -95,7 +98,7 @@ services:
 
   web:
     restart: unless-stopped
-    image: ${QUASAR_WEB_IMAGE:-ghcr.io/kvazar-erp/kvazar-web:latest}
+    image: ${QUASAR_WEB_IMAGE:-ghcr.io/ilyab56/kvazar-web:latest}
     ports:
       # 0.0.0.0 — доступ по LAN (сценарий §4: сотрудник открывает
       # http://<IP-сервера>:8080); порт настраивает установщик при занятом

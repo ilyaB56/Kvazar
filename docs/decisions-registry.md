@@ -1421,3 +1421,16 @@ docker (слои, проценты, скорость), info — по-прежн�
 страница; мастер Docker — видимый; ожидание движка — статус+кап;
 теперь и pull видимый). wsl --install вручную больше не нужен —
 компоненты включает мастер Docker.*
+*compose pull «код 1» при доступных образах Квазара 2026-10-03:
+ручной pull kvazar-api с ghcr проходил, а compose падал — compose тянет
+ВСЕ сервисы, включая db (pgvector) и redis с Docker Hub, а Hub на
+сетях клиентов троттлится/блокируется (тот же connection reset, что
+ловили CI-раннеры). Решение: коробка зависит ТОЛЬКО от ghcr.io —
+CI-джоба mirror-base зеркалит pgvector/pgvector:pg16 →
+ghcr.io/ilyab56/kvazar-db:pg16 и redis:7-alpine → kvazar-redis:7-alpine
+(с ретраями); docker-compose.box.yml переведён на зеркала (+дефолты
+образов исправлены с несуществующего kvazar-erp на ilyab56);
+upgrade-path ждёт mirror-base. Dev-compose остаётся на Hub (машине
+разработчика Hub доступен). Урок: «один реестр на коробку» — любая
+зависимость от второго реестра умножает точки отказа на клиентских
+сетях.*

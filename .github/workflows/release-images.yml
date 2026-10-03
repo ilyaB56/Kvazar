@@ -108,10 +108,41 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  mirror-base:
+    # Зеркалим базовые образы (pgvector/redis) из Docker Hub в наш GHCR:
+    # коробка должна зависеть ТОЛЬКО от ghcr.io — Docker Hub на сетях
+    # клиентов и раннеров троттлится/блокируется (инцидент «pull код 1»
+    # при доступных образах Квазара, 2026-10-03)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Set lowercase owner (GHCR requires lowercase)
+        run: echo "OWNER_LC=${OWNER,,}" >> $GITHUB_ENV
+        env:
+          OWNER: ${{ github.repository_owner }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Mirror pgvector + redis → GHCR
+        run: |
+          mirror() {
+            src="$1"; dst="$2"
+            for i in 1 2 3 4 5; do
+              docker pull "$src" && break
+              echo "pull $src: попытка $i не удалась — ждём 20с"; sleep 20
+            done
+            docker tag "$src" "ghcr.io/${{ env.OWNER_LC }}/$dst"
+            docker push "ghcr.io/${{ env.OWNER_LC }}/$dst"
+          }
+          mirror pgvector/pgvector:pg16 kvazar-db:pg16
+          mirror redis:7-alpine kvazar-redis:7-alpine
+
   upgrade-path:
     # box-spec §5.4: upgrade-path тест ОБЯЗАТЕЛЕН (ADR-004): образы N-1 → N
     # через deploy/update.py на тестовом манифесте
-    needs: build-images
+    needs: [build-images, mirror-base]
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     steps:
