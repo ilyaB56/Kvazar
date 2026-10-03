@@ -481,13 +481,18 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssInstall then
+  // ssPostInstall, НЕ ssInstall: файлы [Files] копируются МЕЖДУ этими
+  // событиями — на ssInstall compose-файла ещё нет на свежем каталоге
+  // («pull код 1» на любом реестре, инцидент 2026-10-03). .env — до
+  // любого compose: POSTGRES_PASSWORD объявлена обязательной (:?),
+  // интерполяция падает без неё даже на pull
+  if CurStep = ssPostInstall then
   begin
-    EnsureRuntime();          // 3: среда выполнения (невидимо)
+    EnsureRuntime();          // 3: среда выполнения (явно, мастером Docker)
+    GenerateEnv();            // 4: .env с прод-секретами — РАНЬШЕ compose
     WizardForm.StatusLabel.Caption := ExpandConstant('{cm:ImagesStep}');
     Compose('pull');          // 5: образы из registry
     WizardForm.StatusLabel.Caption := ExpandConstant('{cm:DbStep}');
-    GenerateEnv();            // 4: .env с прод-секретами
     Compose('up -d');         // 6: запуск
     Log('Ожидание health-check (до 5 мин)…');
     if not WaitForHealth(300) then
