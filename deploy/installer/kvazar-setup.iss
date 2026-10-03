@@ -495,8 +495,7 @@ end;
 
 function BootstrapOrg(): Boolean;
 var
-  name_, full_, email, password, json, tmp, httpCode: string;
-  http: AnsiString;
+  name_, full_, email, password, args: string;
   code: Integer;
 begin
   Result := False;
@@ -527,23 +526,41 @@ begin
     Exit;
   end;
 
-  tmp := ExpandConstant('{tmp}\boot.json');
-  json := Format('{"company_name":"%s","admin_full_name":"%s","admin_email":"%s","admin_password":"%s"}', [
+  // Запрос отправляет контейнер образа Квазара ИЗНУТРИ сети стека:
+  // SaveStringToFile пишет ANSI (cp1251) — кириллица названия/имени
+  // давала битый UTF-8 и код 400 «не могу разобрать тело» (инцидент
+  // 2026-10-03). env-переменные docker передаёт в UTF-8 корректно.
+  // HTTP-код возвращаем КОДОМ ЗАВЕРШЕНИЯ (sys.exit); http.client не
+  // бросает исключений на 4xx/5xx — try/except не нужен (однoстрочный
+  // try в python невалиден — поймано тестом)
+  args := Format('run --rm --network kvazar_default ' +
+    '-e "ORG=%s" -e "FULL=%s" -e "EMAIL=%s" -e "PASS=%s" ' +
+    'ghcr.io/ilyab56/kvazar-api:latest python -c "import os,json,sys,' +
+    'http.client;' +
+    'd=json.dumps({' + '''company_name'':os.environ[''ORG''],' +
+    '''admin_full_name'':os.environ[''FULL''],' +
+    '''admin_email'':os.environ[''EMAIL''],' +
+    '''admin_password'':os.environ[''PASS'']}).encode();' +
+    'c=http.client.HTTPConnection(''web'',80,timeout=60);' +
+    'c.request(''POST'',''/api/v1/platform/bootstrap'',body=d,' +
+    'headers={''Content-Type'':''application/json''});' +
+    'sys.exit(c.getresponse().status)"', [
     name_, full_, email, password]);
-  SaveStringToFile(tmp, json, False);
-  Exec(ExpandConstant('{cmd}'),
-    Format('/C curl -s -o nul -w "%%{http_code}" -X POST -H "Content-Type: application/json" -d @"%s" http://localhost:8080/api/v1/platform/bootstrap > "%s.boot"', [tmp, tmp]),
-    '', SW_HIDE, ewWaitUntilTerminated, code);
-  // Result функции Boolean — HTTP-код читаем в локальную AnsiString
-  // (var-параметр LoadStringFromFile), затем конвертируем
-  http := '';
-  LoadStringFromFile(tmp + '.boot', http);
-  httpCode := http;
-  Log('bootstrap http: ' + httpCode);
-  Result := (httpCode = '201') or (httpCode = '200');
+  RunDocker(args, code);
+  Log(Format('bootstrap (docker): код %d', [code]));
+  Result := (code = 201) or (code = 200);
   if not Result then
-    MsgBox('Не удалось создать организацию (код ' + httpCode + ').' #13#10 +
-      'Возможно, она уже создана — попробуйте войти.', mbError, MB_OK);
+  begin
+    if code = 409 then
+      MsgBox('Организация уже создана — просто войдите в Квазар ' +
+        '(http://localhost:8080) с этим email и паролем.', mbInformation, MB_OK)
+    else if code = 422 then
+      MsgBox('Сервер отклонил пароль: добавьте буквы и цифры, длина 8+.',
+        mbError, MB_OK)
+    else
+      MsgBox('Не удалось создать организацию (код ' + IntToStr(code) + ').' + #13#10 +
+        'Журнал: ' + LogPath, mbError, MB_OK);
+  end;
 end;
 
 // Inno 6.3+: 8 параметров (MemoComponentsInfo/MemoGroupInfo/MemoTasksInfo
