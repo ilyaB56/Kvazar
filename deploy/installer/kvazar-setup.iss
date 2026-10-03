@@ -112,29 +112,13 @@ begin
   end;
 end;
 
-function VirtualizationEnabled(): Boolean;
-var
-  locator, wmi, items, item: Variant;
-  i: Integer;
-begin
-  Result := False;
-  try
-    locator := CreateOleObject('WbemScripting.SWbemLocator');
-    wmi := locator.ConnectServer('.', 'root\cimv2');
-    items := wmi.ExecQuery('SELECT VirtualizationFirmwareEnabled FROM Win32_Processor');
-    for i := 0 to items.Count - 1 do
-    begin
-      item := items.ItemIndex(i);
-      Result := item.VirtualizationFirmwareEnabled;
-    end;
-    // под Hyper-V/WSL2 флаг маскируется (False при реально включённом
-    // VT) — поэтому вызывающая сторона при False не блокирует сразу,
-    // а спрашивает подтверждение / проверяет живой Docker
-  except
-    Result := True; // не удалось проверить — не блокируем (Docker сообщит)
-    Log('WMI VT-x: ' + AddPeriod(GetExceptionMessage));
-  end;
-end;
+// Проверка VT-x через WMI УДАЛЕНА (инцидент 2026-10-03): флаг
+// VirtualizationFirmwareEnabled маскируется под Hyper-V/WSL2 и ложно
+// равен False ровно на целевых машинах коробки — диалог «не удалось
+// подтвердить виртуализацию» показывался на каждом запуске и не давал
+// ставить. Реальный гейт — запуск движка: если VT выключен в BIOS,
+// среда выполнения не поднимется, и сообщение об этом — в финальной
+// ошибке ожидания движка
 
 function DockerExe(): string;
 var
@@ -218,12 +202,31 @@ function WslPresent(): Boolean;
 var
   code: Integer;
 begin
-  // wsl --status: exit 0 = компонент WSL в системе (без дистрибутивов —
-  // тоже 0); «не является командой» → WSL отсутствует целиком
+  // wsl --status у некоторых сборок возвращает ненулевой код даже при
+  // рабочем WSL (зацикливание «перезагрузите» — инцидент 2026-10-03):
+  // считаем WSL установленным по ЛЮБОМУ из трёх сигналов
+  Result := False;
   Exec(ExpandConstant('{cmd}'), '/C wsl --status >nul 2>&1', '',
     SW_HIDE, ewWaitUntilTerminated, code);
-  Result := (code = 0);
   Log(Format('wsl --status: код %d', [code]));
+  if code = 0 then
+    Result := True
+  else
+  begin
+    Exec(ExpandConstant('{cmd}'), '/C wsl --version >nul 2>&1', '',
+      SW_HIDE, ewWaitUntilTerminated, code);
+    Log(Format('wsl --version: код %d', [code]));
+    if code = 0 then
+      Result := True
+    else
+      // признак установленного WSL в реестре (читается без прав)
+      if RegKeyExists(HKEY_LOCAL_MACHINE,
+           'SOFTWARE\Microsoft\Windows\CurrentVersion\Lxss') then
+      begin
+        Result := True;
+        Log('WSL: найден ключ реестра Lxss');
+      end;
+  end;
 end;
 
 procedure EnsureWsl();
@@ -369,9 +372,12 @@ begin
     else
       Log('Docker Desktop.exe не найден и после мастера');
     if not WaitRuntimeReady(300) then
-      RaiseException('Среда выполнения не запустилась. Если Windows ' +
-        'просила перезагрузку (включение компонентов) — перезагрузитесь ' +
-        'и запустите установку Квазара снова, она продолжится. ' +
+      RaiseException('Среда выполнения не запустилась.' #13#10 +
+        '1) Если Windows просила перезагрузку (включение компонентов) — ' +
+        'перезагрузитесь и запустите установку Квазара снова, она ' +
+        'продолжится.' #13#10 +
+        '2) Если в BIOS выключена виртуализация (VT-x / AMD-V / SVM) — ' +
+        'включите её в BIOS/UEFI и повторите установку.' #13#10 +
         'Журнал: ' + LogPath);
   end;
   Log('Среда выполнения готова');
@@ -621,24 +627,9 @@ begin
       Result := False;
       Exit;
     end;
-
-    // виртуализация (VT-x/AMD-V): WMI ложно отвечает False под Hyper-V/
-    // WSL2, поэтому блокируем только когда Docker ещё не работает и
-    // пользователь подтвердил продолжение (§4 ошибочные + инцидент
-    // ложного отказа 2026-09-29)
-    if not VirtualizationEnabled() and not DockerReady() then
-    begin
-      if MsgBox('Не удалось подтвердить включённость виртуализации ' +
-        '(VT-x / AMD-V).' #13#10#13#10 +
-        'Если она выключена в BIOS — установка не сможет запустить среду ' +
-        'выполнения. Если на компьютере уже включён Hyper-V или WSL — это ' +
-        'ложное срабатывание, продолжайте.' #13#10#13#10 +
-        'Продолжить установку?', mbConfirmation, MB_YESNO) = IDNO then
-      begin
-        Result := False;
-        Exit;
-      end;
-    end;
+    // VT-проверка удалена: WMI-флаг ложно False на любой Hyper-V/WSL2-
+    // машине (вся целевая аудитория коробки) — диалог показывался при
+    // каждом запуске и не давал ставить. Реальный гейт — старт движка
   end;
 
   // страница первой настройки (после установки): создаём организацию
