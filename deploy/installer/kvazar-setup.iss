@@ -214,6 +214,49 @@ begin
     Result := ExpandConstant('{commonpf}\Docker\Docker\Docker Desktop.exe');
 end;
 
+function WslPresent(): Boolean;
+var
+  code: Integer;
+begin
+  // wsl --status: exit 0 = компонент WSL в системе (без дистрибутивов —
+  // тоже 0); «не является командой» → WSL отсутствует целиком
+  Exec(ExpandConstant('{cmd}'), '/C wsl --status >nul 2>&1', '',
+    SW_HIDE, ewWaitUntilTerminated, code);
+  Result := (code = 0);
+  Log(Format('wsl --status: код %d', [code]));
+end;
+
+procedure EnsureWsl();
+var
+  code: Integer;
+begin
+  if WslPresent() then
+    Exit;
+  Log('WSL отсутствует — включаем компоненты (требуется права, до 2 мин)');
+  WizardForm.StatusLabel.Caption :=
+    'Включаем компонент Windows для среды выполнения.' +
+    'Разрешите запрос прав администратора.';
+  // wsl --install --no-launch: включает WSL2 + VirtualMachinePlatform;
+  // после него Windows ТРЕБУЕТ перезагрузку — установка Квазара
+  // продолжится со следующего запуска (инцидент 2026-10-03: без WSL
+  // тихая установка Docker писала пустой каталог, мастер закрывался)
+  Exec(ExpandConstant('{cmd}'),
+    '/C powershell -NoProfile -Command "$p = Start-Process -FilePath ' +
+    '''wsl.exe'' -ArgumentList ''--install'',''--no-launch'' -Verb RunAs ' +
+    '-Wait -PassThru; exit $p.ExitCode"',
+    '', SW_HIDE, ewWaitUntilTerminated, code);
+  Log(Format('wsl --install: код %d', [code]));
+  if code = 0 then
+    RaiseException('Включён компонент Windows, необходимый среде ' +
+      'выполнения. ПЕРЕЗАГРУЗИТЕ компьютер и запустите установку ' +
+      'Квазара снова — она продолжится с этого места.')
+  else
+    RaiseException('Не удалось включить компонент Windows (код ' +
+      IntToStr(code) + '). Запустите командную строку от администратора ' +
+      'и выполните: wsl --install --no-launch, перезагрузитесь и ' +
+      'запустите установку Квазара снова.');
+end;
+
 procedure EnsureRuntime();
 var
   code: Integer;
@@ -234,6 +277,10 @@ begin
       '[wsl2]'#13#10'memory=5GB'#13#10'swap=2GB'#13#10, False);
     Log('.wslconfig записан (RAM ≤ 8 ГБ: memory=5GB, swap=2GB)');
   end;
+
+  // WSL2 обязателен для Docker Desktop; ставим до скачивания среды,
+  // иначе тихая установка Docker молча не ставит приложение
+  EnsureWsl();
 
   WizardForm.StatusLabel.Caption := ExpandConstant('{cm:RuntimeStep}');
   tmp := ExpandConstant('{tmp}\runtime-installer.exe');
@@ -528,12 +575,17 @@ begin
   Result := True;
   if CurPageID = wpSelectDir then
   begin
-    // ОС: Win10/11 (Inno сам не стартует на старых — доп. проверка билда);
-    // GetWindowsVersionMajor удалён в Inno 6 — используем GetWindowsVersionEx
+    // ОС: современный Docker Desktop требует Win10 21H2+ (сборка 19044)
+    // или Win11 (22000+) — на старых ставится пустой каталог (инцидент
+    // 2026-10-03)
     GetWindowsVersionEx(winver);
-    if (winver.Major < 10) then
+    if (winver.Major < 10) or ((winver.Major = 10) and
+        (winver.Minor = 0) and (winver.Build < 19044)) then
     begin
-      MsgBox('Квазар требует Windows 10 (1809+) или Windows 11.',
+      MsgBox('Квазар требует Windows 10 версии 21H2 или новее (сборка ' +
+        '19044+), либо Windows 11.' #13#10 + 'Обновите Windows ' +
+       ('(Параметры → Центр обновления Windows) и запустите установку ' +
+        'заново. Ваша сборка: ') + IntToStr(winver.Build) + '.',
         mbError, MB_OK);
       Result := False;
       Exit;
