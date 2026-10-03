@@ -357,6 +357,15 @@ var
 begin
   WizardForm.StatusLabel.Caption := ExpandConstant('{cm:SetupStep}');
 
+  // повторный запуск: .env УЖЕ есть → секреты не трогаем (перегенерация
+  // ломала пароль уже инициализированной базы — crash-loop worker/beat,
+  // инцидент 2026-10-03)
+  if FileExists(ExpandConstant('{app}\stack\.env')) then
+  begin
+    Log('.env существует — секреты сохранены, генерация пропущена');
+    Exit;
+  end;
+
   // Ключи генерирует контейнер уже скачанного образа Квазара: OS-PRNG
   // внутри Linux, никаких PowerShell/политик машины (инцидент «Не
   // удалось сгенерировать ключ» на ужесточённой Windows, 2026-10-03).
