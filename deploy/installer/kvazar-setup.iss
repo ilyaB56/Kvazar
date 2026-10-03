@@ -359,8 +359,13 @@ begin
   ok := RunDocker(Format('compose -f "%s\stack\docker-compose.box.yml" --project-name kvazar %s', [
     ExpandConstant('{app}'), Args]), code);
   if not ok or (code <> 0) then
-    RaiseException(Format('Команда «%s» не удалась (код %d). Журнал: %s', [
-      Args, code, LogPath]));
+    RaiseException(Format('Команда «%s» не удалась (код %d).' #13#10 +
+      'Если ошибка про доступ к реестру (denied): образы Квазара в ' +
+      'приватном GitHub Container Registry — либо сделайте пакеты ' +
+      'kvazar-api/kvazar-web публичными (github.com → Packages → ' +
+      'Package settings → Danger Zone), либо выполните в командной ' +
+      'строке docker login ghcr.io и запустите установку снова.' #13#10 +
+      'Журнал: %s', [Args, code, LogPath]));
 end;
 
 function WaitForHealth(TimeoutSec: Integer): Boolean;
