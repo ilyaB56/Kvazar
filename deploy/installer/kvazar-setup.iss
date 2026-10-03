@@ -142,15 +142,38 @@ function RunDocker(Args: string; var Code: Integer): Boolean;
 var
   exe: string;
 begin
-  exe := DockerExe();
-  if exe = 'docker' then
-    // из PATH (Docker установлен давно) — через cmd с заглушкой вывода
-    Result := Exec(ExpandConstant('{cmd}'),
-      '/C docker ' + Args + ' >nul 2>&1', '',
-      SW_HIDE, ewWaitUntilTerminated, Code)
+  // вызовы docker/info — скрытые; compose (pull/up) — ВИДИМЫЕ: консоль
+  // с родным прогрессом docker (инцидент «вечная загрузка образов» —
+  // скрытый pull без прогресса и таймаута неотличим от зависания)
+  if Pos('compose', Args) = 1 then
+  begin
+    exe := DockerExe();
+    if exe = 'docker' then
+      Result := Exec(ExpandConstant('{cmd}'), '/C docker ' + Args, '',
+        SW_SHOW, ewWaitUntilTerminated, Code)
+    else
+      Result := Exec(exe, Args, '', SW_SHOW, ewWaitUntilTerminated, Code);
+  end
+  else if Pos('info', Args) = 1 then
+  begin
+    exe := DockerExe();
+    if exe = 'docker' then
+      Result := Exec(ExpandConstant('{cmd}'),
+        '/C docker ' + Args + ' >nul 2>&1', '',
+        SW_HIDE, ewWaitUntilTerminated, Code)
+    else
+      Result := Exec(exe, Args, '', SW_HIDE, ewWaitUntilTerminated, Code);
+  end
   else
-    // полный путь — напрямую, без cmd (кавычки путей с пробелами)
-    Result := Exec(exe, Args, '', SW_HIDE, ewWaitUntilTerminated, Code);
+  begin
+    exe := DockerExe();
+    if exe = 'docker' then
+      Result := Exec(ExpandConstant('{cmd}'),
+        '/C docker ' + Args + ' >nul 2>&1', '',
+        SW_HIDE, ewWaitUntilTerminated, Code)
+    else
+      Result := Exec(exe, Args, '', SW_HIDE, ewWaitUntilTerminated, Code);
+  end;
 end;
 
 function DockerReady(): Boolean;
