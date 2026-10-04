@@ -217,6 +217,30 @@ class UserPermission(Base):
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class MaintenanceView(Base):
+    """maintenance_views — ракурсы ведения (devtools §7.1): именованная
+    конфигурация «таблица + колонки + where + права» поверх таблиц;
+    NULL company_id = платформенный шаблон. Правка данных — только через
+    API-слой (валидации + record_versions + events_log)."""
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "maintenance_views"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    table_schema: Mapped[str] = mapped_column(String(63))
+    table_name: Mapped[str] = mapped_column(String(63))
+    mode: Mapped[str] = mapped_column(String(10))  # domain|direct
+    definition: Mapped[dict] = mapped_column(JSONB, default=dict)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class TablePreset(Base):
     """table_presets — личные пресеты браузера таблиц (devtools О2):
     фильтры+сортировка+колонки под именем; видны только владельцу."""

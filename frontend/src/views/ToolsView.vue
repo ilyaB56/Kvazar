@@ -5,8 +5,8 @@
 // Права: table_browser (ro/rw); ro достаточно для всех операций этапа A.
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Download, FileSpreadsheet, Filter, Trash2, Wrench } from 'lucide-vue-next'
-import { get, post, del } from '../api/client'
+import { ArrowLeft, Copy, Download, FileSpreadsheet, Filter, Pencil, Plus, Trash2, Wrench } from 'lucide-vue-next'
+import { get, post, patch, del } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 import {
   Badge, Button, Card, CardContent, Dialog, EmptyState, Input, Label,
@@ -344,9 +344,346 @@ async function loadTables() {
 }
 if (allowed.value) void loadTables()
 
-// ---------- Вкладки (этап A — только «Таблицы») ----------
+// ---------- Вкладка «Ракурсы» (devtools-spec §11 п.2) ----------
+interface ViewColumn { name: string; visible: boolean; editable: boolean }
+interface ViewWhere { col: string; op: string; value: unknown }
+interface ViewValidation { col: string; rule: 'required' | 'regex'; value?: string }
+interface ViewDefinition {
+  columns: ViewColumn[]
+  where?: ViewWhere[]
+  order_by?: { col: string; dir: string }[]
+  validations?: ViewValidation[]
+  access?: string | { users: string[] }
+}
+interface MaintenanceView {
+  id: string
+  name: string
+  table_schema: string
+  table_name: string
+  mode: 'direct' | 'domain'
+  is_active: boolean
+  is_template: boolean
+  definition?: ViewDefinition | null
+  updated_at: string
+}
+
+// Допустимые таблицы ракурсов (devtools-spec §11 п.2)
+interface AllowedTable {
+  key: string; schema: string; table: string; mode: 'direct' | 'domain'; platformOnly: boolean
+}
+const ALLOWED_TABLES: AllowedTable[] = [
+  { key: 'mgmt_accounting.categories', schema: 'mgmt_accounting', table: 'categories', mode: 'direct', platformOnly: false },
+  { key: 'mgmt_accounting.locations', schema: 'mgmt_accounting', table: 'locations', mode: 'direct', platformOnly: false },
+  { key: 'mgmt_accounting.units', schema: 'mgmt_accounting', table: 'units', mode: 'direct', platformOnly: true },
+  { key: 'mgmt_accounting.doc_types', schema: 'mgmt_accounting', table: 'doc_types', mode: 'direct', platformOnly: true },
+  { key: 'mgmt_accounting.counterparties', schema: 'mgmt_accounting', table: 'counterparties', mode: 'domain', platformOnly: false },
+]
+
+const viewsAllowed = computed(() => auth.moduleLevel('maint_views') !== 'none')
+const viewsCanEdit = computed(() => auth.moduleLevel('maint_views') === 'rw')
+const isPlatformCtx = computed(() => auth.tokenPl || auth.isAdmin)
+
+const views = ref<MaintenanceView[] | null>(null)
+const selectedViewId = ref('')
+const selectedView = computed(() =>
+  views.value?.find((v) => v.id === selectedViewId.value) ?? null)
+
+// definition приходит только rw-пользователю; ro — тянем метаданные таблицы
+const viewFallbackColumns = ref<ViewColumn[]>([])
+const viewColumns = computed<ViewColumn[]>(() => {
+  const def = selectedView.value?.definition
+  if (def?.columns?.length) return def.columns
+  return viewFallbackColumns.value
+})
+
+function viewTableLabel(item: MaintenanceView): string {
+  const allowed = ALLOWED_TABLES.find(
+    (a) => a.schema === item.table_schema && a.table === item.table_name)
+  if (!allowed) return `${item.table_schema}.${item.table_name}`
+  return t(`tools.views.table_${allowed.table}`)
+}
+
+async function loadViews() {
+  try {
+    views.value = await get<MaintenanceView[]>('/system/maintenance-views')
+  } catch (error) {
+    views.value = []
+    toast.apiError(error)
+  }
+}
+
+async function selectView(item: MaintenanceView) {
+  selectedViewId.value = item.id
+  viewCell.value = null
+  viewFallbackColumns.value = []
+  if (!item.definition) {
+    // ro-пользователь: definition скрыт — колонки из метаданных таблицы
+    try {
+      const detail = await get<TableDetail>(`/system/tables/${item.table_schema}/${item.table_name}`)
+      viewFallbackColumns.value = detail.columns.map((c) => ({
+        name: c.name, visible: true, editable: false,
+      }))
+    } catch (error) {
+      toast.apiError(error)
+    }
+  }
+}
+
+function fmtDate(iso: string): string {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString(
+    undefined, { dateStyle: 'short', timeStyle: 'short' })
+}
+
+// ---------- Строки ракурса ----------
+const rowsKey = ref(0)
+const rowsResetKey = computed(() => JSON.stringify([selectedViewId.value, rowsKey.value]))
+
+async function fetchViewRows(offset: number, limit: number): Promise<PageOf<Row>> {
+  const view = selectedView.value
+  if (!view) return { items: [], total: 0 }
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  return get<PageOf<Row>>(`/system/maintenance-views/${view.id}/rows?${params.toString()}`)
+}
+
+// ---------- Inline-правка ячейки (двойной клик, rw) ----------
+const viewCell = ref<{ row: Row; col: string; value: string } | null>(null)
+function startCellEdit(row: Row, column: ViewColumn) {
+  if (!viewsCanEdit.value || !column.editable) return
+  viewCell.value = {
+    row, col: column.name,
+    value: row[column.name] === null || row[column.name] === undefined
+      ? '' : String(row[column.name]),
+  }
+}
+async function commitCellEdit() {
+  const cell = viewCell.value
+  const view = selectedView.value
+  if (!cell || !view) return
+  viewCell.value = null
+  try {
+    const updated = await patch<Row>(
+      `/system/maintenance-views/${view.id}/rows/${String(cell.row.id)}`,
+      { [cell.col]: cell.value },
+    )
+    Object.assign(cell.row, updated)
+    toast.success(t('tools.views.rowSaved'))
+  } catch (error) {
+    toast.apiError(error)
+  }
+}
+function cancelCellEdit() {
+  viewCell.value = null
+}
+
+// ---------- Создание строки ----------
+const newRowOpen = ref(false)
+const newRowValues = ref<Record<string, string>>({})
+const newRowSaving = ref(false)
+const editableColumns = computed(() => viewColumns.value.filter((c) => c.editable))
+function openNewRow() {
+  newRowValues.value = Object.fromEntries(editableColumns.value.map((c) => [c.name, '']))
+  newRowOpen.value = true
+}
+async function saveNewRow() {
+  const view = selectedView.value
+  if (!view || newRowSaving.value) return
+  const payload: Record<string, string> = {}
+  for (const [key, value] of Object.entries(newRowValues.value)) {
+    if (value !== '') payload[key] = value
+  }
+  newRowSaving.value = true
+  try {
+    await post(`/system/maintenance-views/${view.id}/rows`, payload)
+    newRowOpen.value = false
+    rowsKey.value++
+    toast.success(t('tools.views.rowSaved'))
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    newRowSaving.value = false
+  }
+}
+
+// ---------- Удаление ракурса ----------
+async function deleteView() {
+  const view = selectedView.value
+  if (!view) return
+  if (!window.confirm(t('tools.views.confirmDelete', { name: view.name }))) return
+  try {
+    await del(`/system/maintenance-views/${view.id}`)
+    selectedViewId.value = ''
+    views.value = (views.value ?? []).filter((v) => v.id !== view.id)
+    toast.success(t('tools.views.viewDeleted'))
+  } catch (error) {
+    toast.apiError(error)
+  }
+}
+
+// ---------- Редактор ракурса ----------
+const editorOpen = ref(false)
+const editorSaving = ref(false)
+const editorId = ref<string | null>(null) // null — создание
+const editorName = ref('')
+const editorTableKey = ref(ALLOWED_TABLES[0].key)
+const editorColumns = ref<ViewColumn[]>([])
+const editorValidations = ref<ViewValidation[]>([])
+const editorColumnsLoading = ref(false)
+// сохраняемые части definition, не редактируемые в UI (order_by, access)
+const editorExtra = ref<ViewDefinition | null>(null)
+const editorDefOpen = ref(false)
+
+const editorTable = computed(() =>
+  ALLOWED_TABLES.find((a) => a.key === editorTableKey.value) ?? ALLOWED_TABLES[0])
+const editorIsCreate = computed(() => editorId.value === null)
+// фактическая таблица ракурса (при правке таблицу менять нельзя)
+const editorTarget = computed(() => {
+  if (editorIsCreate.value) return editorTable.value
+  const view = selectedView.value
+  if (view) return {
+    key: `${view.table_schema}.${view.table_name}`,
+    schema: view.table_schema, table: view.table_name,
+    mode: view.mode, platformOnly: false,
+  }
+  return editorTable.value
+})
+
+const editorTableOptions = computed(() => ALLOWED_TABLES.map((a) => ({
+  value: a.key,
+  label: `${t(`tools.views.table_${a.table}`)} (${a.schema}.${a.table})`,
+})))
+
+function editorColumnLocked(name: string): boolean {
+  return name === 'id' || name === 'company_id'
+}
+
+async function loadEditorColumns() {
+  const a = editorTarget.value
+  editorColumnsLoading.value = true
+  try {
+    const detail = await get<TableDetail>(`/system/tables/${a.schema}/${a.table}`)
+    const prev = new Map(editorColumns.value.map((c) => [c.name, c]))
+    editorColumns.value = detail.columns.map((c) => prev.get(c.name) ?? {
+      name: c.name, visible: true, editable: !editorColumnLocked(c.name),
+    })
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    editorColumnsLoading.value = false
+  }
+}
+
+watch(editorTableKey, () => { void loadEditorColumns() })
+
+function openCreateView() {
+  editorId.value = null
+  editorName.value = ''
+  editorTableKey.value = ALLOWED_TABLES[0].key
+  editorColumns.value = []
+  editorValidations.value = []
+  editorExtra.value = null
+  editorDefOpen.value = false
+  editorOpen.value = true
+  void loadEditorColumns()
+}
+
+function openEditView() {
+  const view = selectedView.value
+  if (!view) return
+  editorId.value = view.id
+  editorName.value = view.name
+  editorTableKey.value =
+    ALLOWED_TABLES.find((a) => a.schema === view.table_schema && a.table === view.table_name)?.key
+    ?? `${view.table_schema}.${view.table_name}`
+  const def = view.definition ?? { columns: [] }
+  editorColumns.value = def.columns.map((c) => ({ ...c }))
+  editorValidations.value = (def.validations ?? []).map((v) => ({ ...v }))
+  editorExtra.value = def
+  editorDefOpen.value = false
+  editorOpen.value = true
+  void loadEditorColumns()
+}
+
+function addValidation() {
+  const first = editorColumns.value[0]?.name ?? ''
+  editorValidations.value.push({ col: first, rule: 'required' })
+}
+function removeValidation(index: number) {
+  editorValidations.value.splice(index, 1)
+}
+
+function buildDefinition(): ViewDefinition {
+  const a = editorTarget.value
+  const def: ViewDefinition = {
+    columns: editorColumns.value.map((c) => ({
+      name: c.name,
+      visible: c.visible,
+      editable: c.editable && !editorColumnLocked(c.name),
+    })),
+  }
+  // locations: обязательный фильтр «только не-транзитные»
+  if (a.schema === 'mgmt_accounting' && a.table === 'locations') {
+    def.where = [{ col: 'is_transit', op: 'eq', value: false }]
+  }
+  if (editorValidations.value.length) def.validations = editorValidations.value
+  // не редактируемые в UI части сохраняем из исходного definition
+  if (editorExtra.value?.order_by) def.order_by = editorExtra.value.order_by
+  if (editorExtra.value?.access !== undefined) def.access = editorExtra.value.access
+  return def
+}
+
+const editorDefinitionJson = computed(() => JSON.stringify(buildDefinition(), null, 2))
+
+async function copyDefinition() {
+  try {
+    await navigator.clipboard.writeText(editorDefinitionJson.value)
+    toast.success(t('tools.views.definitionCopied'))
+  } catch {
+    toast.apiError(new Error('clipboard'))
+  }
+}
+
+async function saveView() {
+  if (editorSaving.value || !editorName.value.trim()) return
+  const a = editorTable.value
+  editorSaving.value = true
+  try {
+    if (editorIsCreate.value) {
+      await post('/system/maintenance-views', {
+        name: editorName.value.trim(),
+        table_schema: a.schema,
+        table_name: a.table,
+        mode: a.mode,
+        definition: buildDefinition(),
+        is_active: true,
+      })
+    } else {
+      await patch(`/system/maintenance-views/${editorId.value}`, {
+        name: editorName.value.trim(),
+        definition: buildDefinition(),
+      })
+    }
+    editorOpen.value = false
+    await loadViews()
+    toast.success(t('tools.views.viewSaved'))
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    editorSaving.value = false
+  }
+}
+
+// ---------- Вкладки (этап A — «Таблицы»; §11 п.2 — «Ракурсы») ----------
 const activeTab = ref('tables')
-const tabs = [{ key: 'tables', label: t('tools.tablesTab') }]
+const tabs = computed(() => {
+  const list = [{ key: 'tables', label: t('tools.tablesTab') }]
+  if (viewsAllowed.value) list.push({ key: 'views', label: t('tools.views.viewsTab') })
+  return list
+})
+
+watch(activeTab, (tab) => {
+  if (tab === 'views' && views.value === null) void loadViews()
+})
 
 const columnOptions = computed(() =>
   (detail.value?.columns ?? []).map((c) => ({ value: c.name, label: c.name })))
@@ -372,7 +709,8 @@ const sortOptions = computed(() => [
       :description="t('tools.noAccessDescription')"
     />
 
-    <div v-else class="grid gap-4 lg:grid-cols-[300px_1fr]">
+    <template v-else>
+      <div v-if="activeTab === 'tables'" class="grid gap-4 lg:grid-cols-[300px_1fr]">
       <!-- Левая панель: модуль → таблицы -->
       <Card class="flex max-h-[75vh] flex-col">
         <CardContent class="flex min-h-0 flex-1 flex-col gap-3 p-4">
@@ -651,7 +989,358 @@ const sortOptions = computed(() => [
           </template>
         </template>
       </div>
-    </div>
+      </div>
+
+      <!-- Вкладка «Ракурсы» (devtools-spec §11 п.2) -->
+      <div v-else-if="activeTab === 'views'" class="space-y-4">
+        <!-- Список ракурсов -->
+        <template v-if="!selectedView">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm text-muted-foreground">{{ t('tools.views.listHint') }}</p>
+            <Button v-if="viewsCanEdit" variant="emerald" size="sm" @click="openCreateView">
+              <Plus class="h-4 w-4" /> {{ t('tools.views.newView') }}
+            </Button>
+          </div>
+          <div v-if="views === null" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <Card v-for="i in 6" :key="i">
+              <CardContent class="space-y-2 p-4">
+                <Skeleton class="h-5 w-2/3" />
+                <Skeleton class="h-4 w-1/2" />
+              </CardContent>
+            </Card>
+          </div>
+          <EmptyState
+            v-else-if="views.length === 0"
+            :title="t('tools.views.emptyViews')"
+            :description="t('tools.views.emptyViewsDescription')"
+          >
+            <Wrench class="h-8 w-8 text-muted-foreground/50" />
+          </EmptyState>
+          <div v-else class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <Card
+              v-for="item in views"
+              :key="item.id"
+              class="cursor-pointer transition-colors hover:border-primary/40"
+              @click="selectView(item)"
+            >
+              <CardContent class="space-y-1.5 p-4">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <p class="min-w-0 flex-1 truncate text-sm font-semibold text-foreground" :title="item.name">
+                    {{ item.name }}
+                  </p>
+                  <Badge :variant="item.mode === 'domain' ? 'default' : 'secondary'">
+                    {{ item.mode === 'domain' ? t('tools.views.modeDomain') : t('tools.views.modeDirect') }}
+                  </Badge>
+                  <Badge v-if="item.is_template" variant="outline">
+                    {{ t('tools.views.templateBadge') }}
+                  </Badge>
+                </div>
+                <p class="font-mono text-xs text-muted-foreground">
+                  {{ item.table_schema }}.{{ item.table_name }}
+                </p>
+                <p class="text-xs text-muted-foreground">
+                  {{ viewTableLabel(item) }} · {{ fmtDate(item.updated_at) }}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+        </template>
+
+        <!-- Грид строк выбранного ракурса -->
+        <template v-else>
+          <Card>
+            <CardContent class="flex flex-wrap items-center gap-3 p-4">
+              <Button
+                variant="ghost"
+                size="sm"
+                class="px-2"
+                :aria-label="t('tools.views.backToList')"
+                @click="selectedViewId = ''"
+              >
+                <ArrowLeft class="h-4 w-4" />
+              </Button>
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <h2 class="text-base font-semibold text-foreground">{{ selectedView.name }}</h2>
+                  <Badge :variant="selectedView.mode === 'domain' ? 'default' : 'secondary'">
+                    {{ selectedView.mode === 'domain' ? t('tools.views.modeDomain') : t('tools.views.modeDirect') }}
+                  </Badge>
+                  <Badge v-if="selectedView.is_template" variant="outline">
+                    {{ t('tools.views.templateBadge') }}
+                  </Badge>
+                </div>
+                <p class="font-mono text-xs text-muted-foreground">
+                  {{ selectedView.table_schema }}.{{ selectedView.table_name }}
+                </p>
+              </div>
+              <div v-if="viewsCanEdit && !selectedView.is_template" class="flex gap-2">
+                <Button variant="outline" size="sm" @click="openNewRow" :disabled="editableColumns.length === 0">
+                  <Plus class="h-4 w-4" /> {{ t('tools.views.newRow') }}
+                </Button>
+                <Button variant="outline" size="sm" @click="openEditView">
+                  <Pencil class="h-4 w-4" /> {{ t('tools.views.editView') }}
+                </Button>
+                <Button variant="destructive" size="sm" @click="deleteView">
+                  <Trash2 class="h-4 w-4" /> {{ t('tools.views.deleteView') }}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <PaginatedList
+              :fetch-page="fetchViewRows"
+              :reset-key="rowsResetKey"
+              :page-size="50"
+              bar-class="px-4"
+            >
+              <template #default="{ items, loading, total }">
+                <div v-if="loading" class="space-y-2 p-4">
+                  <Skeleton v-for="i in 8" :key="i" class="h-8 w-full" />
+                </div>
+                <EmptyState
+                  v-else-if="items.length === 0"
+                  :title="t('tools.views.emptyRows')"
+                  :description="total === 0 ? t('tools.views.emptyRowsDescription') : ''"
+                />
+                <div v-else class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                        <th class="px-3 py-2 font-semibold">id</th>
+                        <th
+                          v-for="column in viewColumns.filter((c) => c.visible)"
+                          :key="column.name"
+                          class="whitespace-nowrap px-3 py-2 font-semibold"
+                        >
+                          {{ column.name }}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="row in items"
+                        :key="String(row.id)"
+                        class="border-b border-border/60 last:border-0 hover:bg-muted/50"
+                      >
+                        <td class="px-3 py-1.5 font-mono text-xs text-muted-foreground" :title="String(row.id)">
+                          {{ cellText(row.id) }}
+                        </td>
+                        <td
+                          v-for="column in viewColumns.filter((c) => c.visible)"
+                          :key="column.name"
+                          class="max-w-[220px] truncate px-3 py-1.5 font-mono text-xs"
+                          :class="[
+                            viewsCanEdit && column.editable
+                              ? 'cursor-cell text-foreground'
+                              : 'text-foreground/80',
+                          ]"
+                          :title="row[column.name] === null || row[column.name] === undefined
+                            ? '' : String(row[column.name])"
+                          @dblclick="startCellEdit(row, column)"
+                        >
+                          <Input
+                            v-if="viewCell && viewCell.row === row && viewCell.col === column.name"
+                            v-model="viewCell.value"
+                            type="text"
+                            class="h-7 w-full min-w-[120px] font-mono text-xs"
+                            autofocus
+                            @keydown.enter.prevent="commitCellEdit"
+                            @keydown.esc.prevent="cancelCellEdit"
+                            @blur="commitCellEdit"
+                          />
+                          <template v-else>{{ cellText(row[column.name]) }}</template>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </template>
+            </PaginatedList>
+          </Card>
+        </template>
+      </div>
+    </template>
+
+    <!-- Диалог новой строки ракурса -->
+    <Dialog
+      :open="newRowOpen"
+      :title="t('tools.views.newRow')"
+      width="480px"
+      @update:open="(v: boolean) => { if (!v) newRowOpen = false }"
+    >
+      <form class="space-y-4" @submit.prevent="saveNewRow">
+        <div v-for="column in editableColumns" :key="column.name" class="space-y-1.5">
+          <Label class="font-mono text-xs font-medium">{{ column.name }}</Label>
+          <Input v-model="newRowValues[column.name]" type="text" />
+        </div>
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" size="sm" type="button" @click="newRowOpen = false">
+            {{ t('ui.cancel') }}
+          </Button>
+          <Button variant="emerald" size="sm" type="submit" :disabled="newRowSaving">
+            {{ t('tools.views.saveRow') }}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+
+    <!-- Редактор ракурса -->
+    <Dialog
+      :open="editorOpen"
+      :title="editorIsCreate ? t('tools.views.newView') : t('tools.views.editView')"
+      width="640px"
+      @update:open="(v: boolean) => { if (!v) editorOpen = false }"
+    >
+      <div class="space-y-4">
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('tools.views.viewName') }}</Label>
+          <Input v-model="editorName" type="text" autofocus :placeholder="t('tools.views.viewNamePlaceholder')" />
+        </div>
+
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('tools.views.table') }}</Label>
+          <div class="flex items-center gap-2">
+            <Select
+              v-model="editorTableKey"
+              :options="editorTableOptions"
+              class="flex-1"
+              :disabled="!editorIsCreate"
+            />
+            <Badge :variant="editorTarget.mode === 'domain' ? 'default' : 'secondary'">
+              {{ editorTarget.mode === 'domain' ? t('tools.views.modeDomain') : t('tools.views.modeDirect') }}
+            </Badge>
+          </div>
+          <p v-if="!editorIsCreate" class="text-xs text-muted-foreground">
+            {{ t('tools.views.tableImmutable') }}
+          </p>
+          <!-- units/doc_types доступны только в платформенном контексте -->
+          <p
+            v-if="editorIsCreate && editorTable.platformOnly && !isPlatformCtx"
+            class="text-xs text-amber-600"
+          >
+            {{ t('tools.views.onlyPlatform') }}
+          </p>
+        </div>
+
+        <!-- locations: фильтр не-транзитных — обязателен и неизменяем -->
+        <label
+          v-if="editorTarget.schema === 'mgmt_accounting' && editorTarget.table === 'locations'"
+          class="flex items-center gap-2 text-sm text-muted-foreground"
+        >
+          <input type="checkbox" class="h-4 w-4 accent-primary" checked disabled>
+          {{ t('tools.views.transitOnly') }}
+        </label>
+
+        <!-- Колонки -->
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium">{{ t('tools.views.columns') }}</Label>
+          <div v-if="editorColumnsLoading" class="space-y-2">
+            <Skeleton v-for="i in 4" :key="i" class="h-6 w-full" />
+          </div>
+          <div v-else class="max-h-52 space-y-1 overflow-y-auto rounded-lg border border-border p-2 erp-scroll">
+            <div
+              v-for="column in editorColumns"
+              :key="column.name"
+              class="flex items-center gap-3 text-sm"
+            >
+              <label class="flex min-w-0 flex-1 items-center gap-2">
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 accent-primary"
+                  :checked="column.visible"
+                  @change="column.visible = !column.visible"
+                >
+                <span class="truncate font-mono text-xs" :title="column.name">{{ column.name }}</span>
+              </label>
+              <label class="flex items-center gap-1.5 text-xs text-muted-foreground" :class="{ 'opacity-50': editorColumnLocked(column.name) }">
+                <input
+                  type="checkbox"
+                  class="h-3.5 w-3.5 accent-primary"
+                  :checked="column.editable && !editorColumnLocked(column.name)"
+                  :disabled="editorColumnLocked(column.name)"
+                  @change="column.editable = !column.editable"
+                >
+                {{ t('tools.views.editable') }}
+              </label>
+            </div>
+          </div>
+          <p class="text-xs text-muted-foreground">{{ t('tools.views.visibleHint') }}</p>
+        </div>
+
+        <!-- Валидации -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <Label class="text-xs font-medium">{{ t('tools.views.validations') }}</Label>
+            <Button variant="outline" size="sm" @click="addValidation">
+              {{ t('tools.views.addValidation') }}
+            </Button>
+          </div>
+          <div
+            v-for="(validation, index) in editorValidations"
+            :key="index"
+            class="flex flex-wrap items-center gap-2"
+          >
+            <Select
+              v-model="validation.col"
+              :options="editorColumns.map((c) => ({ value: c.name, label: c.name }))"
+              class="w-40 shrink-0"
+            />
+            <Select
+              v-model="validation.rule"
+              :options="[
+                { value: 'required', label: t('tools.views.ruleRequired') },
+                { value: 'regex', label: t('tools.views.ruleRegex') },
+              ]"
+              class="w-36 shrink-0"
+            />
+            <Input
+              v-if="validation.rule === 'regex'"
+              v-model="validation.value"
+              type="text"
+              class="h-9 w-40"
+              placeholder="^[0-9]+$"
+            />
+            <Button variant="ghost" size="icon" class="h-9 w-9 shrink-0" :aria-label="t('tools.views.removeValidation')" @click="removeValidation(index)">
+              <Trash2 class="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <!-- Определение JSON (только чтение) -->
+        <div class="rounded-lg border border-border">
+          <button
+            type="button"
+            class="flex w-full items-center justify-between px-3 py-2 text-sm font-semibold text-foreground"
+            @click="editorDefOpen = !editorDefOpen"
+          >
+            {{ t('tools.views.definition') }}
+            <span class="text-xs font-normal text-muted-foreground">{{ editorDefOpen ? '▲' : '▼' }}</span>
+          </button>
+          <div v-if="editorDefOpen" class="space-y-2 border-t border-border p-3">
+            <pre class="max-h-48 overflow-auto rounded bg-muted p-2 font-mono text-[11px] text-foreground erp-scroll">{{ editorDefinitionJson }}</pre>
+            <Button variant="outline" size="sm" @click="copyDefinition">
+              <Copy class="h-4 w-4" /> {{ t('tools.views.copyDefinition') }}
+            </Button>
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" size="sm" type="button" @click="editorOpen = false">
+            {{ t('ui.cancel') }}
+          </Button>
+          <Button
+            variant="emerald"
+            size="sm"
+            :disabled="editorSaving || !editorName.trim()
+              || (editorIsCreate && editorTable.platformOnly && !isPlatformCtx)"
+            @click="saveView"
+          >
+            {{ t('tools.views.saveView') }}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
 
     <!-- Диалог сохранения пресета -->
     <Dialog

@@ -27,6 +27,11 @@ class Manifest:
     # URL-префикс модуля (/api/v1/<url_prefix>); пусто — использовать name.
     # Например, mgmt_accounting живёт под /api/v1/accounting.
     url_prefix: str = ""
+    # Реестр доменных адаптеров ракурсов ведения (devtools §7.2):
+    # {"counterparty": {"list": fn, "create": fn, "update": fn}} —
+    # модуль регистриует сервисные функции; ядро зовёт их in-process
+    # (не HTTP — ADR-001; не импорт модуля из ядра — инверсия зависимостей)
+    devtools_adapters: dict[str, dict[str, Callable[..., Any]]] = field(default_factory=dict)
 
 
 # Контекст, который ядро передаёт модулю при инициализации.

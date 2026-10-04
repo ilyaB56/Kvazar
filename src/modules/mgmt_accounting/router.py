@@ -19,6 +19,7 @@ from src.core.models import AuditEvent, User
 from src.core.models import RecordVersion
 from src.core.pagination import Page, PageParams, page_params
 from src.db import get_db
+from src.core.versioning import record_version
 from src.modules.mgmt_accounting import models as m
 from src.modules.mgmt_accounting import service
 
@@ -293,6 +294,58 @@ def create_counterparty(body: CounterpartyIn, user: User = Depends(require_modul
     db.commit()
     db.refresh(counterparty)
     return CounterpartyOut.model_validate(counterparty).model_copy(update={"warning": warning})
+
+
+class CounterpartyPatch(BaseModel):
+    """Правка контрагента (devtools §7.4 prerequisite + ракурсы). Дубль
+    ИНН+КПП — 422 (в отличие от create, где только предупреждение):
+    ракурс не должен молча плодить дубли."""
+    name: str | None = None
+    inn: str | None = None
+    kpp: str | None = None
+    is_active: bool | None = None
+
+
+@router.patch("/counterparties/{counterparty_id}", response_model=CounterpartyOut)
+def patch_counterparty(counterparty_id: uuid.UUID, body: CounterpartyPatch,
+                       user: User = Depends(require_module("accounting")),
+                       db: Session = Depends(get_db), scoped: CompanyScoped = None):
+    counterparty = db.scalar(select(m.Counterparty).where(
+        m.Counterparty.id == counterparty_id,
+        m.Counterparty.company_id == scoped))
+    if counterparty is None:
+        raise HTTPException(404, "Counterparty not found")
+
+    changes = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
+    if not changes:
+        raise HTTPException(422, "Пустая правка")
+    # доменная валидация: дубль ИНН+КПП в своей организации — запрет
+    if "inn" in changes or "kpp" in changes:
+        inn = changes.get("inn", counterparty.inn)
+        kpp = changes.get("kpp", counterparty.kpp)
+        if inn:
+            duplicate = db.scalar(select(m.Counterparty).where(
+                m.Counterparty.inn == inn,
+                m.Counterparty.kpp == kpp,
+                m.Counterparty.company_id == scoped,
+                m.Counterparty.id != counterparty.id))
+            if duplicate is not None:
+                raise HTTPException(
+                    422, f"inn_kpp_duplicate: уже есть «{duplicate.name}» "
+                         f"({duplicate.internal_code})")
+
+    diff = {key: {"old": getattr(counterparty, key), "new": value}
+            for key, value in changes.items()}
+    for key, value in changes.items():
+        setattr(counterparty, key, value)
+    record_version(db, "counterparty", counterparty.id, user.id, diff,
+                   reason="counterparty_patch")
+    db.add(AuditEvent(user_id=user.id, action="counterparty.updated",
+                      entity_type="counterparty", entity_id=str(counterparty.id),
+                      payload={"changed": sorted(changes)}))
+    db.commit()
+    db.refresh(counterparty)
+    return CounterpartyOut.model_validate(counterparty)
 
 
 class FindOrCreateIn(BaseModel):
