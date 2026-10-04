@@ -328,11 +328,12 @@ def test_b7_delegations_view(client, admin, boss, boss_token):
                for g in data["grants"]), "свои выдачи видны"
     assert any(g["email"] == f"del-b-w7-{RUN}@mt.test"
                for g in data["grants"]), "email получателя в выдачах"
-    # admin видит все модули
+    # admin видит все модули (+ инструменты devtools §5: admin — rw)
     response = client.get(f"{API}/delegations",
                           headers=_auth(admin["access_token"]))
     assert set(response.json()["grantable"]) == set(
-        ["accounting", "crm", "integrations", "ai", "system"])
+        ["accounting", "crm", "integrations", "ai", "system",
+         "table_browser", "maint_views", "devtools"])
     # чисто-ro пользователь — 403
     ro = _login(client, f"del-b-w4-{RUN}@mt.test", _pwd_of(f"del-b-w4-{RUN}@mt.test"))["access_token"]
     response = client.get(f"{API}/delegations", headers=_auth(ro))

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Building2, Menu, Sun, Moon, LogOut, KeyRound, ChevronsUpDown, ShieldAlert, Plug, Bot, Settings2, LayoutDashboard, Wallet, TrendingUp,
+  Building2, Menu, Sun, Moon, LogOut, KeyRound, ChevronsUpDown, ShieldAlert, Plug, Bot, Settings2, LayoutDashboard, Wallet, TrendingUp, Wrench,
   BarChart3, Package, Truck,
 } from 'lucide-vue-next'
 import { post } from '../api/client'
@@ -85,6 +85,12 @@ const navSections = computed(() => [
     items: ([
       auth.moduleLevel('integrations') !== 'none'
         ? { to: '/integrations/connections', label: t('nav.integrations'), icon: Plug }
+        : null,
+      // Инструменты (devtools §11): виден при любом из tool-прав > none
+      auth.moduleLevel('table_browser') !== 'none'
+        || auth.moduleLevel('maint_views') !== 'none'
+        || auth.moduleLevel('devtools') !== 'none'
+        ? { to: '/tools', label: t('nav.tools'), icon: Wrench }
         : null,
       { to: '/settings/organization', label: t('nav.settings'), icon: Settings2 },
     ] as Array<NavItem | null>).filter((item): item is NavItem => item !== null),

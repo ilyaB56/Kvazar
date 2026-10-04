@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Собственная ERP: модульный монолит с плагинами и интеграционной платформой"
 requires-python = ">=3.11"
 dependencies = [
+    # xlsx-экспорт браузера таблиц (devtools О1: Excel в v1)
+    "openpyxl>3.1",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "sqlalchemy>=2.0",

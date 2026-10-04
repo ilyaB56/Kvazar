@@ -35,6 +35,7 @@ services:
     command: sh -c "alembic upgrade head && python -m src.seed && uvicorn src.main:app --host 0.0.0.0 --port 8000"
     environment: &app_env
       DATABASE_URL: postgresql+psycopg2://erp:erp@db:5432/erp
+      DATABASE_URL_RO: ${DATABASE_URL_RO:-postgresql+psycopg2://erp_ro:erp_ro@db:5432/erp}
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: change-me-in-production
       SECRETS_KEY: change-me-fernet-key

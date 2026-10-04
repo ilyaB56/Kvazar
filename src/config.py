@@ -8,6 +8,11 @@ class Settings(BaseSettings):
 
     app_name: str = "Custom ERP"
     database_url: str = "postgresql+psycopg2://erp:erp@localhost:5432/erp"
+    # RO-подключение браузера таблиц (devtools §9.2): дев-дефолт erp_ro;
+    # прод обязан задать собственный пароль (README безопасности)
+    database_url_ro: str = "postgresql+psycopg2://erp_ro:erp_ro@localhost:5432/erp"
+    # экспорт таблиц: максимум строк в выгрузке (devtools §9.4)
+    table_export_row_limit: int = 10_000
     redis_url: str = "redis://localhost:6379/0"
 
     jwt_secret: str = "change-me-in-production"

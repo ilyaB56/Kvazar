@@ -207,6 +207,15 @@ const router = createRouter({
           },
         },
         {
+          // Система → Инструменты: браузер таблиц (devtools §11, этап A);
+          // доступ — table_browser, гейтится внутри экрана (право не
+          // модульное, module-мету guard'а не используем)
+          path: 'tools',
+          name: 'tools',
+          component: () => import('../views/ToolsView.vue'),
+          meta: { requiresAuth: true, titleKey: 'route.tools', crumbKey: 'route.toolsCrumb' },
+        },
+        {
           path: 'assistant',
           name: 'assistant',
           component: () => import('../views/AssistantView.vue'),

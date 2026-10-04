@@ -244,7 +244,10 @@ CompanyScoped = Annotated[uuid.UUID, Depends(current_company)]
 
 # ---------- Роли и права (редизайн §6.3) ----------
 
-MODULES = ("accounting", "crm", "integrations", "ai", "system")
+# инструменты аналитика/разработчика (devtools-spec §5): уровни как у
+# модулей — ro = чтение, rw = мутации; встроенным ролям не выдаются
+TOOL_MODULES = ("table_browser", "maint_views", "devtools")
+MODULES = ("accounting", "crm", "integrations", "ai", "system") + TOOL_MODULES
 
 
 def module_level(db: Session, role_key: str, module: str) -> str:

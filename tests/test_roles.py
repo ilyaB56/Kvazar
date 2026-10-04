@@ -19,6 +19,8 @@ READONLY_EMAIL = "readonly.roles-test@erp.local"
 READONLY_PASSWORD = "readonly1pass"
 
 MODULES = ("accounting", "crm", "integrations", "ai", "system")
+# инструменты devtools §5: admin — rw по ветке кода; встроенным — none
+TOOL_MODULES = ("table_browser", "maint_views", "devtools")
 
 # PUT принимает всю матрицу разом (спека §6.2) — хелпер полной матрицы readonly
 def _ro(**overrides):
@@ -74,13 +76,15 @@ def test_me_permissions_admin(client, admin_headers):
     assert response.status_code == 200
     data = response.json()
     assert data["role"]["key"] == "admin"
-    assert data["permissions"] == dict.fromkeys(MODULES, "rw")
+    assert data["permissions"] == {**dict.fromkeys(MODULES, "rw"),
+                                   **dict.fromkeys(TOOL_MODULES, "rw")}
 
 
 def test_me_permissions_readonly(client, readonly_headers):
     data = client.get("/api/v1/me/permissions", headers=readonly_headers).json()
     assert data["role"]["key"] == "readonly"
-    assert data["permissions"] == dict.fromkeys(MODULES, "ro")
+    assert data["permissions"] == {**dict.fromkeys(MODULES, "ro"),
+                                   **dict.fromkeys(TOOL_MODULES, "none")}
 
 
 def test_me_permissions_requires_auth(client):
@@ -97,11 +101,14 @@ def test_roles_list_admin_only(client, admin_headers, readonly_headers):
     assert set(roles) >= {"admin", "user", "readonly"}
     admin_role = roles["admin"]
     assert admin_role["is_builtin"] is True
-    assert admin_role["permissions"] == dict.fromkeys(MODULES, "rw")
+    assert admin_role["permissions"] == {**dict.fromkeys(MODULES, "rw"),
+                                          **dict.fromkeys(TOOL_MODULES, "rw")}
     assert roles["user"]["permissions"] == {
         "accounting": "rw", "crm": "rw", "integrations": "rw", "ai": "rw", "system": "ro",
+        "table_browser": "none", "maint_views": "none", "devtools": "none",
     }
-    assert roles["readonly"]["permissions"] == dict.fromkeys(MODULES, "ro")
+    assert roles["readonly"]["permissions"] == {**dict.fromkeys(MODULES, "ro"),
+                                                 **dict.fromkeys(TOOL_MODULES, "none")}
     assert admin_role["users_count"] >= 1
 
 
@@ -109,7 +116,7 @@ def test_roles_list_admin_only(client, admin_headers, readonly_headers):
 
 def test_put_permissions_admin_role_forbidden(client, admin_headers):
     response = client.put("/api/v1/roles/admin/permissions", json={
-        "permissions": dict.fromkeys(MODULES, "none"),
+        "permissions": dict.fromkeys(MODULES + TOOL_MODULES, "none"),
     }, headers=admin_headers)
     assert response.status_code == 400
 
@@ -205,7 +212,7 @@ def test_custom_role_crud(client, admin_headers):
     role = created.json()
     assert role["key"] == "kladovshchik-sklada"
     assert role["is_builtin"] is False
-    assert role["permissions"] == dict.fromkeys(MODULES, "none")
+    assert role["permissions"] == dict.fromkeys(MODULES + TOOL_MODULES, "none")
 
     # пользователь новой роли: доступ только что открытым модулям
     client.post("/api/v1/users", json={
@@ -221,7 +228,7 @@ def test_custom_role_crud(client, admin_headers):
     assert client.get("/api/v1/integrations/connections",
                       headers=storekeeper).status_code == 403  # none
     client.put(f"/api/v1/roles/{role['key']}/permissions",
-               json={"permissions": dict.fromkeys(MODULES, "none") | {"integrations": "ro"}},
+               json={"permissions": dict.fromkeys(MODULES + TOOL_MODULES, "none") | {"integrations": "ro"}},
                headers=admin_headers)
     assert client.get("/api/v1/integrations/connections",
                       headers=storekeeper).status_code == 200  # применено без перелогина

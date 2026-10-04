@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -215,6 +215,28 @@ class UserPermission(Base):
     granted_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{CORE_SCHEMA}.users.id"), index=True)
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TablePreset(Base):
+    """table_presets — личные пресеты браузера таблиц (devtools О2):
+    фильтры+сортировка+колонки под именем; видны только владельцу."""
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "schema_name", "table_name", "name",
+                         name="uq_table_presets_user_table_name"),
+        {"schema": CORE_SCHEMA},
+    )
+    __tablename__ = "table_presets"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.users.id", ondelete="CASCADE"), index=True)
+    schema_name: Mapped[str] = mapped_column(String(100))
+    table_name: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(200))
+    definition: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SignupRequest(Base):

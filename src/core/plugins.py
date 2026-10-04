@@ -19,12 +19,13 @@ logger = logging.getLogger(__name__)
 
 def _core_manifest() -> Manifest:
     from src.core import router as core_router
+    from src.core.devtools import router as devtools_router
 
     return Manifest(
         name="core",
         version="0.1.0",
         db_schema="erp_core",
-        routers=(core_router.router,),
+        routers=(core_router.router, devtools_router.router),
     )
 
 
