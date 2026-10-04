@@ -23,7 +23,7 @@ x-app-env: &app_env
   BACKUP_RETENTION: ${BACKUP_RETENTION:-7}
   BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-03:00}
   UPDATE_MANIFEST_URL: ${UPDATE_MANIFEST_URL:-file:///app/deploy/test-manifest.json}
-  CONNECTOR_ALLOWLIST: ${CONNECTOR_ALLOWLIST:-yookassa.net,api.yookassa.ru,securepay.tinkoff.ru,api.telegram.org,api-seller.ozon.ru,seller-api.wildberries.ru,localhost,127.0.0.1}
+  CONNECTOR_ALLOWLIST: ${CONNECTOR_ALLOWLIST:-yookassa.net,api.yookassa.ru,securepay.tinkoff.ru,api.telegram.org,api-seller.ozon.ru,seller-api.wildberries.ru,api.z.ai,api.openai.com,api.anthropic.com,localhost,127.0.0.1}
   CONNECTOR_ALLOWLIST_STRICT: ${CONNECTOR_ALLOWLIST_STRICT:-true}
   AI_PROVIDER: ${AI_PROVIDER:-llm_mock}
   AI_CHAT_MODEL: ${AI_CHAT_MODEL:-qwen2.5:3b-instruct}

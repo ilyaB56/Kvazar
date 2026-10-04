@@ -33,8 +33,10 @@ class ExternalAIConnector(BaseConnector):
     display_name = "Внешний ИИ (Z.ai / OpenAI / Anthropic)"
     capabilities = Capabilities(fetch=True, push=True)
     config_schema = {
+        # z.ai: OpenAI-совместимый путь — /api/paas/v4 (дефолт /v1 давал
+        # 404; живой зонд 2026-10-04: /api/paas/v4 → 401, /v1 → 404)
         "base_url": {"type": "string", "required": True,
-                     "default": "https://api.z.ai/v1"},
+                     "default": "https://api.z.ai/api/paas/v4"},
         # dropdown в UI (ConnectionsView рендерит enum как Select);
         # коннектор принимает любую строку — список лишь подсказка
         "model": {"type": "enum",
