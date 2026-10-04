@@ -38,11 +38,13 @@ class ExternalAIConnector(BaseConnector):
         "base_url": {"type": "string", "required": True,
                      "default": "https://api.z.ai/api/paas/v4"},
         # dropdown в UI (ConnectionsView рендерит enum как Select);
-        # коннектор принимает любую строку — список лишь подсказка
+        # коннектор принимает любую строку — список лишь подсказка.
+        # glm-4-flash/glm-4-plus на межд. API z.ai не существуют (ошибка
+        # 1211 Unknown Model — проверено живым запросом 2026-10-04)
         "model": {"type": "enum",
-                  "values": ["glm-4-flash", "glm-4-plus",
+                  "values": ["glm-4.6", "glm-4.5", "glm-4.5-air",
                              "gpt-4o-mini", "claude-3-haiku"],
-                  "required": True, "default": "glm-4-flash"},
+                  "required": True, "default": "glm-4.6"},
         "style": {"type": "enum", "values": ["openai", "anthropic"],
                   "default": "openai"},
         "timeout_seconds": {"type": "int", "default": 120},
