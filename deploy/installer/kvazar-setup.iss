@@ -350,6 +350,7 @@ procedure GenerateEnv();
 var
   env: string;
   jwt, secrets, pgpwd, backupKey, cors: string;
+  seedpwd: string;
   exe, pyscript, outp, cmdline: string;
   buf: AnsiString;
   txt: string;
@@ -377,7 +378,8 @@ begin
     'print(secrets.token_urlsafe(48)); ' +
     'print(''''.join(secrets.choice(string.ascii_letters+string.digits) ' +
     'for _ in range(32))); ' +
-    'print(Fernet.generate_key().decode())';
+    'print(Fernet.generate_key().decode()); ' +
+    'print(secrets.token_urlsafe(24))';
   outp := ExpandConstant('{tmp}\kvazar-keys.out');
   cmdline := Format('/C ""%s" run --rm --entrypoint python ' +
     'ghcr.io/ilyab56/kvazar-api:latest -c "%s" > "%s" 2>&1"', [
@@ -392,6 +394,7 @@ begin
     jwt := NextLine(txt);
     pgpwd := NextLine(txt);
     backupKey := NextLine(txt);
+    seedpwd := NextLine(txt);
   end;
 
   // фолбэк — PowerShell (машины, где docker run недоступен по какой-то
@@ -405,7 +408,8 @@ begin
     backupKey := RunCapture('powershell -NoProfile -Command "[Convert]::ToBase64String((1..32|%{Get-Random -Maximum 256}) -as [byte[]])"', '');
   end;
 
-  if (Length(jwt) < 32) or (Length(secrets) < 32) or (Length(pgpwd) < 24) then
+  if (Length(jwt) < 32) or (Length(secrets) < 32) or (Length(pgpwd) < 24) or
+     (Length(seedpwd) < 16) then
     RaiseException('Не удалось сгенерировать ключи — журнал: ' + LogPath);
 
   cors := Format('["http://localhost:8080","http://%s:8080"]', [GetComputerNameString]);
@@ -419,6 +423,10 @@ begin
     'JWT_SECRET=' + jwt + #13#10 +
     'SECRETS_KEY=' + secrets + #13#10 +
     'BACKUP_KEY=' + backupKey + #13#10 +
+    // стартовый служебный админ: случайный пароль, неизвестный никому
+    // (закрытие дыры дефолтного admin12345 при открытом тестировании,
+    // решение основателя 2026-10-04)
+    'SEED_ADMIN_PASSWORD=' + seedpwd + #13#10 +
     'BACKUP_SCHEDULE=03:00' + #13#10 +
     'WEB_TLS=0' + #13#10 +
     'CORS_ORIGINS=' + cors + #13#10 +

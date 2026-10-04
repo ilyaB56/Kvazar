@@ -15,6 +15,10 @@ x-app-env: &app_env
   SECRETS_KEY: ${SECRETS_KEY:?из .env}
   CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:8080"]}
   BACKUP_KEY: ${BACKUP_KEY:?из .env}
+  # стартовый служебный админ: случайный пароль из .env (генерит
+  # установщик); дефолт из кода — только dev (закрытие admin12345,
+  # решение основателя 2026-10-04 — открытая раздача установщика)
+  SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?из .env}
   BACKUP_DIR: /backups
   BACKUP_RETENTION: ${BACKUP_RETENTION:-7}
   BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-03:00}

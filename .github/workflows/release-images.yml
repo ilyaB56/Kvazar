@@ -163,6 +163,7 @@ jobs:
           JWT_SECRET=ci-test-secret-0123456789abcdef0123456789abcdef
           SECRETS_KEY=ci-test-secret-0123456789abcdef012345
           BACKUP_KEY=ci-test-secret-0123456789abcdef012345
+          SEED_ADMIN_PASSWORD=ci-seed-0123456789abcdef-RANDOM
           QUASAR_API_IMAGE=ghcr.io/${{ env.OWNER_LC }}/kvazar-api:latest
           QUASAR_WEB_IMAGE=ghcr.io/${{ env.OWNER_LC }}/kvazar-web:latest
           EOF
