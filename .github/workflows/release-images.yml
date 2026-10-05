@@ -214,6 +214,51 @@ jobs:
         with:
           files: build/kvazar-setup.exe
 
+  shell:
+    # Tauri-оболочка Квазара (tauri-shell-spec §12.2, этап A): NSIS
+    # kvazar-shell-setup.exe. Независима от стека и фронта (инвариант §4.2:
+    # без node), поэтому не ждёт build-images.
+    runs-on: windows-latest
+    if: github.event_name != 'pull_request'
+    defaults:
+      run:
+        working-directory: shell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shell
+      - name: Ставим tauri-cli (cargo binstall)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+      - run: cargo binstall --no-confirm tauri-cli
+      - name: Unit-тесты крейта (валидация адреса)
+        run: cargo test
+      - name: Сборка kvazar-shell-setup.exe
+        # tauri.conf.json рядом с Cargo.toml — cli находит его сам;
+        # экраны (frontendDist: screens) — статика без node (§4.2)
+        run: cargo tauri build
+      - name: "Каноническое имя артефакта (§12.1: kvazar-shell-setup-<ver>.exe)"
+        shell: pwsh
+        working-directory: .
+        run: |
+          $src = (Get-Item 'shell/target/release/bundle/nsis/*-setup.exe')[0]
+          $ver = $src.Name -replace '^.*?_(\d+\.\d+\.\d+)_[^-]+-setup\.exe$', '$1'
+          Copy-Item $src "shell/target/release/bundle/nsis/kvazar-shell-setup-$ver.exe"
+          Get-ChildItem 'shell/target/release/bundle/nsis'
+      - name: Артефакт сборки
+        uses: actions/upload-artifact@v4
+        with:
+          name: kvazar-shell-setup
+          path: shell/target/release/bundle/nsis/kvazar-shell-setup-*.exe
+      - name: Приложить к GitHub Release (на тегах)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: shell/target/release/bundle/nsis/kvazar-shell-setup-*.exe
+
   upgrade-simulation:
     # Симуляция upgrade-path (приёмка B): контракт манифестов — версия/
     # min_supported (N-2), подпись-поля, compose_file с sha256; полный

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'" />
+  <title>Квазар не запущен</title>
+  <link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+  <div class="screen">
+    <img class="logo" src="icon.png" alt="Квазар" />
+    <h1>Квазар сейчас не запущен</h1>
+    <p>
+      Похоже, Квазар на <code id="addr"></code> сейчас не запущен.
+      Если это ваш компьютер — запустите Квазар (Docker Desktop / мини-ПК
+      должен работать). Если вы сотрудник — уточните у администратора.
+    </p>
+    <p class="hint">Оболочка продолжит попытки подключения автоматически.</p>
+    <div class="row">
+      <button id="retry">Проверить снова</button>
+      <button id="settings" class="secondary">Настройки</button>
+    </div>
+  </div>
+  <script src="unavailable.js"></script>
+</body>
+</html>

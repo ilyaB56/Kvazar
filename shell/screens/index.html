@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'" />
+  <title>Квазар — адрес сервера</title>
+  <link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+  <div class="screen">
+    <img class="logo" src="icon.png" alt="Квазар" />
+    <h1>Адрес сервера Квазара</h1>
+    <input id="address" type="text" value="http://localhost:8080" spellcheck="false" />
+    <p class="hint">
+      Для сотрудников: адрес компьютера с Квазаром, например
+      http://192.168.1.10:8080. Для облака — адрес вида
+      https://компания.kvazar.ru
+    </p>
+    <div id="error" class="error"></div>
+    <div id="warn" class="warnbox">
+      По этому адресу отвечает не Квазар. Если вы уверены, что адрес верный
+      (например, нестандартный прокси), можно продолжить всё равно.
+    </div>
+    <div class="row">
+      <button id="check">Проверить и подключиться</button>
+      <button id="save" class="secondary">Сохранить без проверки</button>
+    </div>
+    <div id="warn-actions" class="row" style="display:none">
+      <button id="force">Продолжить всё равно</button>
+      <button id="edit" class="secondary">Изменить адрес</button>
+    </div>
+    <p class="hint" id="footer-hint">Сервер ещё поднимается? «Сохранить без проверки» —
+      оболочка будет пытаться подключиться сама.</p>
+  </div>
+  <script src="setup.js"></script>
+</body>
+</html>

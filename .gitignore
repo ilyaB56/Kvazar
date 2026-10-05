@@ -25,3 +25,7 @@ frontend/patch_*.py
 node_modules/
 package*.json
 build/
+
+# Tauri-оболочка: сборочные артефакты крейта
+shell/target/
+shell/gen/
