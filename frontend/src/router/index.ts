@@ -99,6 +99,13 @@ const router = createRouter({
             },
           ],
         },
+        {
+          // Полноэкранный центр уведомлений (notifications-spec §8, этап A)
+          path: 'notifications',
+          name: 'notifications-list',
+          component: () => import('../views/NotificationsListView.vue'),
+          meta: { requiresAuth: true, titleKey: 'notify.listTitle' },
+        },
         // Система → Настройки (подразделы, §5; расширение — этап G)
         {
           path: 'settings',
@@ -227,7 +234,6 @@ const router = createRouter({
     // Старые маршруты — редиректы (§5)
     { path: '/connections', redirect: '/integrations/connections' },
     { path: '/sync', redirect: '/integrations/sync' },
-    { path: '/notifications', redirect: '/integrations/notifications' },
     { path: '/system', redirect: '/settings/system' },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

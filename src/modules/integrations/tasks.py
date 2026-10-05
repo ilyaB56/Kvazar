@@ -246,7 +246,10 @@ def run_job(self, job_id: str) -> dict:
             # финальный провал: событие для уведомлений (showcase-chain, этап D)
             job = db.get(m.SyncJob, job_id)
             publish(db, "integration.sync.failed",
-                    {"job": job.name if job else job_id, "error": str(exc)[:500]})
+                    {"job": job.name if job else job_id,
+                     "job_id": str(job_id),
+                     "company_id": str(job.company_id) if job else None,
+                     "error": str(exc)[:500]})
             db.commit()
             return {"ok": False, "error": str(exc)}
         raise

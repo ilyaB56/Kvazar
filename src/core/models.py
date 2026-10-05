@@ -399,3 +399,33 @@ class ApiToken(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Notification(Base):
+    """notifications — in-app уведомление (notifications-spec §5).
+
+    Fan-out: строка = один адресат (user_id NOT NULL); audience —
+    происхождение адресации (user|admins|all|platform_admins).
+    company_id NULL = платформенное (адресаты — платформенные админы).
+    dedup_key + UNIQUE (user_id, dedup_key) — идемпотентность генерации.
+    """
+
+    __table_args__ = ({"schema": CORE_SCHEMA},)
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.companies.id", ondelete="CASCADE"))
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{CORE_SCHEMA}.users.id", ondelete="CASCADE"), index=True)
+    audience: Mapped[str] = mapped_column(String(20))
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    severity: Mapped[str] = mapped_column(String(10))  # info|warning|critical
+    title: Mapped[str] = mapped_column(String(255))
+    body: Mapped[str] = mapped_column(Text, default="")
+    entity_type: Mapped[str | None] = mapped_column(String(100))
+    entity_id: Mapped[str | None] = mapped_column(String(64))
+    link: Mapped[str] = mapped_column(String(255), default="")
+    dedup_key: Mapped[str | None] = mapped_column(String(255))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

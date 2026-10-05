@@ -24,6 +24,7 @@ def _publish(db, name: str, proposal: m.Proposal) -> None:
     payload = {
         "proposal_id": str(proposal.id),
         "action_type": proposal.action_type,
+        "company_id": str(proposal.company_id),
     }
     events.publish(db, name, payload)
     # ключевое действие агента — в events_log (ADR-006 п.7), без сумм

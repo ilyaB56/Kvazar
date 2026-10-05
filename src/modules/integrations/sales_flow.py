@@ -298,6 +298,7 @@ def run_sales_flow(db, *, payment: m.OnlinePayment, recipe: m.Recipe | None,
         events.publish(db, "integration.payment.failed", {
             "payment_id": str(payment.id),
             "provider_payment_id": payment.provider_payment_id,
+            "company_id": str(payment.company_id),
             "step": run.step, "reason": reason,
         })
 
@@ -417,6 +418,7 @@ def _finish(db, run: m.FlowRun, payment: m.OnlinePayment, ctx: dict):
     events.publish(db, "integration.payment.processed", {
         "payment_id": str(payment.id),
         "provider_payment_id": payment.provider_payment_id,
+        "company_id": str(payment.company_id),
         "sales_order_id": ctx.get("order_id"),
         "transaction_id": ctx.get("transaction_id"),
         "shipment_id": None,

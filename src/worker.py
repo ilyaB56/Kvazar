@@ -11,7 +11,9 @@ celery_app = Celery(
     "erp",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["src.modules.integrations.tasks", "src.core.tasks", "src.modules.ai_agent.tasks"],
+    include=["src.modules.integrations.tasks", "src.core.tasks", "src.modules.ai_agent.tasks",
+             "src.core.notifications.tasks",
+             "src.modules.mgmt_accounting.features.inventory.tasks"],
 )
 
 # подписчики событий должны жить и в воркере: здесь крутится диспетчер outbox
@@ -69,6 +71,19 @@ celery_app.conf.update(
         "daily-update-check": {
             "task": "src.core.tasks.check_update_task",
             "schedule": crontab(hour=5, minute=0),
+        },
+        # In-app-уведомления (notifications-spec §6.2)
+        "sweep-low-stock": {
+            "task": "src.modules.mgmt_accounting.features.inventory.tasks.sweep_low_stock",
+            "schedule": crontab(minute=0),  # раз в час
+        },
+        "totp-deadline-reminder": {
+            "task": "src.core.notifications.tasks.totp_deadline_reminder",
+            "schedule": crontab(hour=6, minute=0),
+        },
+        "backup-stale-check": {
+            "task": "src.core.notifications.tasks.backup_stale_check",
+            "schedule": crontab(hour=6, minute=15),
         },
     },
     worker_hijack_root_logger=False,

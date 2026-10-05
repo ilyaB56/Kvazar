@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -49,6 +49,7 @@ from src.core.models import (
     Setting,
     SignupRequest,
     User,
+    Notification,
 )
 from src.core.pagination import Page, PageParams, page_params
 from src.core.passwords import validate_password
@@ -2247,3 +2248,82 @@ def db_latest_update_info() -> dict | None:
         return value if isinstance(value, dict) else None
     finally:
         db.close()
+
+
+# ---------- Notifications (notifications-spec §7) ----------
+
+class NotificationOut(BaseModel):
+    id: uuid.UUID
+    kind: str
+    severity: str
+    title: str
+    body: str
+    link: str
+    entity_type: str | None = None
+    entity_id: str | None = None
+    audience: str
+    company_id: uuid.UUID | None = None
+    read_at: datetime | None = None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, n: Notification) -> "NotificationOut":
+        return cls(
+            id=n.id, kind=n.kind, severity=n.severity, title=n.title, body=n.body,
+            link=n.link, entity_type=n.entity_type, entity_id=n.entity_id,
+            audience=n.audience, company_id=n.company_id,
+            read_at=n.read_at, created_at=n.created_at,
+        )
+
+
+@router.get("/notifications", response_model=list[NotificationOut] | Page[NotificationOut])
+def list_notifications(
+    user: HumanUser,
+    db: Annotated[Session, Depends(get_db)] = None,
+    page: Annotated[PageParams, Depends(page_params)] = None,
+    unread: bool = Query(default=False, description="Только непрочитанные"),
+    kind: str | None = Query(default=None, description="Фильтр типов через запятую"),
+):
+    """Свои уведомления, новые сверху. Изоляция — WHERE user_id = <из сессии>."""
+    q = select(Notification).where(Notification.user_id == user.id)
+    if unread:
+        q = q.where(Notification.read_at.is_(None))
+    if kind:
+        kinds = [k.strip() for k in kind.split(",") if k.strip()]
+        if kinds:
+            q = q.where(Notification.kind.in_(kinds))
+    q = q.order_by(Notification.created_at.desc())
+    return page.apply(db, q, transform=NotificationOut.of)
+
+
+@router.get("/notifications/unread-count")
+def notifications_unread_count(user: HumanUser,
+                               db: Annotated[Session, Depends(get_db)] = None):
+    count = db.scalar(select(func.count()).select_from(Notification).where(
+        Notification.user_id == user.id, Notification.read_at.is_(None)))
+    return {"count": int(count or 0)}
+
+
+class MarkReadIn(BaseModel):
+    ids: list[uuid.UUID] = Field(default_factory=list)
+    all: bool = False
+
+
+@router.post("/notifications/read")
+def mark_notifications_read(body: MarkReadIn, user: HumanUser,
+                            db: Annotated[Session, Depends(get_db)] = None):
+    """Отметить прочитанными свои строки; чужие id молча пропускаются."""
+    now = datetime.now(UTC)
+    if body.all:
+        result = db.execute(select(Notification).where(
+            Notification.user_id == user.id, Notification.read_at.is_(None)))
+        rows = result.scalars().all()
+    elif body.ids:
+        rows = [n for n in (db.get(Notification, i) for i in body.ids)
+                if n is not None and n.user_id == user.id and n.read_at is None]
+    else:
+        rows = []
+    for n in rows:
+        n.read_at = now
+    db.commit()
+    return {"updated": len(rows)}

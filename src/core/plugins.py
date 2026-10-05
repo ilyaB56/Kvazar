@@ -81,6 +81,10 @@ def register_event_handlers() -> list[Manifest]:
     from src.modules.integrations.notify import register_notification_handlers
 
     register_notification_handlers()
+    # In-app-уведомления: потребитель событий шины (notifications-spec §6.1)
+    from src.core.notifications.consumers import register_notification_consumers
+
+    register_notification_consumers()
     # Мини-исполнитель рецептов: trigger_event -> api_call (этап F)
     from src.modules.integrations.recipes_executor import register_recipe_handlers
 
