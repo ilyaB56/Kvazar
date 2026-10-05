@@ -9,9 +9,7 @@
 
 from __future__ import annotations
 
-import json
 import os
-import urllib.parse
 import uuid
 
 import httpx

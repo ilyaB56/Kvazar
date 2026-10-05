@@ -10,7 +10,6 @@ outbox по payload.company_id), фильтры, пагинация, трасс�
 from __future__ import annotations
 
 import os
-import urllib.parse
 import uuid
 
 import httpx
