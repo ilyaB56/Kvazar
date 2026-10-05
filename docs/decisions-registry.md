@@ -1686,3 +1686,13 @@ API+периодика+UI+фикс дыры company_id в payment/sync собы�
 tauri этап A параллельно (окно+адрес+заглушка+трей+single instance+
 CI); затем B/C. После этих блоков в крупном плане продукта остаются
 только пилот и его запросы.*
+*Приёмка A (notifications + tauri) 2026-10-05: notifications — ПРИНЯТ
+живьём (создание/fan-out user+platform_admins/dedup-схлопывание/
+счётчик/список/read-all/изоляция; тесты 17 passed, ruff чист; дыра
+company_id закрыта по коду). tauri — найден и починен СБОЙ CI-shell:
+cargo-binstall ставил НОВЕЙШИЙ tauri-cli, чей конфиг-скелет пишет
+поле mainBinaryName, неизвестное старому крейту tauri-build
+(«CLI newer than tauri-build»); поле удалено (имя бинарника и так из
+Cargo-пакета). Плюс: коммиты разработки НЕ БЫЛИ ЗАПУШЕНЫ (remote
+отставал на 2 коммита — CI не имел шансов) — запушено арх-чатом.
+Урок: «готово» от разработки проверять git ls-remote, не только pull.*

@@ -30,7 +30,6 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico", "icons/icon.png"],
-    "mainBinaryName": "kvazar-shell",
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper" },
       "nsis": {
