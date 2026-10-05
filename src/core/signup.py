@@ -109,6 +109,16 @@ def verify(db, token: str) -> bool:
         return False
     row.verified_at = datetime.now(UTC)
     row.status = "verified"
+    # notifications-spec §11: платформенное событие (без company_id —
+    # у заявки организации ещё нет; адресат — платформенные админы)
+    from src.core import events
+
+    events.publish(db, "platform.signup.verified", {
+        "signup_request_id": str(row.id),
+        "company_name": row.company_name,
+        "contact_name": row.contact_name,
+        "email": row.email,
+    })
     db.commit()
     notify_platform_admin(db, row)
     return True

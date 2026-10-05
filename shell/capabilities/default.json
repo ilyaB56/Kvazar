@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "IPC только для локальных экранов оболочки. Удалённый контент (интерфейс ERP) не получает доступ к Tauri API: capability привязана к окну, а remote-origin доступ к IPC в Tauri 2 закрыт по умолчанию (dangerousRemoteDomainIpcAccess не задан).",
-  "windows": ["main"],
+  "windows": ["main", "close-prompt"],
   "local": true,
   "permissions": ["core:default"]
 }

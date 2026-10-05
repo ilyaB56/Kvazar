@@ -1122,6 +1122,9 @@ class NotificationRuleIn(BaseModel):
     chat_id: str
     template: str = ""
     is_active: bool = True
+    # notifications-spec §12-C: каналы правила; in_app включает создание
+    # серверных уведомлений по событию (in_app-типы работают и без правил)
+    channels: list[str] = Field(default_factory=lambda: ["telegram"])
 
 
 class NotificationRuleOut(BaseModel):
@@ -1131,6 +1134,7 @@ class NotificationRuleOut(BaseModel):
     chat_id: str
     template: str
     is_active: bool
+    channels: list[str] = Field(default_factory=lambda: ["telegram"])
 
     model_config = {"from_attributes": True}
 
@@ -1151,6 +1155,9 @@ def create_notification_rule(body: NotificationRuleIn, user: User = Depends(requ
 
     if body.event_name not in NOTIFY_EVENTS:
         raise HTTPException(422, f"event must be one of {list(NOTIFY_EVENTS)}")
+    bad_channels = [c for c in body.channels if c not in ("telegram", "in_app")]
+    if bad_channels:
+        raise HTTPException(422, "channels must be a subset of ['telegram', 'in_app']")
     rule = m.NotificationRule(**body.model_dump(), company_id=scoped)
     db.add(rule)
     db.commit()

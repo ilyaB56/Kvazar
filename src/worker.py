@@ -13,7 +13,8 @@ celery_app = Celery(
     backend=settings.redis_url,
     include=["src.modules.integrations.tasks", "src.core.tasks", "src.modules.ai_agent.tasks",
              "src.core.notifications.tasks",
-             "src.modules.mgmt_accounting.features.inventory.tasks"],
+             "src.modules.mgmt_accounting.features.inventory.tasks",
+             "src.modules.mini_crm.tasks"],
 )
 
 # подписчики событий должны жить и в воркере: здесь крутится диспетчер outbox
@@ -84,6 +85,16 @@ celery_app.conf.update(
         "backup-stale-check": {
             "task": "src.core.notifications.tasks.backup_stale_check",
             "schedule": crontab(hour=6, minute=15),
+        },
+        # CRM-просрочки сделок/задач (notifications-spec §12-B)
+        "sweep-crm-overdue": {
+            "task": "src.modules.mini_crm.tasks.sweep_crm_overdue",
+            "schedule": crontab(hour=7, minute=0),
+        },
+        # Ретеншн прочитанных уведомлений (§12-C/О1)
+        "notifications-retention": {
+            "task": "src.core.notifications.tasks.notifications_retention",
+            "schedule": crontab(hour=4, minute=30),
         },
     },
     worker_hijack_root_logger=False,

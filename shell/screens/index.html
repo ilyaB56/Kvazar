@@ -10,7 +10,9 @@
   <div class="screen">
     <img class="logo" src="icon.png" alt="Квазар" />
     <h1>Адрес сервера Квазара</h1>
-    <input id="address" type="text" value="http://localhost:8080" spellcheck="false" />
+    <input id="address" type="text" value="http://localhost:8080" spellcheck="false"
+           list="recent" />
+    <datalist id="recent"></datalist>
     <p class="hint">
       Для сотрудников: адрес компьютера с Квазаром, например
       http://192.168.1.10:8080. Для облака — адрес вида
@@ -31,6 +33,21 @@
     </div>
     <p class="hint" id="footer-hint">Сервер ещё поднимается? «Сохранить без проверки» —
       оболочка будет пытаться подключиться сама.</p>
+
+    <!-- Настройки оболочки (§7/§9, этап B): тот же экран служит первым
+         запуском и настройками (§5.1) -->
+    <div class="settings">
+      <label><input type="checkbox" id="opt-close-tray" />
+        Сворачивать в трей вместо закрытия</label>
+      <label><input type="checkbox" id="opt-autostart" />
+        Запускать Квазар при входе в Windows</label>
+      <label><input type="checkbox" id="opt-notifications" />
+        Нативные уведомления Windows</label>
+    </div>
+    <div class="row">
+      <button id="test-note" class="secondary">Показать тестовое уведомление</button>
+    </div>
+    <p class="hint" id="version"></p>
   </div>
   <script src="setup.js"></script>
 </body>

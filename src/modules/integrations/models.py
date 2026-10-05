@@ -345,6 +345,11 @@ class NotificationRule(Base):
     chat_id: Mapped[str] = mapped_column(String(64))
     template: Mapped[str] = mapped_column(Text, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # notifications-spec §12-C: каналы доставки правила; дефолт — только
+    # telegram (существующие правила не меняют поведения), "in_app" —
+    # правило не глушит in-app-уведомления по событию
+    channels: Mapped[list] = mapped_column(
+        JSONB, default=lambda: ["telegram"], server_default='["telegram"]')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -5,13 +5,45 @@ const $ = (id) => document.getElementById(id);
 let pendingAddress = null;
 
 async function init() {
-  // подставить сохранённый адрес, если он есть (смена адреса, §5.3)
+  // подставить сохранённый адрес и настройки, если они есть (смена
+  // адреса §5.3; настройки — этап B)
   try {
     const st = await invoke("shell_state");
     if (st.server_url) $("address").value = st.server_url;
   } catch (e) { /* первый запуск — дефолт в разметке */ }
+  try {
+    const s = await invoke("settings_state");
+    if (s.server_url) $("address").value = s.server_url;
+    const recent = $("recent");
+    (s.recent_addresses || []).forEach((a) => {
+      const opt = document.createElement("option");
+      opt.value = a;
+      recent.appendChild(opt);
+    });
+    $("opt-close-tray").checked = !!s.close_to_tray;
+    $("opt-autostart").checked = !!s.autostart;
+    $("opt-notifications").checked = !!s.notifications_enabled;
+    $("version").textContent = "Оболочка Квазар, версия " + (s.version || "");
+  } catch (e) { /* настройки недоступны — экран работает как первый запуск */ }
   $("address").focus();
 }
+
+function bindOption(id, key) {
+  $(id).addEventListener("change", async (ev) => {
+    try {
+      await invoke("set_setting", { key, value: ev.target.checked });
+    } catch (e) {
+      ev.target.checked = !ev.target.checked;
+    }
+  });
+}
+bindOption("opt-close-tray", "close_to_tray");
+bindOption("opt-autostart", "autostart");
+bindOption("opt-notifications", "notifications_enabled");
+
+$("test-note").addEventListener("click", () => {
+  invoke("test_notification").catch(() => {});
+});
 
 $("check").addEventListener("click", async () => {
   hideWarn();

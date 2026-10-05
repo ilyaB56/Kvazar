@@ -42,6 +42,7 @@ ru.SysCheckTitle=Проверка системы
 ru.RuntimeStep=Устанавливаем среду выполнения…%nЭто может занять несколько минут
 ru.ImagesStep=Загружаем компоненты Квазара…
 ru.DbStep=Запускаем базу данных…
+ru.ShellStep=Устанавливаем приложение Квазар…
 ru.SetupStep=Применяем настройки…
 ru.OrgTitle=Первая настройка Квазара
 ru.OrgSubtitle=Создайте организацию и учётную запись администратора
@@ -55,6 +56,13 @@ Source: "..\..\docker-compose.box.yml"; DestDir: "{app}\stack"; Flags: ignorever
 Source: "..\..\docker-compose.ai.yml"; DestDir: "{app}\stack"; Flags: ignoreversion
 Source: "..\keys\update-public.pem"; DestDir: "{app}\stack"; Flags: ignoreversion
 Source: "..\..\bin\kvazar.cmd"; DestDir: "{app}\bin"; Flags: ignoreversion
+
+[Tasks]
+; Приложение «Квазар» для Windows (tauri-shell-spec §12.3, этап C):
+; включено по умолчанию для владельца. Сам установщик оболочки не
+; бандлится (качается свежий из релиза визитки kvazar-download),
+; скачивание и тихая доустановка — в [Code] InstallShell
+Name: "shell"; Description: "Приложение «Квазар» для Windows (рекомендуется)"
 
 [Dirs]
 ; Inno не допускает несколько Name: в одной строке — каждая запись отдельно
@@ -483,6 +491,78 @@ begin
   end;
 end;
 
+// ---------- Приложение «Квазар» для Windows (tauri-shell-spec §12.3) ----------
+
+function ShellInstalled(): Boolean;
+var
+  names: TArrayOfString;
+  i: Integer;
+  disp: string;
+begin
+  // идемпотентность: повторная установка коробки не дублирует оболочку.
+  // Tauri NSIS (per-user) пишет ключ HKCU\...\Uninstall с DisplayName =
+  // productName; латиница «Kvazar» отличает его от коробки (её Inno-ключ
+  // — кириллица «Квазар»), деинсталляции независимы (§12.3, приёмка C.17)
+  Result := False;
+  if not RegGetSubkeyNames(HKEY_CURRENT_USER,
+      'Software\Microsoft\Windows\CurrentVersion\Uninstall', names) then
+    Exit;
+  for i := 0 to GetArrayLength(names) - 1 do
+  begin
+    if RegQueryStringValue(HKEY_CURRENT_USER,
+        'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + names[i],
+        'DisplayName', disp) then
+      if disp = 'Kvazar' then
+      begin
+        Result := True;
+        Exit;
+      end;
+  end;
+end;
+
+procedure InstallShell();
+var
+  page: TDownloadWizardPage;
+  code: Integer;
+begin
+  if not WizardIsTaskSelected('shell') then
+  begin
+    Log('Оболочка: задача не выбрана — пропускаем');
+    Exit;
+  end;
+  if ShellInstalled() then
+  begin
+    Log('Оболочка: уже установлена — пропускаем (идемпотентность)');
+    Exit;
+  end;
+  // скачиваем СВЕЖИЙ установщик из релиза визитки kvazar-download
+  // (стабильное имя ассета kvazar-shell-setup.exe налаживает CI-джоба
+  // shell); НЕ external [Files]: релизы независимы от версии коробки
+  WizardForm.StatusLabel.Caption := 'Скачиваем приложение Квазар…';
+  page := CreateDownloadPage('Приложение Квазар',
+    'Скачиваем приложение Квазар для Windows (~5 МБ).', nil);
+  page.Add('https://github.com/ilyaB56/kvazar-download/releases/latest/download/kvazar-shell-setup.exe',
+    'kvazar-shell-setup.exe', '');
+  page.Show;
+  try
+    try
+      page.Download;
+    except
+      // сбой оболочки НЕ роняет установку коробки: оболочка опциональна
+      // (§1), её можно поставить позже из релиза визитки
+      Log('Оболочка: скачать не удалось — ' + AddPeriod(GetExceptionMessage));
+      Exit;
+    end;
+  finally
+    page.Hide;
+  end;
+  // тихая доустановка ПОСЛЕ успешного WaitForHealth (§12.3): NSIS /S,
+  // per-user — без UAC
+  Exec(ExpandConstant('{tmp}\kvazar-shell-setup.exe'), '/S', '', SW_HIDE,
+    ewWaitUntilTerminated, code);
+  Log(Format('Оболочка: установщик завершился с кодом %d', [code]));
+end;
+
 // ---------- §3.9 Мастер первой настройки ----------
 
 procedure CreateOrgWizard();
@@ -600,6 +680,8 @@ begin
     if not WaitForHealth(300) then
       RaiseException('Квазар не ответил за 5 минут. Журнал: ' + LogPath + #13#10 + 'После запуска среды выполнения повторите установку — она продолжит с этого места.');
     Log('Стек поднят, health зелёный');
+    WizardForm.StatusLabel.Caption := ExpandConstant('{cm:ShellStep}');
+    InstallShell();           // 7: приложение Квазар для Windows (этап C)
   end;
 end;
 

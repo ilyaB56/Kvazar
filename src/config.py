@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # Ключ для шифрования секретов подключений (Fernet). В проде — из секрет-хранилища.
     secrets_key: str = "change-me-fernet-key"
 
+    # Ретеншн серверных уведомлений (notifications-spec §12-C/О1):
+    # прочитанные старше N дней удаляются beat-задачей; 0 — не чистить
+    notifications_retention_days: int = 90
+
     cors_origins: list[str] = ["http://localhost:5173"]
 
 

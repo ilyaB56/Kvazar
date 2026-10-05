@@ -2327,3 +2327,34 @@ def mark_notifications_read(body: MarkReadIn, user: HumanUser,
         n.read_at = now
     db.commit()
     return {"updated": len(rows)}
+
+
+class MutedKindsIn(BaseModel):
+    kinds: list[str] = Field(default_factory=list)
+
+
+@router.get("/notifications/muted-kinds")
+def get_muted_kinds(user: HumanUser, db: Annotated[Session, Depends(get_db)] = None):
+    """Мьют типов уведомлений пользователя (notifications-spec §12-C).
+
+    Спека описывает мьют на организацию, но erp_core.settings.key глобально
+    UNIQUE — per-org значение с одним ключом невозможно; ключ включает
+    user_id (решение по фактическому коду).
+    """
+    from src.core.notifications.service import _muted_kinds
+
+    return {"muted": sorted(_muted_kinds(db, user.id))}
+
+
+@router.put("/notifications/muted-kinds")
+def put_muted_kinds(body: MutedKindsIn, user: HumanUser,
+                    db: Annotated[Session, Depends(get_db)] = None):
+    from src.core.notifications.registry import REGISTRY
+    from src.core.notifications.service import set_muted_kinds
+
+    unknown = [k for k in body.kinds if k not in REGISTRY]
+    if unknown:
+        raise HTTPException(422, f"unknown kinds: {unknown}")
+    set_muted_kinds(db, user.id, body.kinds)
+    db.commit()
+    return {"muted": sorted(set(body.kinds))}

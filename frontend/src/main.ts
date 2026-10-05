@@ -10,6 +10,13 @@ import router from './router'
 import { i18n } from './i18n'
 import './styles.css'
 
+// tauri-shell-spec §13.1: фиксация признака оболочки (?shell=tauri) —
+// query сбрасывается первой же внутренней навигацией, поэтому запоминаем
+// в sessionStorage (переживает перезагрузки страницы в окне оболочки)
+if (new URLSearchParams(window.location.search).get('shell') === 'tauri') {
+  sessionStorage.setItem('erp-shell', 'tauri')
+}
+
 // тема применяется до монтирования — без вспышки светлого при dark
 const storedTheme = localStorage.getItem('erp-theme')
 if (storedTheme === 'dark') {

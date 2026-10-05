@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'" />
+  <title>Квазар — закрытие</title>
+  <link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+  <div class="screen" style="gap:10px">
+    <img class="logo" src="icon.png" alt="Квазар" style="width:48px;height:48px" />
+    <h1 style="font-size:18px">Закрыть Квазар или свернуть в трей?</h1>
+    <p class="hint">Свернутое в трей приложение продолжит следить за
+      уведомлениями; вернуть окно — иконка Квазара в трее.</p>
+    <label class="checkbox-row">
+      <input type="checkbox" id="remember" /> Запомнить выбор
+    </label>
+    <div class="row">
+      <button id="tray">Свернуть в трей</button>
+      <button id="exit" class="secondary">Закрыть</button>
+    </div>
+  </div>
+  <script src="close-prompt.js"></script>
+</body>
+</html>

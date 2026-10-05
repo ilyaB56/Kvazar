@@ -24,7 +24,11 @@ def _publish(db, name: str, proposal: m.Proposal) -> None:
     payload = {
         "proposal_id": str(proposal.id),
         "action_type": proposal.action_type,
-        "company_id": str(proposal.company_id),
+        "company_id": (str(proposal.company_id)
+                       if proposal.company_id else None),
+        # notifications-spec §11 (этап B): адресат in-app-уведомления —
+        # автор предложения (audience=user)
+        "user_id": str(proposal.user_id),
     }
     events.publish(db, name, payload)
     # ключевое действие агента — в events_log (ADR-006 п.7), без сумм

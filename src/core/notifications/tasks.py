@@ -9,11 +9,12 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
-from src.core.models import Backup, User, UserTotp
+from src.core.models import Backup, Notification, User, UserTotp
 from src.core.notifications.service import notify
 from src.core.tasks import celery_app
+from src.config import get_settings
 from src.db import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -91,3 +92,28 @@ def backup_stale_check() -> dict:
         db.close()
     logger.info("backup_stale_check: %d уведомлений", created)
     return {"created": created}
+
+
+@celery_app.task(name="src.core.notifications.tasks.notifications_retention")
+def notifications_retention() -> dict:
+    """Ретеншн (§12-C/О1): удалить прочитанные старше N дней.
+
+    NOTIFICATIONS_RETENTION_DAYS (дефолт 90; 0 — не чистить).
+    Непрочитанные не трогаем.
+    """
+    days = get_settings().notifications_retention_days
+    if days <= 0:
+        return {"deleted": 0}
+    db = SessionLocal()
+    try:
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        result = db.execute(delete(Notification).where(
+            Notification.read_at.is_not(None),
+            Notification.read_at < cutoff))
+        db.commit()
+        deleted = result.rowcount or 0
+    finally:
+        db.close()
+    logger.info("notifications_retention: удалено %d прочитанных старше %d дней",
+                deleted, days)
+    return {"deleted": deleted}

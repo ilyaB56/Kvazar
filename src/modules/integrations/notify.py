@@ -65,15 +65,32 @@ def render_template(template: str, payload: dict) -> str:
     return (template or "").format_map(values)
 
 
+def pick_telegram_connection(db, company_id: uuid.UUID | None):
+    """Connection telegram_bot в пределах организации (§12-C, фикс §3.3-1).
+
+    Сначала свой (самый свежий активный), затем платформенный
+    (company_id IS NULL) — фолбэк, чтобы одиночная установка без
+    org-коннектора продолжала работать. None — бота нет.
+    """
+    connection = db.scalar(select(m.Connection).where(
+        m.Connection.connector_code == "telegram_bot",
+        m.Connection.is_active.is_(True),
+        m.Connection.company_id == company_id,
+    ).order_by(m.Connection.created_at.desc()).limit(1))
+    if connection is None and company_id is not None:
+        connection = db.scalar(select(m.Connection).where(
+            m.Connection.connector_code == "telegram_bot",
+            m.Connection.is_active.is_(True),
+            m.Connection.company_id.is_(None),
+        ).order_by(m.Connection.created_at.desc()).limit(1))
+    return connection
+
+
 def send_notification(rule: m.NotificationRule, payload: dict) -> bool:
     """Отправить одно правило через connection «Telegram» (коннектор)."""
     db = SessionLocal()
     try:
-        # детерминированно: самый свежий активный telegram-connection
-        connection = db.scalar(select(m.Connection).where(
-            m.Connection.connector_code == "telegram_bot",
-            m.Connection.is_active.is_(True),
-        ).order_by(m.Connection.created_at.desc()).limit(1))
+        connection = pick_telegram_connection(db, rule.company_id)
         if connection is None:
             logger.warning("notify: нет активного connection telegram_bot — пропуск")
             return False

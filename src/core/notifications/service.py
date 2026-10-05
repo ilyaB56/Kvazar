@@ -14,10 +14,35 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from src.core.models import Notification, User
+from src.core.models import Notification, Setting, User
 from src.core.notifications.registry import REGISTRY
 
 logger = logging.getLogger(__name__)
+
+# Мьют типов (§12-C): Setting на пользователя. В spec §12-C мьют
+# описан на организацию, но erp_core.settings.key глобально UNIQUE —
+# per-org значение с одним ключом невозможно; поэтому ключ включает
+# user_id (решение по фактическому коду, см. тесты).
+MUTED_SETTING_KEY = "notifications.muted_kinds:{user_id}"
+
+
+def _muted_kinds(db: Session, user_id: uuid.UUID) -> set[str]:
+    """Замьюченные пользователем типы (пусто — фильтр выключен)."""
+    row = db.scalar(select(Setting).where(
+        Setting.key == MUTED_SETTING_KEY.format(user_id=user_id)))
+    if row is None or not isinstance(row.value, list):
+        return set()
+    return {str(k) for k in row.value}
+
+
+def set_muted_kinds(db: Session, user_id: uuid.UUID, kinds: list[str]) -> None:
+    key = MUTED_SETTING_KEY.format(user_id=user_id)
+    row = db.scalar(select(Setting).where(Setting.key == key))
+    if row is None:
+        db.add(Setting(key=key, value=sorted(set(kinds)), value_type="json"))
+    else:
+        row.value = sorted(set(kinds))
+        row.value_type = "json"
 
 
 def _resolve_recipients(db: Session, *, company_id: uuid.UUID | None,
@@ -64,6 +89,8 @@ def notify(db: Session, *, company_id: uuid.UUID | str | None, kind: str,
     created = 0
     for uid in _resolve_recipients(db, company_id=company_id,
                                    audience=audience, user_id=user_id):
+        if kind in _muted_kinds(db, uid):
+            continue  # тип замьючен получателем (§12-C)
         stmt = pg_insert(Notification).values(
             company_id=company_id, user_id=uid, audience=audience, kind=kind,
             severity=severity, title=title[:255], body=body or "",

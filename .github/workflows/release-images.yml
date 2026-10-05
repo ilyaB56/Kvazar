@@ -247,17 +247,25 @@ jobs:
           $src = (Get-Item 'shell/target/release/bundle/nsis/*-setup.exe')[0]
           $ver = $src.Name -replace '^.*?_(\d+\.\d+\.\d+)_[^-]+-setup\.exe$', '$1'
           Copy-Item $src "shell/target/release/bundle/nsis/kvazar-shell-setup-$ver.exe"
+          # стабильный алиас без версии: box-installer (этап C
+          # tauri-shell-spec §12.3) качает оболочку по ссылке
+          # releases/latest/download/kvazar-shell-setup.exe визитки
+          Copy-Item $src "shell/target/release/bundle/nsis/kvazar-shell-setup.exe" -Force
           Get-ChildItem 'shell/target/release/bundle/nsis'
       - name: Артефакт сборки
         uses: actions/upload-artifact@v4
         with:
           name: kvazar-shell-setup
-          path: shell/target/release/bundle/nsis/kvazar-shell-setup-*.exe
+          path: |
+            shell/target/release/bundle/nsis/kvazar-shell-setup-*.exe
+            shell/target/release/bundle/nsis/kvazar-shell-setup.exe
       - name: Приложить к GitHub Release (на тегах)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: shell/target/release/bundle/nsis/kvazar-shell-setup-*.exe
+          files: |
+            shell/target/release/bundle/nsis/kvazar-shell-setup-*.exe
+            shell/target/release/bundle/nsis/kvazar-shell-setup.exe
 
   upgrade-simulation:
     # Симуляция upgrade-path (приёмка B): контракт манифестов — версия/
