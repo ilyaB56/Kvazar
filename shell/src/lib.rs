@@ -255,7 +255,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &settings, &quit])?;
     let icon = app.default_window_icon().cloned().unwrap_or_else(|| {
-        tauri::image::Image::new_bytes(include_bytes!("../icons/icon.png")).expect("icon")
+        tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png")).expect("icon")
     });
     let mut tray = TrayIconBuilder::new()
         .icon(icon)
