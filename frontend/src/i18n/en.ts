@@ -815,7 +815,7 @@ export default {
     },
     views: {
       viewsTab: 'Views',
-      listHint: 'Views are saved table selections with inline row editing.',
+      listHint: 'Views are saved table selections with inline row editing. Double-click a cell; only editable fields are saved (service columns incl. company are locked).',
       newView: 'New view',
       editView: 'Edit view',
       deleteView: 'Delete view',

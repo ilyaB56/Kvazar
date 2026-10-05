@@ -87,6 +87,11 @@ _PYTHON_TYPES: dict[str, type] = {
 def _is_masked(column_name: str) -> bool:
     from fnmatch import fnmatch
 
+    # исключения: технические поля, попавшие в паттерн, но не секреты
+    # (token_version — int-счётчик инвалидации JWT; totp_setup_deadline —
+    # дата) — замечание приёмки этапа A, полировка 2026-10-05
+    if column_name in ("token_version", "totp_setup_deadline"):
+        return False
     return any(fnmatch(column_name, pattern) for pattern in MASKED_PATTERNS)
 
 
