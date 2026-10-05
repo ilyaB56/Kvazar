@@ -21,13 +21,15 @@ def _core_manifest() -> Manifest:
     from src.core import router as core_router
     from src.core.devtools import router as devtools_router
     from src.core.devtools import views_router as devtools_views_router
+    from src.core.devtools import debug_router as devtools_debug_router
 
     return Manifest(
         name="core",
         version="0.1.0",
         db_schema="erp_core",
         routers=(core_router.router, devtools_router.router,
-                   devtools_views_router.router),
+                   devtools_views_router.router,
+                   devtools_debug_router.router),
     )
 
 

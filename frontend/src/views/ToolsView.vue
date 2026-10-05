@@ -673,16 +673,222 @@ async function saveView() {
   }
 }
 
-// ---------- Вкладки (этап A — «Таблицы»; §11 п.2 — «Ракурсы») ----------
+// ---------- Вкладка «Журналы» (devtools-spec §11 п.3) ----------
+const debugAllowed = computed(() => auth.moduleLevel('devtools') !== 'none')
+
+type LogSource = 'audit' | 'egress' | 'outbox' | 'sync' | 'flow' | 'webhooks'
+const LOG_SOURCES: LogSource[] = ['audit', 'egress', 'outbox', 'sync', 'flow', 'webhooks']
+const logSource = ref<LogSource>('audit')
+const logSubTabs = computed(() => LOG_SOURCES.map((source) => ({
+  key: source,
+  label: t(`tools.debug.src${source.charAt(0).toUpperCase()}${source.slice(1)}`),
+})))
+
+// фильтры по source (только релевантные поля)
+const LOG_FILTERS: Record<LogSource, string[]> = {
+  audit: ['action', 'user_id', 'entity_type', 'q'],
+  egress: ['host', 'status'],
+  outbox: ['event_name', 'processed'],
+  sync: ['status', 'job_id'],
+  flow: ['status', 'step', 'error'],
+  webhooks: ['status', 'event_type'],
+}
+const logFilters = ref<Record<string, string>>({})
+const appliedLogFilters = ref<Record<string, string>>({})
+const logFilterKeys = computed(() => LOG_FILTERS[logSource.value])
+const processedOptions = computed(() => [
+  { value: '', label: t('tools.debug.filterAll') },
+  { value: 'yes', label: t('tools.debug.filterYes') },
+  { value: 'no', label: t('tools.debug.filterNo') },
+])
+
+watch(logSource, () => {
+  logFilters.value = {}
+  appliedLogFilters.value = {}
+  expandedLogs.value = new Set()
+})
+
+function applyLogFilters() {
+  const applied: Record<string, string> = {}
+  for (const key of logFilterKeys.value) {
+    const value = (logFilters.value[key] ?? '').trim()
+    if (value !== '') applied[key] = value
+  }
+  appliedLogFilters.value = applied
+}
+function resetLogFilters() {
+  logFilters.value = {}
+  appliedLogFilters.value = {}
+}
+
+const logsResetKey = computed(() => JSON.stringify([logSource.value, appliedLogFilters.value]))
+
+async function fetchLogs(offset: number, limit: number): Promise<PageOf<Row>> {
+  const params = new URLSearchParams({
+    source: logSource.value, limit: String(limit), offset: String(offset),
+  })
+  for (const [key, value] of Object.entries(appliedLogFilters.value)) {
+    params.set(key, value)
+  }
+  return get<PageOf<Row>>(`/devtools/logs?${params.toString()}`)
+}
+
+function logMain(item: Row): string {
+  const key = {
+    audit: 'action', egress: 'host', outbox: 'event_name',
+    sync: 'job', flow: 'payment', webhooks: 'endpoint',
+  }[logSource.value]
+  return item[key] === null || item[key] === undefined ? '—' : String(item[key])
+}
+function logSecondary(item: Row): string {
+  switch (logSource.value) {
+    case 'audit':
+      return [item.entity_type, item.entity_id]
+        .filter((v) => v !== null && v !== undefined && v !== '')
+        .map(String).join(' / ') || '—'
+    case 'outbox':
+      return item.processed === true ? 'processed' : 'pending'
+    case 'sync':
+      return [item.status, item.items_in !== undefined ? `in:${String(item.items_in)}` : '',
+        item.items_out !== undefined ? `out:${String(item.items_out)}` : '']
+        .filter(Boolean).join(' · ') || '—'
+    case 'flow':
+      return [item.status, item.step !== null && item.step !== undefined ? String(item.step) : '']
+        .filter(Boolean).join(' · ') || '—'
+    default:
+      return item.status === null || item.status === undefined ? '—' : String(item.status)
+  }
+}
+function logError(item: Row): string {
+  return item.error === null || item.error === undefined || item.error === ''
+    ? '' : String(item.error)
+}
+function itemAt(item: Row): string {
+  return item.at ? fmtDate(String(item.at)) : '—'
+}
+function logJson(item: Row): string {
+  return JSON.stringify(item, null, 2)
+}
+const expandedLogs = ref<Set<number>>(new Set())
+function toggleLog(index: number) {
+  const next = new Set(expandedLogs.value)
+  if (next.has(index)) next.delete(index)
+  else next.add(index)
+  expandedLogs.value = next
+}
+
+// ---------- Вкладка «Трассировка» (devtools-spec §11 п.4) ----------
+const TRACE_ENTITIES = [
+  'acc.transaction', 'acc.sales.order', 'acc.purchase.order', 'acc.purchase.receipt',
+  'acc.sales.shipment', 'crm.deal', 'counterparty', 'categories', 'maintenance_view', 'user',
+]
+interface TraceEntry {
+  at: string
+  source: 'version' | 'audit' | 'outbox'
+  changed_by?: string
+  diff?: unknown
+  reason?: string
+  action?: string
+  user_id?: string
+  payload?: unknown
+  event_name?: string
+  processed?: boolean
+}
+interface TraceResult {
+  entity_type: string
+  entity_id: string
+  timeline: TraceEntry[]
+}
+const traceEntityType = ref('')
+const traceEntityId = ref('')
+const traceLoading = ref(false)
+const traceResult = ref<TraceResult | null>(null)
+
+async function runTrace() {
+  if (traceLoading.value) return
+  if (!traceEntityType.value.trim() || !traceEntityId.value.trim()) return
+  traceLoading.value = true
+  traceResult.value = null
+  try {
+    traceResult.value = await get<TraceResult>(
+      `/devtools/trace/${encodeURIComponent(traceEntityType.value.trim())}/${encodeURIComponent(traceEntityId.value.trim())}`,
+    )
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    traceLoading.value = false
+  }
+}
+
+function traceJson(value: unknown): string {
+  return JSON.stringify(value ?? null, null, 2)
+}
+function traceDot(source: string): string {
+  if (source === 'audit') return 'bg-yellow-500'
+  if (source === 'outbox') return 'bg-emerald-500'
+  return 'bg-blue-500'
+}
+
+// ---------- Вкладка «Диагностика» (devtools-spec §11 п.5) ----------
+interface DiagModule { name: string; version: string; db_schema: string; is_active: boolean }
+interface DiagHealth {
+  db: { ok: boolean; latency_ms: number }
+  redis: { ok: boolean }
+  outbox: { pending: number; oldest_at: string | null }
+}
+interface DiagFailures {
+  sync_runs: { job: string; status: string; error: string }[]
+  flow_runs: { status: string; step: string | null; attempts: number; error: string }[]
+}
+interface DiagConnection {
+  id: string
+  name: string
+  connector_code: string
+  is_active: boolean
+  last_check_at: string | null
+  last_check_ok: boolean | null
+}
+interface Diagnostics {
+  version: string
+  modules: DiagModule[]
+  manifests: string[]
+  health: DiagHealth
+  recent_failures: DiagFailures
+  connections: DiagConnection[]
+}
+const diagnostics = ref<Diagnostics | null>(null)
+const diagLoading = ref(false)
+
+async function loadDiagnostics() {
+  if (diagLoading.value) return
+  diagLoading.value = true
+  try {
+    diagnostics.value = await get<Diagnostics>('/devtools/diagnostics')
+  } catch (error) {
+    toast.apiError(error)
+  } finally {
+    diagLoading.value = false
+  }
+}
+
+// ---------- Вкладки (этап A — «Таблицы»; §11 п.2–5) ----------
 const activeTab = ref('tables')
 const tabs = computed(() => {
   const list = [{ key: 'tables', label: t('tools.tablesTab') }]
   if (viewsAllowed.value) list.push({ key: 'views', label: t('tools.views.viewsTab') })
+  if (debugAllowed.value) {
+    list.push(
+      { key: 'logs', label: t('tools.debug.logsTab') },
+      { key: 'trace', label: t('tools.debug.traceTab') },
+      { key: 'diag', label: t('tools.debug.diagTab') },
+    )
+  }
   return list
 })
 
 watch(activeTab, (tab) => {
   if (tab === 'views' && views.value === null) void loadViews()
+  if (tab === 'diag' && diagnostics.value === null) void loadDiagnostics()
 })
 
 const columnOptions = computed(() =>
@@ -1157,6 +1363,403 @@ const sortOptions = computed(() => [
                 </div>
               </template>
             </PaginatedList>
+          </Card>
+        </template>
+      </div>
+
+      <!-- Вкладка «Журналы» (devtools-spec §11 п.3) -->
+      <div v-else-if="activeTab === 'logs' && debugAllowed" class="space-y-4">
+        <Tabs v-model="logSource" :tabs="logSubTabs" />
+
+        <!-- Панель фильтров -->
+        <Card>
+          <CardContent class="flex flex-wrap items-end gap-2 p-4">
+            <div
+              v-for="field in logFilterKeys"
+              :key="field"
+              class="flex flex-col gap-1"
+            >
+              <Label class="text-xs font-medium">{{ t(`tools.debug.filter_${field}`) }}</Label>
+              <Select
+                v-if="field === 'processed'"
+                :model-value="logFilters[field] ?? ''"
+                :options="processedOptions"
+                class="w-36"
+                @update:model-value="(v: string) => { logFilters[field] = v ?? '' }"
+              />
+              <Input
+                v-else
+                v-model="logFilters[field]"
+                type="text"
+                class="h-9 w-44"
+                :placeholder="t(`tools.debug.filter_${field}`)"
+              />
+            </div>
+            <div class="ml-auto flex gap-2">
+              <Button variant="emerald" size="sm" @click="applyLogFilters">{{ t('tools.debug.apply') }}</Button>
+              <Button variant="outline" size="sm" @click="resetLogFilters">{{ t('tools.debug.reset') }}</Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <!-- Список записей -->
+        <Card>
+          <PaginatedList
+            :fetch-page="fetchLogs"
+            :reset-key="logsResetKey"
+            :page-size="50"
+            bar-class="px-4"
+          >
+            <template #default="{ items, loading }">
+              <div v-if="loading" class="space-y-2 p-4">
+                <Skeleton v-for="i in 8" :key="i" class="h-8 w-full" />
+              </div>
+              <EmptyState
+                v-else-if="items.length === 0"
+                :title="t('tools.debug.emptyLogs')"
+                :description="t('tools.debug.expandHint')"
+              />
+              <div v-else class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead>
+                    <tr class="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.colTime') }}</th>
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.colMain') }}</th>
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.colStatus') }}</th>
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.colError') }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template v-for="(item, index) in items" :key="index">
+                      <tr
+                        class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-muted/50"
+                        :title="t('tools.debug.expandHint')"
+                        @click="toggleLog(index)"
+                      >
+                        <td class="whitespace-nowrap px-3 py-1.5 text-xs text-muted-foreground">
+                          {{ itemAt(item) }}
+                        </td>
+                        <td class="max-w-[240px] truncate px-3 py-1.5 font-mono text-xs text-foreground" :title="logMain(item)">
+                          {{ logMain(item) }}
+                        </td>
+                        <td class="max-w-[220px] truncate px-3 py-1.5 font-mono text-xs text-foreground/80" :title="logSecondary(item)">
+                          {{ logSecondary(item) }}
+                        </td>
+                        <td
+                          class="max-w-[260px] truncate px-3 py-1.5 font-mono text-xs"
+                          :class="logError(item) ? 'text-red-600' : 'text-muted-foreground'"
+                          :title="logError(item)"
+                        >
+                          {{ logError(item) || '—' }}
+                        </td>
+                      </tr>
+                      <tr v-if="expandedLogs.has(index)">
+                        <td colspan="4" class="border-b border-border/60 bg-muted/40 px-3 py-2">
+                          <details>
+                            <summary class="cursor-pointer text-xs font-medium text-foreground">
+                              {{ t('tools.debug.payload') }}
+                            </summary>
+                            <pre class="mt-2 max-h-72 overflow-auto rounded bg-muted p-2 font-mono text-[11px] text-foreground erp-scroll">{{ logJson(item) }}</pre>
+                          </details>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+          </PaginatedList>
+        </Card>
+      </div>
+
+      <!-- Вкладка «Трассировка» (devtools-spec §11 п.4) -->
+      <div v-else-if="activeTab === 'trace' && debugAllowed" class="space-y-4">
+        <Card>
+          <CardContent class="p-4">
+            <form class="flex flex-wrap items-end gap-3" @submit.prevent="runTrace">
+              <div class="flex flex-col gap-1">
+                <Label class="text-xs font-medium">{{ t('tools.debug.entityType') }}</Label>
+                <Input
+                  v-model="traceEntityType"
+                  type="text"
+                  list="trace-entity-types"
+                  class="w-64 font-mono text-xs"
+                  :placeholder="t('tools.debug.entityTypePlaceholder')"
+                />
+                <datalist id="trace-entity-types">
+                  <option v-for="entity in TRACE_ENTITIES" :key="entity" :value="entity" />
+                </datalist>
+              </div>
+              <div class="flex flex-col gap-1">
+                <Label class="text-xs font-medium">{{ t('tools.debug.entityId') }}</Label>
+                <Input
+                  v-model="traceEntityId"
+                  type="text"
+                  class="w-48 font-mono text-xs"
+                  :placeholder="t('tools.debug.entityIdPlaceholder')"
+                />
+              </div>
+              <Button variant="emerald" size="sm" type="submit" :disabled="traceLoading">
+                {{ t('tools.debug.traceBtn') }}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+
+        <div v-if="traceLoading" class="space-y-3">
+          <Skeleton class="h-16 w-full" />
+          <Skeleton class="h-16 w-full" />
+          <Skeleton class="h-16 w-full" />
+        </div>
+
+        <Card v-else-if="traceResult">
+          <CardContent class="space-y-4 p-4">
+            <div class="flex flex-wrap items-center gap-2">
+              <h2 class="text-base font-semibold text-foreground">{{ t('tools.debug.traceTitle') }}</h2>
+              <Badge variant="secondary" class="font-mono">
+                {{ traceResult.entity_type }} / {{ traceResult.entity_id }}
+              </Badge>
+              <Badge variant="outline">{{ traceResult.timeline.length }}</Badge>
+            </div>
+
+            <EmptyState
+              v-if="traceResult.timeline.length === 0"
+              :title="t('tools.debug.emptyTrace')"
+              :description="t('tools.debug.emptyTraceDescription')"
+            />
+
+            <!-- Вертикальный таймлайн -->
+            <ol v-else class="relative space-y-4 border-l border-border pl-6">
+              <li v-for="(entry, index) in traceResult.timeline" :key="index" class="relative">
+                <span
+                  class="absolute -left-[31px] top-1.5 h-2.5 w-2.5 rounded-full ring-4 ring-background"
+                  :class="traceDot(entry.source)"
+                />
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="text-xs text-muted-foreground">{{ fmtDate(entry.at) }}</span>
+                  <Badge
+                    :variant="entry.source === 'outbox' ? 'secondary' : entry.source === 'audit' ? 'outline' : 'default'"
+                    class="font-mono text-[10px]"
+                  >
+                    {{ entry.source }}
+                  </Badge>
+                </div>
+                <div class="mt-1 text-sm text-foreground">
+                  <!-- version: diff + reason -->
+                  <template v-if="entry.source === 'version'">
+                    <span v-if="entry.reason" class="mr-2 text-muted-foreground">{{ entry.reason }}</span>
+                    <span v-if="entry.changed_by" class="font-mono text-xs text-muted-foreground">
+                      {{ entry.changed_by }}
+                    </span>
+                    <details v-if="entry.diff !== undefined && entry.diff !== null" class="mt-1">
+                      <summary class="cursor-pointer text-xs font-medium">{{ t('tools.debug.diff') }}</summary>
+                      <pre class="mt-1 max-h-60 overflow-auto rounded bg-muted p-2 font-mono text-[11px] text-foreground erp-scroll">{{ traceJson(entry.diff) }}</pre>
+                    </details>
+                  </template>
+                  <!-- audit: action + payload -->
+                  <template v-else-if="entry.source === 'audit'">
+                    <span class="font-mono text-xs">{{ entry.action ?? '—' }}</span>
+                    <span v-if="entry.user_id" class="ml-2 font-mono text-xs text-muted-foreground">
+                      {{ entry.user_id }}
+                    </span>
+                    <details v-if="entry.payload !== undefined && entry.payload !== null" class="mt-1">
+                      <summary class="cursor-pointer text-xs font-medium">{{ t('tools.debug.payload') }}</summary>
+                      <pre class="mt-1 max-h-60 overflow-auto rounded bg-muted p-2 font-mono text-[11px] text-foreground erp-scroll">{{ traceJson(entry.payload) }}</pre>
+                    </details>
+                  </template>
+                  <!-- outbox: event_name + processed -->
+                  <template v-else>
+                    <span class="font-mono text-xs">{{ entry.event_name ?? '—' }}</span>
+                    <span
+                      class="ml-2 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                      :class="entry.processed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'"
+                    >
+                      {{ entry.processed ? t('tools.debug.processed') : t('tools.debug.pending') }}
+                    </span>
+                  </template>
+                </div>
+              </li>
+            </ol>
+          </CardContent>
+        </Card>
+      </div>
+
+      <!-- Вкладка «Диагностика» (devtools-spec §11 п.5) -->
+      <div v-else-if="activeTab === 'diag' && debugAllowed" class="space-y-4">
+        <div v-if="diagLoading" class="space-y-3">
+          <Skeleton class="h-24 w-full" />
+          <Skeleton class="h-40 w-full" />
+        </div>
+
+        <template v-else-if="diagnostics">
+          <!-- Карточки-статусы -->
+          <div class="grid gap-3 sm:grid-cols-3">
+            <Card>
+              <CardContent class="space-y-1 p-4">
+                <p class="text-xs uppercase tracking-wide text-muted-foreground">{{ t('tools.debug.diagDb') }}</p>
+                <div class="flex items-center gap-2">
+                  <Badge :variant="diagnostics.health.db.ok ? 'default' : 'outline'">
+                    {{ diagnostics.health.db.ok ? t('tools.debug.ok') : t('tools.debug.fail') }}
+                  </Badge>
+                  <span class="text-sm text-muted-foreground">{{ diagnostics.health.db.latency_ms }} ms</span>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent class="space-y-1 p-4">
+                <p class="text-xs uppercase tracking-wide text-muted-foreground">{{ t('tools.debug.diagRedis') }}</p>
+                <Badge :variant="diagnostics.health.redis.ok ? 'default' : 'outline'">
+                  {{ diagnostics.health.redis.ok ? t('tools.debug.ok') : t('tools.debug.fail') }}
+                </Badge>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent class="space-y-1 p-4">
+                <p class="text-xs uppercase tracking-wide text-muted-foreground">{{ t('tools.debug.diagOutbox') }}</p>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span
+                    class="rounded-full px-2 py-0.5 text-xs font-medium"
+                    :class="diagnostics.health.outbox.pending > 0
+                      ? 'bg-amber-100 text-amber-700' : 'bg-muted text-muted-foreground'"
+                  >
+                    {{ t('tools.debug.pending') }}: {{ diagnostics.health.outbox.pending }}
+                  </span>
+                  <span v-if="diagnostics.health.outbox.oldest_at" class="text-xs text-muted-foreground">
+                    {{ t('tools.debug.oldestAt') }}: {{ fmtDate(diagnostics.health.outbox.oldest_at) }}
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <!-- Версия + модули -->
+          <Card>
+            <CardContent class="space-y-3 p-4">
+              <div class="flex flex-wrap items-center gap-2">
+                <h2 class="text-sm font-semibold text-foreground">{{ t('tools.debug.modules') }}</h2>
+                <Badge variant="secondary" class="font-mono">{{ diagnostics.version }}</Badge>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead>
+                    <tr class="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.moduleName') }}</th>
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.moduleVersion') }}</th>
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.moduleSchema') }}</th>
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.moduleActive') }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="module in diagnostics.modules"
+                      :key="module.name"
+                      class="border-b border-border/60 last:border-0 hover:bg-muted/50"
+                      :class="{ 'opacity-50': !module.is_active }"
+                    >
+                      <td class="px-3 py-1.5 font-mono text-xs">{{ module.name }}</td>
+                      <td class="px-3 py-1.5 font-mono text-xs">{{ module.version }}</td>
+                      <td class="px-3 py-1.5 font-mono text-xs text-muted-foreground">{{ module.db_schema }}</td>
+                      <td class="px-3 py-1.5 text-xs">
+                        <Badge :variant="module.is_active ? 'default' : 'outline'">
+                          {{ module.is_active ? t('tools.debug.active') : t('tools.debug.inactive') }}
+                        </Badge>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          <!-- Последние падения -->
+          <Card>
+            <CardContent class="space-y-3 p-4">
+              <h2 class="text-sm font-semibold text-foreground">{{ t('tools.debug.recentFailures') }}</h2>
+              <div class="grid gap-4 lg:grid-cols-2">
+                <div>
+                  <p class="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {{ t('tools.debug.srcSync') }}
+                  </p>
+                  <p v-if="diagnostics.recent_failures.sync_runs.length === 0" class="text-xs text-muted-foreground">
+                    {{ t('tools.debug.noFailures') }}
+                  </p>
+                  <ul v-else class="space-y-1.5">
+                    <li
+                      v-for="(run, index) in diagnostics.recent_failures.sync_runs"
+                      :key="index"
+                      class="rounded-lg border border-border p-2 text-xs"
+                    >
+                      <span class="font-mono text-foreground">{{ run.job }}</span>
+                      <span class="ml-2 text-muted-foreground">{{ run.status }}</span>
+                      <p class="mt-0.5 truncate font-mono text-red-600" :title="run.error">{{ run.error }}</p>
+                    </li>
+                  </ul>
+                </div>
+                <div>
+                  <p class="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {{ t('tools.debug.srcFlow') }}
+                  </p>
+                  <p v-if="diagnostics.recent_failures.flow_runs.length === 0" class="text-xs text-muted-foreground">
+                    {{ t('tools.debug.noFailures') }}
+                  </p>
+                  <ul v-else class="space-y-1.5">
+                    <li
+                      v-for="(run, index) in diagnostics.recent_failures.flow_runs"
+                      :key="index"
+                      class="rounded-lg border border-border p-2 text-xs"
+                    >
+                      <span class="text-foreground">{{ run.status }}</span>
+                      <span v-if="run.step !== null && run.step !== undefined" class="ml-2 font-mono text-muted-foreground">
+                        {{ run.step }}
+                      </span>
+                      <span class="ml-2 text-muted-foreground">×{{ run.attempts }}</span>
+                      <p class="mt-0.5 truncate font-mono text-red-600" :title="run.error">{{ run.error }}</p>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <!-- Коннекторы -->
+          <Card>
+            <CardContent class="space-y-3 p-4">
+              <h2 class="text-sm font-semibold text-foreground">{{ t('tools.debug.connections') }}</h2>
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead>
+                    <tr class="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.connName') }}</th>
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.connCode') }}</th>
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.lastCheck') }}</th>
+                      <th class="px-3 py-2 font-semibold">{{ t('tools.debug.checkResult') }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="conn in diagnostics.connections"
+                      :key="conn.id"
+                      class="border-b border-border/60 last:border-0 hover:bg-muted/50"
+                      :class="{ 'opacity-50': !conn.is_active }"
+                    >
+                      <td class="px-3 py-1.5">{{ conn.name }}</td>
+                      <td class="px-3 py-1.5 font-mono text-xs text-muted-foreground">{{ conn.connector_code }}</td>
+                      <td class="whitespace-nowrap px-3 py-1.5 text-xs text-muted-foreground">
+                        {{ conn.last_check_at ? fmtDate(conn.last_check_at) : '—' }}
+                      </td>
+                      <td class="px-3 py-1.5">
+                        <Badge v-if="conn.last_check_ok === null" variant="outline">
+                          {{ t('tools.debug.neverChecked') }}
+                        </Badge>
+                        <Badge v-else :variant="conn.last_check_ok ? 'default' : 'outline'">
+                          {{ conn.last_check_ok ? t('tools.debug.ok') : t('tools.debug.fail') }}
+                        </Badge>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
           </Card>
         </template>
       </div>
