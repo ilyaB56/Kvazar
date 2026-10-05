@@ -71,7 +71,8 @@ fn show_window(app: &tauri::AppHandle) {
 fn set_phase(app: &tauri::AppHandle, phase: Phase) {
     {
         let shell = app.state::<Shell>();
-        if let Ok(mut p) = shell.phase.lock() {
+        let guard = shell.phase.lock();
+        if let Ok(mut p) = guard {
             *p = phase.clone();
         }
     }
@@ -237,7 +238,8 @@ fn open_settings(app: tauri::AppHandle) {
 
 fn save_url(app: &tauri::AppHandle, url: &str) {
     let shell = app.state::<Shell>();
-    if let Ok(mut cfg) = shell.config.lock() {
+    let guard = shell.config.lock();
+    if let Ok(mut cfg) = guard {
         if cfg.server_url.as_deref() != Some(url) {
             // список последних адресов — этап B (§5.1); здесь только
             // актуальный адрес
@@ -254,11 +256,10 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let settings = MenuItem::with_id(app, "settings", "Настройки…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &settings, &quit])?;
-    let icon = app.default_window_icon().cloned().unwrap_or_else(|| {
-        tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png")).expect("icon")
-    });
-    let mut tray = TrayIconBuilder::new()
-        .icon(icon)
+    // иконка трея — из окна (настраивается в tauri.conf.json); PNG-фолбэк
+    // не нужен: у Image нет from_bytes/new_bytes в резолвящейся версии
+    // tauri 2 (обе попытки — E0599 на CI), дефолтная иконка всегда есть
+    let tray = TrayIconBuilder::new()
         .tooltip("Квазар")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -303,7 +304,7 @@ pub fn run() {
         .setup(|app| {
             let cfg = config::load();
             let win: WebviewWindow = app.get_webview_window("main").expect("main window");
-            let local_origin = win.url().origin().ascii_serialization();
+            let local_origin = win.url()?.origin().ascii_serialization();
             let has_url = cfg.server_url.is_some();
             app.manage(Shell {
                 phase: Mutex::new(Phase::Setup),
